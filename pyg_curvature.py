@@ -439,6 +439,8 @@ class CurvatureEngine:
         if data.num_nodes is None or data.edge_index is None:
             raise ValueError("Data object has None for num_nodes or edge_index.")
         self.num_nodes = int(data.num_nodes)
+        self._original_edge_index = data.edge_index
+        self._cache: Dict[str, Any] = {}
         # Deduplicate to undirected unique edges (u<v)
         self.undirected_edges = _as_undirected_unique_edges(data.edge_index, self.num_nodes)
         self.neighbors = _build_neighbors(self.num_nodes, self.undirected_edges)
@@ -481,6 +483,81 @@ class CurvatureEngine:
                          tri=tri, Xi=Xi, varpi_max=varpi_max, sho_max=sho_max)
 
     # ---------- Distances ----------
+    def _values_to_undirected(
+        self,
+        values: np.ndarray,
+        edge_index: Optional[torch.Tensor] = None,
+        agg: str = "mean",
+    ) -> np.ndarray:
+        """
+        Map per-directed-edge values onto the engine's undirected u<v edge order.
+        If `values` is already aligned to undirected edges (len == len(self.edges)), it
+        is returned unchanged.
+
+        Parameters
+        ----------
+        values : (E,) or (M,) array
+            If length == number of columns in `edge_index` (directed), the function
+            aggregates the two orientations to a single undirected edge using `agg`.
+            If length == len(self.edges) (undirected), it is returned as-is.
+        edge_index : torch.LongTensor (2, E), optional
+            Directed edges. If None, uses the original edge_index provided to the engine.
+        agg : {"mean","sum","min","max","first"}
+            Aggregation to collapse (u->v, v->u) into (min(u,v), max(u,v)).
+
+        Returns
+        -------
+        np.ndarray of shape (M,)
+            Values aligned to the engine's undirected edges order (u<v).
+        """
+        M = len(self.edges)
+        if values.shape[0] == M:
+            return values  # already undirected order
+
+        if edge_index is None:
+            edge_index = self._original_edge_index
+        if not isinstance(edge_index, torch.Tensor) or edge_index.ndim != 2 or edge_index.shape[0] != 2:
+            raise ValueError("edge_index must be a (2, E) LongTensor for directed edges.")
+
+        E = edge_index.shape[1]
+        if values.shape[0] != E:
+            raise ValueError(f"values has length {values.shape[0]} but directed edge_index has {E} columns.")
+
+        # Build buckets for undirected pairs
+        u = edge_index[0].detach().cpu().numpy().astype(np.int64)
+        v = edge_index[1].detach().cpu().numpy().astype(np.int64)
+        buckets: Dict[Tuple[int,int], List[float]] = {}
+        for k in range(E):
+            a = int(u[k]); b = int(v[k])
+            if a == b:
+                # ignore self-loops if present; they don't appear in undirected u<v list
+                continue
+            p = (a, b) if a < b else (b, a)
+            buckets.setdefault(p, []).append(float(values[k]))
+
+        # Aggregator
+        def _agg(xs: List[float]) -> float:
+            if not xs:
+                return float("nan")
+            if agg == "mean":
+                return float(sum(xs) / len(xs))
+            elif agg == "sum":
+                return float(sum(xs))
+            elif agg == "min":
+                return float(min(xs))
+            elif agg == "max":
+                return float(max(xs))
+            elif agg == "first":
+                return float(xs[0])
+            else:
+                raise ValueError(f"Unknown agg='{agg}'")
+
+        # Emit in engine's undirected order
+        out = np.zeros(M, dtype=float)
+        for idx, (i, j) in enumerate(self.edges):
+            xs = buckets.get((i, j), [])
+            out[idx] = _agg(xs)
+        return out
 
     def _cost_matrix_lazy_supports(self, i: int, j: int) -> Tuple[np.ndarray, List[int], List[int]]:
         """Cost matrix between supports of lazy measures m_i, m_j: {i} U N(i) vs {j} U N(j)."""
@@ -541,6 +618,27 @@ class CurvatureEngine:
         # Normalization by dist(i,j) is immaterial for edges (distance=1)
         return float(1.0 - W1)
 
+    def _get_c_OR0_all(self, force_recompute: bool = False) -> np.ndarray:
+        """
+        Compute (and cache) non-lazy OR curvatures for all undirected edges.
+        Use this to avoid re-running the transport for sign sharpening repeatedly.
+
+        Parameters
+        ----------
+        force_recompute : bool
+            If True, recompute even if a cached array exists.
+
+        Returns
+        -------
+        np.ndarray of shape (M,)
+            c_OR0 for each undirected edge in self.edges order (u<v).
+        """
+        key = "_c_OR0_all"
+        if (not force_recompute) and (key in self._cache):
+            return self._cache[key]
+        arr = np.array([self.c_OR0_edge(eidx) for eidx in range(len(self.edges))], dtype=float)
+        self._cache[key] = arr
+        return arr
     # ---------- Edgewise parameters (Def. edgewise comparison parameters) ----------
 
     @staticmethod
@@ -998,12 +1096,10 @@ class CurvatureEngine:
         if c_BF is None:
             base = self.compute_all()
             c_BF = base["c_BF"]
-            c_OR0 = base["c_OR0"] if reuse_cOR0 else None
+            c_OR0 = self._get_c_OR0_all() if reuse_cOR0 else None
         else:
-            c_OR0 = None
-            if reuse_cOR0:
-                # compute OR0 once
-                c_OR0 = np.array([self.c_OR0_edge(i) for i in range(len(self.edges))], dtype=float)
+            c_BF = self._values_to_undirected(c_BF, edge_index=self._original_edge_index, agg="mean")
+            c_OR0 = self._get_c_OR0_all() if reuse_cOR0 else None
         lower = self.varphi_BF_to_OR_per_edge(c_BF, precomputed_cOR0=c_OR0)
         upper = self.psi_BF_to_OR_per_edge(c_BF)
         return {"c_BF": c_BF, "c_OR_lower_from_c_BF": lower, "c_OR_upper_from_c_BF": upper}
@@ -1013,11 +1109,10 @@ class CurvatureEngine:
         if c_OR is None:
             base = self.compute_all()
             c_OR = base["c_OR"]
-            c_OR0 = base["c_OR0"] if reuse_cOR0 else None
+            c_OR0 = self._get_c_OR0_all() if reuse_cOR0 else None
         else:
-            c_OR0 = None
-            if use_sign_sharpening and reuse_cOR0:
-                c_OR0 = np.array([self.c_OR0_edge(i) for i in range(len(self.edges))], dtype=float)
+            c_OR = self._values_to_undirected(c_OR, edge_index=self._original_edge_index, agg="mean")
+            c_OR0 = self._get_c_OR0_all() if (use_sign_sharpening and reuse_cOR0) else None
         lower = self.varphi_OR_to_BF_per_edge(c_OR)
         upper = self.psi_OR_to_BF_per_edge(c_OR, use_sign_sharpening=use_sign_sharpening, precomputed_cOR0=c_OR0)
         return {"c_OR": c_OR, "c_BF_lower_from_c_OR": lower, "c_BF_upper_from_c_OR": upper}
