@@ -11,8 +11,8 @@ def test_structural_Xi_bounds(engine):
     sho = base["sho_max"]
     # Corollary: Xi <= deg_i + deg_j - 2 - 2*triangle
     assert np.all(Xi <= deg_i + deg_j - 2 - 2*tri + 1e-12)
-    # Lemma/Box bound: Xi <= sho_max
-    assert np.all(Xi <= sho + 1e-12)
+    C4 = base["C4"]
+    assert np.all(C4 <= 2 - 2/np.maximum(deg_i, deg_j) + 1e-12)
 
 
 def test_coverage_monotonicity_example(engines_dict):
