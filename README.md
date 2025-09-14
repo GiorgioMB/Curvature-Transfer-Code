@@ -78,10 +78,9 @@ Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
 - The test suite verifies, per edge of a graph:
   - **Two-sided transfer inequalities** between Balanced Forman (BF) and Ollivier–Ricci (OR) curvature
   - **Lazy-to-non-lazy comparison** and the **lazy transport envelope** upper bound for $c_{\rm OR}$
-  - **Monotone coverage envelope**: the affine bound $\Theta_\alpha(\triangle)=\mathrm{Const}_\alpha+\mathrm{Slope}_\alpha\,\triangle$
-  with strictly positive slope and $c_{\rm OR}(i,j)\le \Theta_\alpha(\triangle(i,j))$
+  - **Monotone coverage envelope**: the affine bound $\Theta_\alpha(\triangle)=Const_\alpha+Slope_\alpha\triangle$ with strictly positive slope and $\mathfrak c_{\rm OR}(i,j)\le \Theta_\alpha(\triangle(i,j))$
   - **Structural 4-cycle coverage bounds** used by the BF curvature: $\Xi_{ij}\le \varrho_i+\varrho_j-2-2\,\triangle(i,j)$
-  and $\Xi_{ij}\le \sho_{\max}(i,j)=\varpi_{\max}(i,j)\,\max\{\varrho_i,\varrho_j\}$
+  and $\Xi_{ij}\le sho_{\max}(i,j)=\varpi_{\max}(i,j)\,\max\{\varrho_i,\varrho_j\}$
   - A small **coverage monotonicity sanity check** contrasting an interior edge of a path vs. an edge of a 4-cycle
   (same degrees and triangle count but different coverage), showing the lazy transport envelope is larger when coverage is larger.
 How to run the tests:
