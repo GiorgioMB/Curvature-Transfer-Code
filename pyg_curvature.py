@@ -14,7 +14,7 @@ with the envelopes/transfer moduli developed in the provided notes:
 - Thm. (OR -> BF Lower Transfer): Eq. (4.14 -- OR-to-BF-lower)
 - Thm. (OR -> BF Upper Transfer): Eq. (4.15 -- psi-OR-to-BF-lazy)
 
-Conventions match the note:
+Conventions used:
 - Graph: simple, undirected, connected with unit-length edges.
 - Lazy measures: alpha_u = 1/(deg(u)+1); neighbor mass w_u^(alpha) = 1/(deg(u)+1).
 - Distances are graph shortest-path lengths (unweighted). On the supports used
@@ -447,6 +447,7 @@ class CurvatureEngine:
         self.deg = np.array([len(self.neighbors[u]) for u in range(self.num_nodes)], dtype=int)
         # Pre-build edge list
         self.edges: List[Tuple[int,int]] = list(zip(self.undirected_edges[0].tolist(), self.undirected_edges[1].tolist()))
+        self._TAU = 1e-12  # numerical tolerance for premise checks
 
     # ---------- Neighborhood-derived primitives ----------
 
@@ -939,39 +940,44 @@ class CurvatureEngine:
             out.append(S + T * u_max + C4)
         return np.array(out, dtype=float)
 
-    # =============================
-    # New per-edge analytic transfers
-    # =============================
-
-    def varphi_BF_to_OR_per_edge(self, zetas: np.ndarray, precomputed_cOR0: Optional[np.ndarray] = None) -> np.ndarray:
-        """Per-edge lower bounds on c_OR using each edge's BF curvature value zeta_e.
-
-        Parameters
-        ----------
-        zetas : np.ndarray
-            Array of shape (M,) with per-edge BF curvatures or thresholds.
-        precomputed_cOR0 : np.ndarray, optional
-            If provided (shape (M,)), reuse non-lazy curvatures to avoid recomputation.
-        """
+    def varphi_BF_to_OR_per_edge(self, zetas: np.ndarray) -> np.ndarray:
+        """Per-edge lower bounds on c_OR using each edge's BF curvature value zeta_e."""
         assert len(zetas) == len(self.edges)
         out = np.zeros(len(self.edges), dtype=float)
         for eidx in range(len(self.edges)):
             zeta = float(zetas[eidx])
             loc = self._local_for_edge(eidx)
-            S = self._S(loc.deg_i, loc.deg_j)
-            T = self._T(loc.deg_i, loc.deg_j)
-            K = self._K(loc.deg_i, loc.deg_j)
+            di, dj = loc.deg_i, loc.deg_j
+            S = self._S(di, dj);  T = self._T(di, dj);  K = self._K(di, dj)
             C4 = self._C4_edge(loc.Xi, loc.sho_max)
+
+            # (P1) Domain guard for using c_BF = S + T*tri + C4 as identity
+            if min(di, dj) <= 1:
+                out[eidx] = -(di + dj + 1.0)  # BF-only sentinel: "no information"
+                continue
+
+            # Triangles forced by BF >= zeta (clip to structural max for safety)
             Zscr = max(0.0, (zeta - S - C4) / T) if T > 0 else 0.0
-            Zbar_max = Zscr / float(max(loc.deg_i, loc.deg_j)) if max(loc.deg_i, loc.deg_j) > 0 else 0.0
-            Zbar_min = Zscr / float(min(loc.deg_i, loc.deg_j)) if min(loc.deg_i, loc.deg_j) > 0 else 0.0
+            Zscr = min(Zscr, float(min(di, dj) - 1.0))
+            Zbar_max = Zscr / float(max(di, dj)) if max(di, dj) > 0 else 0.0
+            Zbar_min = Zscr / float(min(di, dj)) if min(di, dj) > 0 else 0.0
+
+            # JL non-lazy surrogate (BF-only)
             g = -max(0.0, K - Zbar_max) - max(0.0, K - Zbar_min) + Zbar_max
-            cOR0 = precomputed_cOR0[eidx] if precomputed_cOR0 is not None else self.c_OR0_edge(eidx)
-            ai = self._alpha(loc.deg_i); aj = self._alpha(loc.deg_j)
-            a_min, a_max = (ai, aj) if ai <= aj else (aj, ai)
+
+            ai = self._alpha(di); aj = self._alpha(dj)
+            a_min = ai if ai <= aj else aj
             Delta = abs(ai - aj)
-            a_star = a_min if cOR0 >= 0.0 else a_max
-            out[eidx] = (1.0 - a_star) * g - Delta
+
+            # Paper-literal, sign-agnostic BF-only lower
+            lower_cand = (1.0 - a_min) * g - Delta
+
+            # (P2) JL channel vacuous => return BF-only sentinel (no information)
+            if g <= self._TAU:
+                sentinel = -(di + dj + 1.0)
+                out[eidx] = min(lower_cand, sentinel)
+            else:
+                out[eidx] = lower_cand
         return out
 
     def psi_BF_to_OR_per_edge(self, zetas: np.ndarray) -> np.ndarray:
@@ -1031,24 +1037,41 @@ class CurvatureEngine:
         return out
 
     def varphi_OR_to_BF_per_edge(self, thetas: np.ndarray) -> np.ndarray:
-        """Per-edge lower bounds on c_BF using each edge's OR curvature value theta_e."""
+        """Per-edge LOWER bounds on c_BF from OR.
+        Paper-literal when premises hold; otherwise, fall back to a looser bound.
+        Premises we check:
+          (P1) Structural: min(deg) >= 2 (the theorem's domain).
+          (P2) Envelope: c_OR <= Const + Slope * tri (at the realized triangle count).
+        If (P1) fails: return 0 (our implementation convention for leaves).
+        If (P2) fails: return S + T * tri (identity lower bound).
+        Otherwise: return S + T * t_min with t_min = clip(((theta-Const)/Slope)_+, 0, min(deg)-1) and also <= tri.
+        """
         assert len(thetas) == len(self.edges)
         out = np.zeros(len(self.edges), dtype=float)
         for eidx in range(len(self.edges)):
             theta = float(thetas[eidx])
             loc = self._local_for_edge(eidx)
             i_deg, j_deg = loc.deg_i, loc.deg_j
+            S = self._S(i_deg, j_deg); T = self._T(i_deg, j_deg)
+            tri = float(loc.tri)
+            # (P1) leaf guard
+            if min(i_deg, j_deg) <= 1:
+                out[eidx] = 0.0
+                continue
+            # (P2) envelope check at realized triangles
             Const, Slope = self._const_slope(i_deg, j_deg)
-            # minimal triangle forced by theta
-            if Slope <= 0:
-                t_min = 0.0
-            else:
-                t_min = max(0.0, (theta - Const) / Slope)
+            envelope_ok = (Slope > self._TAU) and (theta <= Const + Slope * tri + self._TAU)
+            if not envelope_ok:
+                # Fall back to the identity lower bound
+                out[eidx] = S + T * tri
+                continue
+            # Paper-literal inversion with tight clipping
+            t_min = max(0.0, (theta - Const) / Slope)
             t_min = min(t_min, min(i_deg, j_deg) - 1.0)
-            S = self._S(i_deg, j_deg)
-            T = self._T(i_deg, j_deg)
+            t_min = min(t_min, tri)  # harmless clamp to absorb roundoff
             out[eidx] = S + T * t_min
         return out
+
 
     def psi_OR_to_BF_per_edge(self, thetas: np.ndarray, use_sign_sharpening: bool = True, precomputed_cOR0: Optional[np.ndarray] = None) -> np.ndarray:
         """Per-edge upper bounds on c_BF using each edge's OR curvature value theta_e."""
@@ -1088,24 +1111,23 @@ class CurvatureEngine:
             out[eidx] = S + T * u_max + C4
         return out
 
-    def bounds_from_BF(self, c_BF: Optional[np.ndarray] = None, reuse_cOR0: bool = True) -> Dict[str, np.ndarray]:
-        """Given (or computing) per-edge c_BF, return per-edge lower/upper bounds on c_OR.
-
-        If reuse_cOR0 is True we compute an array of c_OR0 once for sign sharpening.
+    def bounds_from_BF(self, c_BF: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
+        """
+        Given (or computing) per-edge c_BF, return per-edge lower/upper bounds on c_OR.
         """
         if c_BF is None:
             base = self.compute_all()
             c_BF = base["c_BF"]
-            c_OR0 = self._get_c_OR0_all() if reuse_cOR0 else None
         else:
             c_BF = self._values_to_undirected(c_BF, edge_index=self._original_edge_index, agg="mean")
-            c_OR0 = self._get_c_OR0_all() if reuse_cOR0 else None
-        lower = self.varphi_BF_to_OR_per_edge(c_BF, precomputed_cOR0=c_OR0)
+        lower = self.varphi_BF_to_OR_per_edge(c_BF)
         upper = self.psi_BF_to_OR_per_edge(c_BF)
         return {"c_BF": c_BF, "c_OR_lower_from_c_BF": lower, "c_OR_upper_from_c_BF": upper}
 
     def bounds_from_OR(self, c_OR: Optional[np.ndarray] = None, use_sign_sharpening: bool = True, reuse_cOR0: bool = True) -> Dict[str, np.ndarray]:
-        """Given (or computing) per-edge c_OR, return per-edge lower/upper bounds on c_BF."""
+        """
+        Given (or computing) per-edge c_OR, return per-edge lower/upper bounds on c_BF.
+        """
         if c_OR is None:
             base = self.compute_all()
             c_OR = base["c_OR"]
@@ -1117,9 +1139,7 @@ class CurvatureEngine:
         upper = self.psi_OR_to_BF_per_edge(c_OR, use_sign_sharpening=use_sign_sharpening, precomputed_cOR0=c_OR0)
         return {"c_OR": c_OR, "c_BF_lower_from_c_OR": lower, "c_BF_upper_from_c_OR": upper}
 
-    # =============================
-    # End new methods
-    # =============================
+ 
 
     def compute_all(self) -> Dict[str, np.ndarray]:
         """Compute base curvatures and per-edge structural terms.
