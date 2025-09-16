@@ -9,6 +9,12 @@ import matplotlib.pyplot as plt
 from . import models
 from .util_curvature import compute_curvatures, write_edge_table, summarize_run
 
+def add_figure_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--auto-figures",
+        action="store_true",
+        help="Generate paper figures after experiments complete (on by default for --preset paper)"
+    )
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -129,11 +135,13 @@ def main():
     parser = argparse.ArgumentParser(description="Run curvature distribution experiments.")
     add_preset_args(parser)
     add_family_args(parser)
+    add_figure_args(parser)
     args = parser.parse_args()
     seed = int(args.seed)
 
     handle_presets(args, seed)
-
+    if getattr(args, "preset", None) == "paper" and not getattr(args, "auto_figures", False):
+        args.auto_figures = True
     runs = []
 
     # Random families
@@ -198,6 +206,22 @@ def main():
             _plot_hist(curv.base["c_BF"], f"{tag} — c_BF", os.path.join(out_dir, f"{base_name}__hist_cBF.png"), bins=args.bins)
             _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag} — slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
             _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag} — slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
+            
+    if getattr(args, "auto_figures", False):
+        try:
+            from experiments.make_paper_figures import generate_paper_figures
+        except Exception as e:
+            print(f"[run_experiments] Could not import figure generator: {e}")
+        else:
+            # Best effort: infer the output root; default to 'outputs'
+            output_root = getattr(args, "output", None) or getattr(args, "out_dir", None) or "outputs"
+            # If a run name was provided, filter by it; otherwise draw everything in the output root.
+            run_selector = getattr(args, "run_name", None)
+            print(f"[run_experiments] Generating paper figures (root={output_root}, select={run_selector})")
+            try:
+                generate_paper_figures(output_root=output_root, select=run_selector)
+            except Exception as e:
+                print(f"[run_experiments] Figure generation failed: {e}")
 
     # Write manifest
     import json
@@ -205,6 +229,7 @@ def main():
         json.dump(manifest, f, indent=2)
 
     print(f"[done] Wrote outputs to {out_dir}")
+    
 
 
 if __name__ == "__main__":
