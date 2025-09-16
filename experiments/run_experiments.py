@@ -110,7 +110,7 @@ def handle_presets(args, seed: int):
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
     out = []
     import csv
-    for name in ["karate", "us_air", "power_grid"]:
+    for name in ["karate", "un_migration", "power_grid", "yeast"]:
         path = os.path.join(data_dir, f"{name}.csv")
         if not os.path.exists(path):
             continue
