@@ -46,11 +46,11 @@ If a file is missing, it is simply skipped.
 
 
 ## Usage
-Install requirements and run a preset suite:
+Install requirements and run a preset suite (options: paper, small, tiny):
 
 ```bash
 python -m pip install -U -r experiments/requirements.txt
-python experiments/run_experiments.py --preset small
+python experiments/run_experiments.py --preset paper
 ```
 
 Custom run example:
