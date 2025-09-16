@@ -26,8 +26,13 @@ def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
 
 
 def add_preset_args(parser: argparse.ArgumentParser):
-    parser.add_argument("--preset", type=str, default=None, choices=["tiny","small"], help="Run a predefined suite")
-
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        choices=["tiny", "small", "paper"],
+        help="Run a predefined suite (tiny, small, or paper)"
+    )
 
 def add_family_args(parser: argparse.ArgumentParser):
     # Random graphs
@@ -39,6 +44,11 @@ def add_family_args(parser: argparse.ArgumentParser):
                         help="Barabasi-Albert (n, m) with integer m")
     parser.add_argument("--rg", nargs=2, type=float, action="append", metavar=("n","r"),
                         help="Random geometric (n, radius)")
+    parser.add_argument(
+        "--hrg", nargs=4, type=float, action="append",
+        metavar=("n","R","alpha","T"),
+        help="Hyperbolic random graph (native model): n, disk radius R, curvature -alpha^2, temperature T"
+    )
     # Canonical graphs
     parser.add_argument("--cycle", nargs=1, type=int, action="append", metavar=("n",), help="Cycle C_n")
     parser.add_argument("--grid", nargs=2, type=int, action="append", metavar=("m","n"), help="Grid m x n")
@@ -75,6 +85,20 @@ def handle_presets(args, seed: int):
         args.grid = args.grid or [[20, 20]]
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
+    elif args.preset == "paper":
+        # (a) Random models
+        args.er = args.er or [[800, 0.015], [800, 0.03]]
+        args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2]]
+        args.ba = args.ba or [[800, 2], [800, 3], [800, 5]]
+        args.rg = args.rg or [[800, 0.08], [800, 0.10]]
+        # Hyperbolic random graphs: sharp (T=0) and soft (T=0.5) thresholds
+        args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
+        # (b) Canonical families
+        args.cycle = args.cycle or [[240]]
+        args.grid = args.grid or [[28, 28]]
+        args.tree = args.tree or [[3, 7], [4, 6]]
+        args.complete = args.complete or [[70]]
+        args.include_real = True
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
@@ -125,7 +149,12 @@ def main():
     if args.rg:
         for n, r in args.rg:
             runs.append(("rg_n{}_r{}".format(int(n), float(r)), *models.random_geometric(int(n), float(r), seed=seed)))
-
+    if hasattr(args, "hrg") and args.hrg:
+        for n, R, alpha, T in args.hrg:
+            runs.append((
+                "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T)),
+                *models.make_hyperbolic_random_graph(int(n), float(R), alpha=float(alpha), T=float(T), seed=seed)
+            ))
     # Canonical
     if args.cycle:
         for (n,) in args.cycle:
