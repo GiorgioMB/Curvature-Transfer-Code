@@ -9,12 +9,6 @@ import matplotlib.pyplot as plt
 from . import models
 from .util_curvature import compute_curvatures, write_edge_table, summarize_run
 
-def add_figure_args(parser: argparse.ArgumentParser):
-    parser.add_argument(
-        "--auto-figures",
-        action="store_true",
-        help="Generate paper figures after experiments complete (on by default for --preset paper)"
-    )
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -39,6 +33,7 @@ def add_preset_args(parser: argparse.ArgumentParser):
         choices=["tiny", "small", "paper"],
         help="Run a predefined suite (tiny, small, or paper)"
     )
+    
 
 def add_family_args(parser: argparse.ArgumentParser):
     # Random graphs
@@ -68,6 +63,11 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--bins", type=int, default=60)
     parser.add_argument("--skip-csv", action="store_true")
     parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument(
+        "--auto-figures",
+        action="store_true",
+        help="Generate paper figures after the runs (on by default for --preset paper)"
+    )
 
 
 def handle_presets(args, seed: int):
@@ -135,7 +135,6 @@ def main():
     parser = argparse.ArgumentParser(description="Run curvature distribution experiments.")
     add_preset_args(parser)
     add_family_args(parser)
-    add_figure_args(parser)
     args = parser.parse_args()
     seed = int(args.seed)
 
@@ -207,27 +206,21 @@ def main():
             _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag} — slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
             _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag} — slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
             
-    if getattr(args, "auto_figures", False):
-        try:
-            from experiments.make_paper_figures import generate_paper_figures
-        except Exception as e:
-            print(f"[run_experiments] Could not import figure generator: {e}")
-        else:
-            # Best effort: infer the output root; default to 'outputs'
-            output_root = getattr(args, "output", None) or getattr(args, "out_dir", None) or "outputs"
-            # If a run name was provided, filter by it; otherwise draw everything in the output root.
-            run_selector = getattr(args, "run_name", None)
-            print(f"[run_experiments] Generating paper figures (root={output_root}, select={run_selector})")
-            try:
-                generate_paper_figures(output_root=output_root, select=run_selector)
-            except Exception as e:
-                print(f"[run_experiments] Figure generation failed: {e}")
-
     # Write manifest
     import json
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
 
+    # Optionally build the paper figures once all CSVs are in place
+    if getattr(args, "auto_figures", False):
+        try:
+            from .make_paper_figures import generate_paper_figures
+            base_out = os.path.dirname(out_dir)
+            run_name = os.path.basename(out_dir)
+            print(f"[run_experiments] Generating paper figures for run '{run_name}'")
+            generate_paper_figures(out_root=base_out, run_name=run_name, bins=args.bins)
+        except Exception as e:
+            print(f"[run_experiments] Paper figure generation failed: {e}")
     print(f"[done] Wrote outputs to {out_dir}")
     
 
