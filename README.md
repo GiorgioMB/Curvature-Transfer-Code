@@ -47,10 +47,16 @@ If a file is missing, it is simply skipped.
 
 
 ## Usage
-Install requirements and run a preset suite (options: paper, small, tiny):
+Install requirements and run a preset suite (options: paper, small, tiny).
+**Important**: PyTorch 2.1 wheels are compiled against NumPy 1.x; you must pin `numpy==1.26.4` to avoid ABI errors with NumPy 2.x.
 
 ```bash
-python -m pip install -U -r experiments/requirements.txt
+# install with the correct wheel indexes
+python -m pip install -U -r requirements.txt \
+  --index-url https://download.pytorch.org/whl/cpu \
+  -f https://data.pyg.org/whl/torch-2.1.0+cpu.html
+
+# then run a preset suite
 python experiments/run_experiments.py --preset paper
 ```
 
@@ -73,9 +79,6 @@ python experiments/run_experiments.py \
 Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
 
 ## Notes and Tests
-
-- We avoid NetworkX and PyG; generators are implemented locally to keep dependencies minimal.
-- Plots use Matplotlib with default styles (no seaborn, no custom colors).
 - The test suite verifies, per edge of a graph:
   - **Two-sided transfer inequalities** between Balanced Forman (BF) and Ollivier–Ricci (OR) curvature
   - **Lazy-to-non-lazy comparison** and the **lazy transport envelope** upper bound for $c_{\rm OR}$
@@ -86,7 +89,7 @@ Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
   (same degrees and triangle count but different coverage), showing the lazy transport envelope is larger when coverage is larger.
 How to run the tests:
 ```bash
-python -m pip install -U pytest numpy torch
+python -m pip install -U pytest
 pytest -q
 ```
 If `torch` is not installed, the entire suite will be skipped with a clear message.
