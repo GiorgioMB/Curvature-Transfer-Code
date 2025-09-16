@@ -6,8 +6,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from . import models
-from .util_curvature import compute_curvatures, write_edge_table, summarize_run
+import models
+from make_paper_figures import generate_paper_figures
+from util_curvature import compute_curvatures, write_edge_table, summarize_run
 
 
 def ensure_dir(path: str) -> None:
@@ -105,6 +106,7 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 7], [4, 6]]
         args.complete = args.complete or [[70]]
         args.include_real = True
+        args.skip_plots = True  # generate paper figures instead
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
@@ -214,7 +216,6 @@ def main():
     # Optionally build the paper figures once all CSVs are in place
     if getattr(args, "auto_figures", False):
         try:
-            from .make_paper_figures import generate_paper_figures
             base_out = os.path.dirname(out_dir)
             run_name = os.path.basename(out_dir)
             print(f"[run_experiments] Generating paper figures for run '{run_name}'")
