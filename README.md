@@ -1,4 +1,4 @@
-# Experiments: Distributional Predictions and Experimental Scope
+# Title to decide
 In this repo we implement the experiments described in the paper `NAME OF PAPER`. 
 The aim is to produce *histograms of edgewise curvature* and compare them against the analytic envelopes and transfer inequalities derived in the paper.
 
@@ -37,8 +37,8 @@ We then produce distributional artifacts:
 ### (c) Real networks often used in the curvature literature (TODO FOR NOW)
 Place edge list CSVs under `experiments/data/` to include these in a run:
 
-- Zachary's Karate Club (`karate.csv`, 34 nodes)
-- US air transportation (`us_air.csv`)
+- Karate Club (`karate.csv`, from Zachary 1977)
+- Jazz collaboration network (`jazz.csv`, from Glaiser--Danon 2003)
 - Western US power grid (`power_grid.csv` from Watts--Strogatz 1998)
 - Yeast transcription network (`yeast.csv` from Milo et al. 2002)
 
