@@ -39,7 +39,8 @@ Place edge list CSVs under `experiments/data/` to include these in a run:
 
 - Zachary's Karate Club (`karate.csv`, 34 nodes)
 - US air transportation (`us_air.csv`)
-- Western US power grid (`power_grid.csv` from Watts–Strogatz 1998)
+- Western US power grid (`power_grid.csv` from Watts--Strogatz 1998)
+- Yeast transcription network (`yeast.csv` from Milo et al. 2002)
 
 **Format:** CSV with two integer columns `u,v` (0-indexed) and no header.
 If a file is missing, it is simply skipped.
