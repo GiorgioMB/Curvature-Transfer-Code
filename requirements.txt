@@ -1,3 +1,16 @@
-numpy
-torch
-matplotlib
+# Core scientific stack
+numpy==1.26.4
+matplotlib>=3.9
+
+# PyTorch CPU-only 2.1 series (if you need CUDA, switch to the matching cuXXX builds)
+torch==2.1.2+cpu
+torchvision==0.16.2+cpu
+torchaudio==2.1.2+cpu
+
+# PyTorch Geometric (core + extensions for torch 2.1.2+cpu)
+torch_geometric==2.6.1
+pyg-lib==0.4.0+pt21cpu
+torch-scatter==2.1.2+pt21cpu
+torch-sparse==0.6.18+pt21cpu
+torch-cluster==1.6.3+pt21cpu
+torch-spline-conv==1.2.2+pt21cpu
