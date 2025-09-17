@@ -715,7 +715,7 @@ class CurvatureEngine:
     # ---------- Proposition: Lazy transport envelope (upper bound for c_OR) ----------
 
     def lazy_transport_envelope(self, idx: int) -> Dict[str, float]:
-        """Compute an explicit upper bound from Prop. 'Lazy Transport Envelope' (Eq. OR-master-corrected-sharp).
+        """Compute an explicit upper bound from Prop. 'Lazy Transport Envelope' (Eq. 3.7 -- OR-master-corrected-sharp).
 
         This uses the sharp per-edge Xi_ij and triangle(i,j) when available to form
         the tightest bound per that proposition. The slacks are chosen by the
@@ -774,36 +774,61 @@ class CurvatureEngine:
 
     # ---------- Theorem: BF -> OR Lower transfer modulus ----------
 
-    def varphi_BF_to_OR(self, zeta) -> np.ndarray:
-        """Edgewise lower bound on c_OR from c_BF >= zeta (Theorem BF->OR lower).
+    def varphi_BF_to_OR(self, zeta, sharp = True) -> np.ndarray:
+        """
+        Edgewise lower bound on c_OR from c_BF >= zeta (Theorem BF->OR lower).
+        Implements:
+            Z^{(i,j)}(zeta) = max{0, (zeta - S - C$) / T}
+            Z_max = Z / max{deg_i, deg_j},  Z_min = Z / min{deg_i, deg_j}
+            phi_0 = -[K - Z_max]_+ - [K - Z_min]_+ + Z_max
+            phi = (1 - alpha_*) phi_0 - |alpha_i - alpha_j|,  with alpha_* chosen by sign(phi_0)
 
-        Returns an array of shape (num_edges,)."""
+        Returns:
+            np.ndarray of shape (num_edges,)
+        """
         zetas = self._as_edgewise(zeta, "zeta")
         M = len(self.edges)
         out = np.zeros(M, dtype=float)
+
         for eidx in range(M):
             loc = self._local_for_edge(eidx)
-            S = self._S(loc.deg_i, loc.deg_j)
-            T = self._T(loc.deg_i, loc.deg_j)
-            K = self._K(loc.deg_i, loc.deg_j)
-            C4 = self._C4_edge(loc.Xi, loc.sho_max)
-            # Zeta forcing lower bound on triangles:
-            #Zscr = max(0.0, (zeta - S - C4) / T) if T > 0 else 0.0
-            #Zbar_max = Zscr / float(max(loc.deg_i, loc.deg_j)) if max(loc.deg_i, loc.deg_j) > 0 else 0.0
-            #Zbar_min = Zscr / float(min(loc.deg_i, loc.deg_j)) if min(loc.deg_i, loc.deg_j) > 0 else 0.0
-            tri_bar = loc.tri
-            Zbar_max = tri_bar / float(max(loc.deg_i, loc.deg_j)) if max(loc.deg_i, loc.deg_j) > 0 else 0.0
-            Zbar_min = tri_bar / float(min(loc.deg_i, loc.deg_j)) if min(loc.deg_i, loc.deg_j) > 0 else 0.0
-            # Jost-Liu lower bound g(i,j) with triangles replaced by Zscr
-            g = -max(0.0, K - Zbar_max) - max(0.0, K - Zbar_min) + Zbar_max
-            # Lazy modulus: choose alpha_* according to sign of the non-lazy curvature
-            cOR0 = self.c_OR0_edge(eidx)
-            ai = self._alpha(loc.deg_i); aj = self._alpha(loc.deg_j)
-            a_min, a_max = min(ai, aj), max(ai, aj)
+            di = float(loc.deg_i)
+            dj = float(loc.deg_j)
+            Xi = float(loc.Xi)
+            sho_max = float(loc.sho_max)
+            dmin = di if di <= dj else dj
+            dmax = dj if di <= dj else di
+
+            # Basic sanity: for a real edge, degrees should be >= 1
+            if dmin <= 0 or dmax <= 0:
+                out[eidx] = float("-inf")  # or raise
+                continue
+            S = 2.0 / di + 2.0 / dj - 2.0                         
+            T = 2.0 / dmax + 1.0 / dmin                            
+            K = self._K(di, dj)                                    
+            C4 = float(self._C4_edge(Xi, sho_max))
+            
+
+            Zscr = max(0.0, (float(zetas[eidx]) - S - C4) / T)
+
+            Zbar_max = Zscr / dmax
+            Zbar_min = Zscr / dmin
+            phi0 = -max(0.0, K - Zbar_max) - max(0.0, K - Zbar_min) + Zbar_max
+
+            # Lazy modulus selection:
+            ai = self._alpha(di)
+            aj = self._alpha(dj)
+            a_min = ai if ai <= aj else aj
+            a_max = aj if ai <= aj else ai
             Delta = abs(ai - aj)
-            a_star = a_min if cOR0 >= 0.0 else a_max
-            out[eidx] = (1.0 - a_star) * g - Delta
+            if sharp:
+                a_star = a_min if phi0 >= 0.0 else a_max
+            else:
+                a_star = a_min  # non-sharp version
+            out[eidx] = (1.0 - a_star) * phi0 - Delta
+
         return out
+
 
     # ---------- Theorem: BF -> OR Upper transfer modulus (psi via Psi_alpha) ----------
 
@@ -910,14 +935,12 @@ class CurvatureEngine:
 
     def varphi_OR_to_BF(self, theta, robust: bool = True) -> np.ndarray:
         """
-        Edgewise *lower* bound on c_BF from c_OR >= theta (Theorem OR->BF lower).
+        Edgewise lower bound on c_BF from c_OR >= theta (Theorem OR->BF lower).
         Accepts either:
             - scalar theta: same threshold on all edges, or
             - array-like theta: per-edge thresholds; if aligned to directed edges,
               it will be aggregated to undirected order via `agg='mean'`.
-        If `robust=False` (default): paper-literal inversion using Theta_alpha.
-        If `robust=True`: apply premise checks identical to the previous
-            `varphi_OR_to_BF_per_edge` (leaf guard + envelope check, with fallback).
+        If `robust=True`(default): apply leaf guard check and envelope check, with fallback.
         """
         arr = np.asarray(theta, dtype=float)
         if arr.ndim == 0:
@@ -939,7 +962,6 @@ class CurvatureEngine:
                 t_min = min(t_min, min(i_deg, j_deg) - 1.0)
                 out.append(S + T * t_min)
             else:
-                # Robust variant: identical to previous per-edge function
                 tri = float(loc.tri)
                 if min(i_deg, j_deg) <= 1:
                     out.append(0.0); continue
@@ -1038,10 +1060,8 @@ class CurvatureEngine:
         if c_OR is None:
             base = self.compute_all()
             c_OR = base["c_OR"]
-            c_OR0 = self._get_c_OR0_all() if reuse_cOR0 else None
         else:
             c_OR = self._values_to_undirected(c_OR, edge_index=self._original_edge_index, agg="mean")
-            c_OR0 = self._get_c_OR0_all() if (use_sign_sharpening and reuse_cOR0) else None
         lower = self.varphi_OR_to_BF(c_OR)
         upper = self.psi_OR_to_BF(c_OR, use_sign_sharpening=use_sign_sharpening)
         return {"c_OR": c_OR, "c_BF_lower_from_c_OR": lower, "c_BF_upper_from_c_OR": upper}
