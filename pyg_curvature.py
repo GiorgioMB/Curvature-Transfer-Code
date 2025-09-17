@@ -94,11 +94,12 @@ def _bfs_dist_limited(source: int, targets: Set[int], neighbors: List[Set[int]],
     Distances on the supports we use are always <= 3 (support of W1 is at most 3), but
     this routine is correct in general for the specified max_depth.
     """
-    if source in targets:
-        return {source: 0}
     if max_depth <= 0:
         return {}
-    found: Dict[int, int] = {}
+    found = {}
+    # If source is itself a target, record it but DO NOT early-return.
+    if source in targets:
+        found[source] = 0
     visited = {source}
     frontier = [source]
     dist = 0
@@ -907,7 +908,7 @@ class CurvatureEngine:
 
     # ---------- Theorem: OR -> BF lower transfer modulus ----------
 
-    def varphi_OR_to_BF(self, theta, robust: bool = False) -> np.ndarray:
+    def varphi_OR_to_BF(self, theta, robust: bool = True) -> np.ndarray:
         """
         Edgewise *lower* bound on c_BF from c_OR >= theta (Theorem OR->BF lower).
         Accepts either:
