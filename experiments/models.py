@@ -289,7 +289,7 @@ def make_hyperbolic_random_graph(
         return n, []
 
     if n_jobs is None:
-        n_jobs = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
+        n_jobs = int(os.environ.get(os.cpu_count() or 1))
 
     # Choose block_size to produce plenty of tiles (~O(n_jobs)) but not too tiny
     if block_size is None:
