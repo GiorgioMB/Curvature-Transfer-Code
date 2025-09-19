@@ -1,5 +1,6 @@
 # Core scientific stack
 numpy==1.26.4
+numexpr==2.12.1
 matplotlib>=3.9
 
 # PyTorch CPU-only 2.1 series (if you need CUDA, switch to the matching cuXXX builds)
