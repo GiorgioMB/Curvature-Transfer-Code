@@ -53,7 +53,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     )
     # HRG parallelism controls
     parser.add_argument("--jobs", type=int, default=None,
-                        help="Worker processes for HRG; defaults to SLURM_CPUS_PER_TASK or os.cpu_count().")
+                        help="Worker processes for HRG; defaults to os.cpu_count().")
     parser.add_argument("--block-size", type=int, default=None,
                         help="Tile size for HRG; smaller -> more tasks. If omitted, chosen adaptively.")
 
@@ -100,12 +100,11 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[60]]
     elif args.preset == "paper":
         # (a) Random models
+        args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
         args.er = args.er or [[800, 0.015], [800, 0.03]]
         args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2]]
         args.ba = args.ba or [[800, 2], [800, 3], [800, 5]]
         args.rg = args.rg or [[800, 0.08], [800, 0.10]]
-        # Hyperbolic random graphs: sharp (T=0) and soft (T=0.5) thresholds
-        args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
         # (b) Canonical families
         args.cycle = args.cycle or [[240]]
         args.grid = args.grid or [[28, 28]]
