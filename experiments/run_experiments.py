@@ -51,6 +51,12 @@ def add_family_args(parser: argparse.ArgumentParser):
         metavar=("n","R","alpha","T"),
         help="Hyperbolic random graph (native model): n, disk radius R, curvature -alpha^2, temperature T"
     )
+    # HRG parallelism controls
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="Worker processes for HRG; defaults to SLURM_CPUS_PER_TASK or os.cpu_count().")
+    parser.add_argument("--block-size", type=int, default=None,
+                        help="Tile size for HRG; smaller -> more tasks. If omitted, chosen adaptively.")
+
     # Canonical graphs
     parser.add_argument("--cycle", nargs=1, type=int, action="append", metavar=("n",), help="Cycle C_n")
     parser.add_argument("--grid", nargs=2, type=int, action="append", metavar=("m","n"), help="Grid m x n")
@@ -162,7 +168,11 @@ def main():
         for n, R, alpha, T in args.hrg:
             runs.append((
                 "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T)),
-                *models.make_hyperbolic_random_graph(int(n), float(R), alpha=float(alpha), T=float(T), seed=seed)
+                *models.make_hyperbolic_random_graph(
+                    int(n), float(R),
+                    alpha=float(alpha), T=float(T), seed=seed,
+                    n_jobs=args.jobs, block_size=args.block_size
+                )
             ))
     # Canonical
     if args.cycle:
