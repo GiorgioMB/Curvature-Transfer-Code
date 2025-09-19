@@ -1,5 +1,6 @@
 import random
 from typing import List, Tuple
+import os
 import math
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -247,7 +248,7 @@ def deprecated_make_hyperbolic_random_graph(n: int, R: float, alpha: float = 1.0
 
 def make_hyperbolic_random_graph(
     n: int, R: float, alpha: float = 1.0, T: float = 0.0, seed: int = 0,
-    n_jobs: int | None = None, block_size: int = 1024
+    n_jobs: int | None = None, block_size: int | None = None
 ):
     """
     Parallel generator for the native HRG (Krioukov et al.):
@@ -258,7 +259,13 @@ def make_hyperbolic_random_graph(
     """
     if n <= 1:
         return n, []
-
+    if n_jobs is None:
+        n_jobs = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 1))
+    # choose block_size to produce plenty of tiles (~O(n_jobs)) but not too tiny
+    if block_size is None:
+        target_tasks = max(8 * n_jobs, 32)               # aim for >= ~8 tasks/core
+        per_axis = int(math.ceil(math.sqrt(2 * target_tasks)))
+        block_size = max(128, int(math.ceil(n / per_axis)))
     # --- draw positions (same law as your function, but compute cosh(alpha r), sinh(alpha r) explicitly)
     rng = np.random.default_rng(seed)
     thetas = rng.random(n) * (2.0 * np.pi)
