@@ -282,18 +282,61 @@ def make_hyperbolic_random_graph(
     Parallel generator for the native HRG (Krioukov et al.):
       - Positions: theta ~ Unif[0,2pi), radial via cosh(alpha r) in [1, cosh(alpha R)]
       - Connection: p(d) = 1 / (1 + exp((d-R)/(2T)))  (T=0 => hard threshold d<=R)
-      - n_jobs: Number of worker processes. If None, uses all available CPU cores.
-    Returns (n, sorted list of edges (u,v) with u < v).
+      
+    Parameters
+    ----------
+    n : int
+        Number of nodes
+    R : float
+        Disk radius parameter
+    alpha : float, default=1.0
+        Curvature parameter (curvature = -alpha^2)
+    T : float, default=0.0
+        Temperature parameter (T=0 gives hard threshold)
+    seed : int, default=0
+        Random seed
+    n_jobs : int or None, default=None
+        Number of parallel jobs. Follows scikit-learn conventions:
+        - None: use all available CPU cores
+        - 1: sequential execution
+        - -1: use all available CPU cores
+        - > 1: use exactly n_jobs processes
+        - < -1: use (n_cpus + 1 + n_jobs) processes
+    block_size : int or None, default=None
+        Tile size for parallelization. If None, chosen adaptively.
+        
+    Returns
+    -------
+    tuple of (int, list)
+        (n, sorted list of edges (u,v) with u < v)
     """
     if n <= 1:
         return n, []
 
+    # Validate and resolve n_jobs following scikit-learn conventions
+    n_cpus = os.cpu_count() or 1
+    
     if n_jobs is None:
-        n_jobs = int(os.environ.get(os.cpu_count() or 1))
+        # Use all available CPUs
+        resolved_n_jobs = n_cpus
+    elif n_jobs == 1:
+        # Sequential execution - we'll handle this by using a single process
+        resolved_n_jobs = 1
+    elif n_jobs == -1:
+        # Use all available CPUs
+        resolved_n_jobs = n_cpus
+    elif n_jobs > 1:
+        # Use exactly n_jobs processes
+        resolved_n_jobs = min(n_jobs, n_cpus)  # Don't exceed available CPUs
+    elif n_jobs < -1:
+        # Use (n_cpus + 1 + n_jobs) processes
+        resolved_n_jobs = max(1, n_cpus + 1 + n_jobs)
+    else:  # n_jobs == 0
+        raise ValueError("n_jobs cannot be 0")
 
-    # Choose block_size to produce plenty of tiles (~O(n_jobs)) but not too tiny
+    # Choose block_size to produce plenty of tiles (~O(resolved_n_jobs)) but not too tiny
     if block_size is None:
-        target_tasks = max(8 * n_jobs, 32)
+        target_tasks = max(8 * resolved_n_jobs, 32)
         per_axis = int(math.ceil(math.sqrt(2 * target_tasks)))
         block_size = max(128, int(math.ceil(n / per_axis)))
 
@@ -345,15 +388,30 @@ def make_hyperbolic_random_graph(
                 tiles.append((i0, i1, j0, j1, False))
 
         edges_parts = []
-        with ProcessPoolExecutor(
-            max_workers=n_jobs, initializer=_init_hrg_shm, initargs=(meta,)
-        ) as ex:
-            futs = [
-                ex.submit(_tile_worker, i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed)
-                for (i0, i1, j0, j1, is_diag) in tiles
-            ]
-            for f in as_completed(futs):
-                edges_parts.append(f.result())
+        
+        # Handle sequential execution case
+        if resolved_n_jobs == 1:
+            # Sequential execution: compute tiles directly without multiprocessing
+            # Initialize global state for sequential execution
+            _global["cah"] = cah
+            _global["sah"] = sah
+            _global["cos_t"] = cos_t
+            _global["sin_t"] = sin_t
+            
+            for (i0, i1, j0, j1, is_diag) in tiles:
+                edges_part = _tile_worker(i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed)
+                edges_parts.append(edges_part)
+        else:
+            # Parallel execution
+            with ProcessPoolExecutor(
+                max_workers=resolved_n_jobs, initializer=_init_hrg_shm, initargs=(meta,)
+            ) as ex:
+                futs = [
+                    ex.submit(_tile_worker, i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed)
+                    for (i0, i1, j0, j1, is_diag) in tiles
+                ]
+                for f in as_completed(futs):
+                    edges_parts.append(f.result())
 
         # --- Merge and sort edges
         if edges_parts:
@@ -414,7 +472,8 @@ if __name__ == "__main__":
             ("Binary Tree (h=3)", lambda: dary_tree(2, 3)),
             ("Complete", lambda: complete_graph(5)),  # smaller for complete graph
             ("Hyperbolic (deprecated)", lambda: deprecated_make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed)),
-            ("Hyperbolic (parallel)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=None)),
+            ("Hyperbolic (parallel)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=1)),  # Use sequential 
+            ("Hyperbolic (parallel multi)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=-1)),  # Use all available CPUs
         ]
         for name, gen_func in generators:
             try:
