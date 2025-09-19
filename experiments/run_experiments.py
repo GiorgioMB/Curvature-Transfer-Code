@@ -51,9 +51,11 @@ def add_family_args(parser: argparse.ArgumentParser):
         metavar=("n","R","alpha","T"),
         help="Hyperbolic random graph (native model): n, disk radius R, curvature -alpha^2, temperature T"
     )
-    # HRG parallelism controls
+    # Parallelism controls
     parser.add_argument("--jobs", type=int, default=None,
-                        help="Worker processes for HRG; defaults to os.cpu_count().")
+                        help="Number of parallel jobs for both HRG generation (if called) and curvature computation. "
+                             "Follows scikit-learn conventions: None (auto), 1 (sequential), -1 (all CPUs), "
+                             ">1 (exact number), <-1 (all but |jobs|-1 CPUs)")
     parser.add_argument("--block-size", type=int, default=None,
                         help="Tile size for HRG; smaller -> more tasks. If omitted, chosen adaptively.")
 
@@ -201,7 +203,7 @@ def main():
 
     for tag, n, edges in runs:
         print(f"[run] {tag}: n={n}, m={len(edges)}")
-        curv = compute_curvatures(n, edges)
+        curv = compute_curvatures(n, edges, n_jobs=args.jobs)
         # Save edge-level table
         base_name = tag.replace(".", "_")
         if not args.skip_csv:
