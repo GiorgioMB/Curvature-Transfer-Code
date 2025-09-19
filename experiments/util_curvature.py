@@ -44,9 +44,31 @@ def make_edge_index(num_nodes: int, edges_undirected: List[Tuple[int,int]]) -> t
     return torch.tensor([rows, cols], dtype=torch.long)
 
 
-def compute_curvatures(num_nodes: int, edges_undirected: List[Tuple[int,int]]) -> CurvatureResult:
+def compute_curvatures(num_nodes: int, edges_undirected: List[Tuple[int,int]], n_jobs=None) -> CurvatureResult:
+    """
+    Compute curvatures and transfer bounds for a graph.
+    
+    Parameters
+    ----------
+    num_nodes : int
+        Number of nodes in the graph
+    edges_undirected : List[Tuple[int,int]]
+        List of undirected edges as (u,v) pairs
+    n_jobs : int or None, optional
+        Number of parallel jobs. Follows scikit-learn conventions:
+        - None (default): auto mode - uses parallelism for graphs with >=512 edges
+        - 1: sequential execution
+        - -1: use all available CPUs
+        - > 1: use exactly n_jobs CPUs
+        - < -1: use (n_cpus + 1 + n_jobs) CPUs
+        
+    Returns
+    -------
+    CurvatureResult
+        Object containing base curvatures, transfer bounds, and envelopes
+    """
     edge_index = make_edge_index(num_nodes, edges_undirected)
-    eng = pc.CurvatureEngine(Data(num_nodes, edge_index))
+    eng = pc.CurvatureEngine(Data(num_nodes, edge_index), n_jobs=n_jobs)
 
     base = eng.compute_all()
 
@@ -126,3 +148,42 @@ def summarize_run(curv: CurvatureResult) -> Dict[str, Dict[str, float]]:
         "OR_to_BF_width_mean": float(np.mean(curv.bf_from_or["c_BF_upper_from_c_OR"] - curv.bf_from_or["c_BF_lower_from_c_OR"])),
     }
     return out
+
+
+def analyze_graph(num_nodes: int, edges_undirected: List[Tuple[int,int]], 
+                  output_csv: str = None, output_summary: str = None, 
+                  n_jobs=None) -> CurvatureResult:
+    """
+    Complete graph curvature analysis with optional output files.
+    
+    Parameters
+    ----------
+    num_nodes : int
+        Number of nodes in the graph
+    edges_undirected : List[Tuple[int,int]]
+        List of undirected edges as (u,v) pairs
+    output_csv : str, optional
+        Path to write detailed per-edge results CSV
+    output_summary : str, optional
+        Path to write summary statistics JSON
+    n_jobs : int or None, optional
+        Number of parallel jobs
+        
+    Returns
+    -------
+    CurvatureResult
+        Object containing all computed curvature data
+    """
+    # Compute curvatures
+    curv = compute_curvatures(num_nodes, edges_undirected, n_jobs=n_jobs)
+    
+    # Write outputs if requested
+    if output_csv:
+        write_edge_table(output_csv, curv)
+        
+    if output_summary:
+        summary = summarize_run(curv)
+        with open(output_summary, 'w') as f:
+            json.dump(summary, f, indent=2)
+    
+    return curv
