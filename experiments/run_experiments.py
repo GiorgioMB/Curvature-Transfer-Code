@@ -53,7 +53,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     )
     # Parallelism controls
     parser.add_argument("--jobs", type=int, default=None,
-                        help="Number of parallel jobs for both HRG generation (if called) and curvature computation. "
+                        help="Number of parallel jobs for both HRG generation and curvature computation. "
                              "Follows scikit-learn conventions: None (auto), 1 (sequential), -1 (all CPUs), "
                              ">1 (exact number), <-1 (all but |jobs|-1 CPUs)")
     parser.add_argument("--block-size", type=int, default=None,
@@ -102,7 +102,7 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[60]]
     elif args.preset == "paper":
         # (a) Random models
-        args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
+        args.hrg = args.hrg or [[100, 5.0, 1.0, 0.0], [100, 5.0, 1.0, 0.5]]
         args.er = args.er or [[800, 0.015], [800, 0.03]]
         args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2]]
         args.ba = args.ba or [[800, 2], [800, 3], [800, 5]]
