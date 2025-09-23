@@ -1,3 +1,27 @@
+"""
+Experiment runner for graph curvature distributions and envelope coverage
+
+This script orchestrates the generation of random and canonical graphs,
+computes edge curvatures and transfer bounds, and saves detailed outputs
+(CSV, JSON, plots) for downstream analysis or paper figures.
+
+Features
+--------
+- Supports a wide range of graph models (Erdos–Renyi, Watts–Strogatz, Barabasi–Albert,
+  random geometric, hyperbolic, cycle, grid, tree, complete, and real networks).
+- Computes both Balanced Forman and lazy Ollivier–Ricci curvatures, plus tight
+  per-edge transfer bounds and envelopes.
+- Saves per-edge tables, summary statistics, and histograms for each run.
+- Can generate all paper figures in one go (see --auto-figures).
+
+Usage (command line)
+--------------------
+$ python run_experiments.py --preset tiny
+$ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
+$ python run_experiments.py --hrg 1000 7.0 1.0 0.0 --jobs -1 --skip-plots
+
+See argument help for all options.
+"""
 import os
 import argparse
 from typing import Dict, Tuple, List
@@ -12,10 +36,12 @@ from util_curvature import compute_curvatures, write_edge_table, summarize_run
 
 
 def ensure_dir(path: str) -> None:
+    """Create directory if it does not exist (no error if already present)."""
     os.makedirs(path, exist_ok=True)
 
 
 def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
+    """Save a histogram of arr to a PNG file with a title."""
     plt.figure()
     plt.hist(arr, bins=bins)
     plt.title(title)
@@ -27,6 +53,7 @@ def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
 
 
 def add_preset_args(parser: argparse.ArgumentParser):
+    """Add --preset argument for quick experiment suites."""
     parser.add_argument(
         "--preset",
         type=str,
@@ -37,6 +64,7 @@ def add_preset_args(parser: argparse.ArgumentParser):
     
 
 def add_family_args(parser: argparse.ArgumentParser):
+    """Add arguments for all supported graph families and experiment controls."""
     # Random graphs
     parser.add_argument("--er", nargs=2, type=float, action="append", metavar=("n","p"),
                         help="Erdos-Renyi G(n,p)")
@@ -80,6 +108,7 @@ def add_family_args(parser: argparse.ArgumentParser):
 
 
 def handle_presets(args, seed: int):
+    """Fill in default arguments for --preset suites if not already set."""
     if args.preset is None:
         return
     if args.preset == "tiny":
@@ -117,6 +146,11 @@ def handle_presets(args, seed: int):
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
+    """Load real network edge lists from CSVs in the given directory.
+
+    Each file should have two columns (u, v) per row, with optional # comments.
+    Returns a list of (name, n, edges) where n is the number of nodes.
+    """
     out = []
     import csv
     for name in ["karate", "jazz", "power_grid", "yeast"]:
@@ -141,6 +175,7 @@ def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]
 
 
 def main():
+    """Main experiment loop: parse args, generate graphs, compute curvatures, save outputs."""
     parser = argparse.ArgumentParser(description="Run curvature distribution experiments.")
     add_preset_args(parser)
     add_family_args(parser)
