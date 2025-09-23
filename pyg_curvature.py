@@ -220,7 +220,7 @@ def _pairwise_distances_between_sets(
     Pairwise shortest-path distances between node lists A and B. We compute 
     distances by running a limited BFS (depth 3) from each node in A and reading 
     off the distance to nodes in B. Entries we do not discover are filled with 
-    `default_far` (should not affect optimal transport since real distances on 
+    default_far (should not affect optimal transport since real distances on 
     these supports are at most 3).
 
     Returns
