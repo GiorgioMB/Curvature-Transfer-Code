@@ -7,9 +7,9 @@ computes edge curvatures and transfer bounds, and saves detailed outputs
 
 Features
 --------
-- Supports a wide range of graph models (Erdos–Renyi, Watts–Strogatz, Barabasi–Albert,
+- Supports a wide range of graph models (Erdos--Renyi, Watts--Strogatz, Barabasi--Albert,
   random geometric, hyperbolic, cycle, grid, tree, complete, and real networks).
-- Computes both Balanced Forman and lazy Ollivier–Ricci curvatures, plus tight
+- Computes both Balanced Forman and lazy Ollivier--Ricci curvatures, plus tight
   per-edge transfer bounds and envelopes.
 - Saves per-edge tables, summary statistics, and histograms for each run.
 - Can generate all paper figures in one go (see --auto-figures).
