@@ -102,7 +102,7 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[60]]
     elif args.preset == "paper":
         # (a) Random models
-        args.hrg = args.hrg or [[100, 5.0, 1.0, 0.0], [100, 5.0, 1.0, 0.5]]
+        args.hrg = args.hrg or [[300, 5.0, 1.0, 0.0], [350, 5.0, 1.0, 0.5]]
         args.er = args.er or [[800, 0.015], [800, 0.03]]
         args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2]]
         args.ba = args.ba or [[800, 2], [800, 3], [800, 5]]
