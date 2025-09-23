@@ -1,7 +1,7 @@
 """
 Utility helpers for computing and analyzing graph curvatures.
 
-This module wraps the CurvatureEngine from `pyg_curvature.py` and provides:
+This module wraps the CurvatureEngine from pyg_curvature.py and provides:
 - A light-weight Data container compatible with CurvatureEngine
 - Convenience functions to compute curvatures and transfer bounds
 - CSV/JSON export helpers
