@@ -1,3 +1,47 @@
+"""
+Paper-ready figure generator for curvature experiments.
+
+This module scans experiment output folders created by experiments/run_experiments.py
+and saves a small set of high-resolution, publication-ready figures into a dedicated subfolder
+figures_paper/ inside each run directory.
+
+What this script expects to find
+- A run directory containing:
+  * manifest.json with a list of runs under the key "runs". Each run item
+    should include at least a "tag" or "name" that identifies a graph/model
+    instance (e.g., "er_n2000_p0.01"). Optionally, a pretty display name can
+    be provided under "title" or "pretty".
+  * One edge-level CSV per tag, typically named {tag}_edges.csv (dots are
+    normalized to underscores). These CSVs are produced by run_experiments.py
+    and contain columns describing per-edge curvatures, bounds, and metadata.
+
+Figures produced per tag (when the required columns exist)
+- A histogram of observed Ollivier--Ricci curvature (c_OR) with optional
+  overlays for transfers/bounds and envelope quantities.
+- A histogram of observed Balanced Forman curvature (c_BF) with optional
+  overlays for OR->BF transfer bounds.
+- A scatter plot of c_BF vs c_OR including an observed quantile ribbon and
+  the median of the BF->OR lower-transfer across binned c_BF.
+
+Key columns used from the CSV (if present)
+- c_OR, c_BF, c_OR0: observed curvatures (edgewise).
+- cOR_lower_from_cBF, cOR_upper_from_cBF: BF->OR transfer bounds (edgewise).
+- cBF_lower_from_cOR, cBF_upper_from_cOR: OR->BF transfer bounds (edgewise).
+- env_upper: transport envelope upper value (edgewise).
+- Theta_at_t: Theta evaluated at the implied transport weight (edgewise).
+The reader is robust to variations in column letter case.
+
+Usage (CLI)
+- Generate figures for all run directories under a root folder:
+    python experiments/make_paper_figures.py --out-root experiments/out
+- Generate figures only for a specific run folder name:
+    python experiments/make_paper_figures.py --out-root experiments/out --run-name my_run
+
+Rendering details
+- The script selects the non-interactive Matplotlib backend (Agg) and applies a
+  consistent set of rcParams for paper-friendly styling. All figures are saved
+  as PNG files inside figures_paper/ under each run directory.
+"""
 
 import argparse
 import json
@@ -30,7 +74,7 @@ _PAPER_RC = {
     "grid.linestyle": ":",
     "grid.alpha": 0.28,
 }
-# Neutral palette (no seaborn)
+# Neutral palette
 COL_OBS   = "#4C78A8"
 COL_LOWER = "#54A24B"
 COL_UPPER = "#E45756"
@@ -39,6 +83,12 @@ COL_THETA = "#B279A2"
 COL_QRIB  = "#333333"  # almost black
 
 def _apply_style():
+    """
+    Apply a consistent, paper-friendly Matplotlib style via rcParams.
+
+    This sets DPI, font sizes, spines visibility, and a light grid. It should be
+    called before creating any figures to ensure consistent styling.
+    """
     for k, v in _PAPER_RC.items():
         matplotlib.rcParams[k] = v
 
@@ -65,15 +115,47 @@ EXPECTED_COLS = [
 # I/O helpers
 # ==============================
 
-def _load_manifest(run_root: str) -> Dict:
+def _load_manifest(
+        run_root: str
+        ) -> Dict:
+    """
+    Load and parse the manifest.json that describes available runs.
+
+    Parameters
+    - run_root: Path to a run directory containing manifest.json.
+
+    Returns
+    - A Python dict parsed from the JSON file.
+
+    Raises
+    - FileNotFoundError if the manifest file does not exist.
+    """
     man_path = os.path.join(run_root, "manifest.json")
     if not os.path.exists(man_path):
         raise FileNotFoundError(f"No manifest.json in {run_root}")
     with open(man_path, "r") as f:
         return json.load(f)
 
-def _edge_csv_for_tag(run_root: str, tag: str) -> Optional[str]:
-    """run_experiments writes {base_name}_edges.csv in the run folder."""
+def _edge_csv_for_tag(
+        run_root: str, 
+        tag: str
+        ) -> Optional[str]:
+    """
+    Return the path to the edge CSV for a given run tag, if present.
+
+    Files are normally named {tag}_edges.csv where periods in tag are
+    replaced with underscores. As a fallback, the function returns the first
+    file in the directory that starts with the normalized base and ends with
+    edges.csv.
+
+    Parameters
+    - run_root: Run directory that should contain CSVs.
+    - tag: Identifier string for a graph/model instance.
+
+    Returns
+    - The absolute path to the CSV file if found, else None.
+    """
+    # run_experiments writes {base_name}_edges.csv in the run folder.
     base = tag.replace('.', '_')
     cand = os.path.join(run_root, f"{base}_edges.csv")
     if os.path.exists(cand):
@@ -82,7 +164,21 @@ def _edge_csv_for_tag(run_root: str, tag: str) -> Optional[str]:
     gl = glob.glob(os.path.join(run_root, f"{base}*edges.csv"))
     return gl[0] if gl else None
 
-def _read_edges(path_csv: str) -> pd.DataFrame:
+def _read_edges(
+        path_csv: str
+        ) -> pd.DataFrame:
+    """
+    Read a per-edge CSV and normalize column names when possible.
+
+    The reader is tolerant to letter-casing differences by attempting to map
+    lower-cased versions of known column names back to the expected names.
+
+    Parameters
+    - path_csv: Path to the edge-level CSV file.
+
+    Returns
+    - A pandas DataFrame with original or normalized column names.
+    """
     df = pd.read_csv(path_csv)
     # Be robust to lower-cased headers
     missing = [c for c in EXPECTED_COLS if c not in df.columns]
@@ -100,7 +196,22 @@ def _read_edges(path_csv: str) -> pd.DataFrame:
 # Pretty naming for tags (for titles and file names)
 # ==============================
 
-def _pretty_from_tag(tag: str) -> str:
+def _pretty_from_tag(
+        tag: str
+        ) -> str:
+    """
+    Convert a run tag (e.g., "er_n2000_p0.01") to a human-friendly title.
+
+    Known patterns (Erdos--Renyi, Watts--Strogatz, Barabasi--Albert, Random
+    Geometric, Hyperbolic Random Graph, and canonical families) are translated
+    into descriptive strings. If no pattern matches, the raw tag is returned.
+
+    Parameters
+    - tag: The identifier string recorded in the manifest for a run.
+
+    Returns
+    - A display string suitable for figure titles and filenames.
+    """
     import re
     t = tag
     # ER: er_n{n}_p{p}
@@ -164,7 +275,18 @@ def _pretty_from_tag(tag: str) -> str:
     # Fallback: return the raw tag
     return t
 
-def _slugify(s: str) -> str:
+def _slugify(
+        s: str
+        ) -> str:
+    """
+    Make an ASCII-safe slug suitable for file names from an arbitrary string.
+
+    Parameters
+    - s: Input string that may contain spaces, punctuation, or non-ASCII chars.
+
+    Returns
+    - A lowercase-ish, underscore-separated slug with ASCII-only characters.
+    """
     import re, unicodedata
     s = unicodedata.normalize("NFKD", s)
     s = s.encode("ascii", "ignore").decode("ascii")
@@ -176,16 +298,34 @@ def _slugify(s: str) -> str:
 # Plot primitives
 # ==============================
 
-def _hist_with_bands(ax, obs: np.ndarray,
-                     lower: Optional[np.ndarray] = None,
-                     upper: Optional[np.ndarray] = None,
-                     env: Optional[np.ndarray] = None,
-                     theta: Optional[np.ndarray] = None,
-                     lower_label: Optional[str] = None,
-                     upper_label: Optional[str] = None,
-                     bins: int = 60,
-                     title: str = "",
-                     xlabel: str = ""):
+def _hist_with_bands(
+        ax: plt.Axes, 
+        obs: np.ndarray,
+        lower: Optional[np.ndarray] = None,
+        upper: Optional[np.ndarray] = None,
+        env: Optional[np.ndarray] = None,
+        theta: Optional[np.ndarray] = None,
+        lower_label: Optional[str] = None,
+        upper_label: Optional[str] = None,
+        bins: int = 60,
+        title: str = "", 
+        xlabel: str = ""
+        ) -> None:
+    """
+    Plot a histogram of observed values with optional overlay distributions.
+
+    Parameters
+    - ax: A Matplotlib Axes to draw on.
+    - obs: Observed values (e.g., edgewise c_OR or c_BF).
+    - lower, upper: Optional arrays for lower/upper transfer distributions
+      (e.g., BF->OR or OR->BF bounds per edge). Each is plotted as a step outline.
+    - env: Optional transport envelope values (edgewise) drawn as a step outline.
+    - theta: Optional Theta-at-t values (edgewise) drawn as a step outline.
+    - lower_label, upper_label: Legend labels for the overlay distributions.
+    - bins: Number of histogram bins.
+    - title: Axes title.
+    - xlabel: X-axis label.
+    """
     # Observed distribution
     ax.hist(obs, bins=bins, density=True, alpha=0.55, color=COL_OBS, label="observed")
     # Lower/upper transfer distributions (edgewise)
@@ -208,8 +348,30 @@ def _hist_with_bands(ax, obs: np.ndarray,
     ax.grid(True)
     ax.legend(frameon=False, ncol=2, handlelength=2.2)
 
-def _binned_quantiles(x: np.ndarray, y: np.ndarray, nbins: int = 28,
-                      qs=(0.1, 0.5, 0.9)) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _binned_quantiles(
+        x: np.ndarray, 
+        y: np.ndarray, 
+        nbins: int = 28,
+        qs=(0.1, 0.5, 0.9)
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute per-bin quantiles of y after binning by x.
+
+    This function masks non-finite values, bins x into nbins equal-width
+    bins (or a single tiny bin in degenerate cases), and computes quantiles of
+    y in each bin. If no data remain after masking, it returns four empty
+    arrays to simplify downstream handling.
+
+    Parameters
+    - x: Values to bin on (e.g., c_BF).
+    - y: Values whose quantiles are computed per bin (e.g., c_OR).
+    - nbins: Target number of bins.
+    - qs: Quantiles to compute per bin.
+
+    Returns
+    - (centers, qL, qM, qH): Bin centers and the requested lower/median/upper
+      quantiles arrays (NaN for bins with no data).
+    """
     mask = np.isfinite(x) & np.isfinite(y)
     x, y = x[mask], y[mask]
     if len(x) == 0:
@@ -238,10 +400,26 @@ def _binned_quantiles(x: np.ndarray, y: np.ndarray, nbins: int = 28,
     return centers, qL, qM, qH
 
 
-def _scatter_ribbon(ax,
-                    bf: np.ndarray, orv: np.ndarray,
+def _scatter_ribbon(ax: plt.Axes,
+                    bf: np.ndarray, 
+                    orv: np.ndarray,
                     lower_from_bf: Optional[np.ndarray] = None,
-                    nbins: int = 28):
+                    nbins: int = 28
+                    ) -> None:
+    """
+    Scatter plot of bf vs or with an observed quantile ribbon.
+
+    The function optionally overlays the median of the predicted lower
+    transfer (BF->OR) after binning by bf. If the dataset is very large, a
+    fixed-size random subsample is used for the scatter for clarity.
+
+    Parameters
+    - ax: A Matplotlib Axes to draw on.
+    - bf: Edgewise Balanced Forman curvature values.
+    - orv: Edgewise Ollivier--Ricci curvature values.
+    - lower_from_bf: Optional edgewise BF->OR lower transfer predictions.
+    - nbins: Number of bins to use for computing the quantile ribbon.
+    """
     # Subsample if large for visual clarity
     n = len(bf)
     if n > 25000:
@@ -273,7 +451,31 @@ def _scatter_ribbon(ax,
 # Figure orchestration per run
 # ==============================
 
-def _make_run_figures(run_root: str, tag: str, pretty: Optional[str], bins: int = 60, keep_existing: bool = False):
+def _make_run_figures(
+        run_root: str, 
+        tag: str, 
+        pretty: Optional[str], 
+        bins: int = 60, 
+        keep_existing: bool = False
+        ) -> None:
+    """
+    Generate and save figures for a single run tag within run_root.
+
+    This loads the associated edge CSV, extracts the columns required for each
+    figure, and writes up to three PNG files in run_root/figures_paper/:
+    - fig_cOR_hist__{tag}.png
+    - fig_cBF_hist__{tag}.png
+    - fig_scatter_cBF_cOR__{tag}.png
+
+    Parameters
+    - run_root: Path to a run directory containing the manifest and CSVs.
+    - tag: The run identifier used to locate the edge CSV.
+    - pretty: Optional pre-specified display name for titles; falls back to a
+      derived pretty name from the tag.
+    - bins: Number of histogram bins.
+    - keep_existing: Currently used by the caller to control directory setup;
+      the function itself always writes or overwrites files by name.
+    """
     csv_path = _edge_csv_for_tag(run_root, tag)
     if csv_path is None or not os.path.exists(csv_path):
         print(f"[make_paper_figures] No edge CSV for '{tag}' under {run_root}; skipping.")
@@ -329,7 +531,25 @@ def _make_run_figures(run_root: str, tag: str, pretty: Optional[str], bins: int 
         fig.savefig(os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}.png"))
         plt.close(fig)
 
-def generate_paper_figures(out_root: Optional[str] = None, run_name: Optional[str] = None, bins: int = 60, keep_existing: bool = False):
+def generate_paper_figures(
+        out_root: Optional[str] = None, 
+        run_name: Optional[str] = None, 
+        bins: int = 60, 
+        keep_existing: bool = False
+        ) -> None:
+    """
+    Generate figures for all runs under out_root or for a specific run_name.
+
+    Parameters
+    - out_root: Directory that contains one or more run subfolders (defaults to
+      experiments/out relative to this file if None).
+    - run_name: Optional subfolder name within out_root to process (if None,
+      all run subfolders are processed).
+    - bins: Number of bins for histograms.
+    - keep_existing: If False (default), the figures_paper/ directory is
+      recreated for a clean slate; if True, existing figures are kept and new
+      ones overwrite by filename only.
+    """
     _apply_style()
     base_root = out_root or os.path.join(os.path.dirname(__file__), "out")
     if not os.path.isdir(base_root):
@@ -346,7 +566,23 @@ def generate_paper_figures(out_root: Optional[str] = None, run_name: Optional[st
         rd = os.path.join(base_root, run_name)
         _generate_for_run_dir(rd, bins=bins, keep_existing=keep_existing)
 
-def _generate_for_run_dir(run_dir: str, bins: int = 60, keep_existing: bool = False):
+def _generate_for_run_dir(
+        run_dir: str, 
+        bins: int = 60, 
+        keep_existing: bool = False
+        ) -> None:
+    """
+    Generate figures for every run entry listed in one run directory.
+
+    This function reads manifest.json, prepares/cleans the figures_paper/
+    directory according to keep_existing, and then calls
+    _make_run_figures(...) for each run entry.
+
+    Parameters
+    - run_dir: Absolute path to a specific run directory containing outputs.
+    - bins: Number of bins for histograms.
+    - keep_existing: Whether to keep an existing figures_paper/ directory.
+    """
     man = _load_manifest(run_dir)
     runs = man.get("runs", [])
     if not runs:
@@ -373,6 +609,12 @@ def _generate_for_run_dir(run_dir: str, bins: int = 60, keep_existing: bool = Fa
         _make_run_figures(run_dir, tag, pretty, bins=bins, keep_existing=keep_existing)
 
 def main():
+    """
+    Command-line entry point.
+
+    Parses arguments and calls generate_paper_figures. Use --help for a
+    description of available options.
+    """
     _apply_style()
     ap = argparse.ArgumentParser(description="Generate paper-ready figures from experiment outputs.")
     ap.add_argument("--out-root", type=str, default=None, help="Root folder containing run subfolders (default: experiments/out)")
