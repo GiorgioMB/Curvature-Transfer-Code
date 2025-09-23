@@ -1,3 +1,33 @@
+"""
+Graph model generators, this module provides several classic random graph
+generators plus a fast, parallel implementation of the native hyperbolic 
+random graph (HRG) model. Everything returns undirected simple graphs as 
+a sorted list of edges (u, v) with u < v.
+
+Included models
+- Erdos--Renyi G(n, p)
+- Watts--Strogatz small-world model
+- Barabasi--Albert preferential attachment
+- Random geometric (unit square)
+- Cycle, grid, d-ary tree, complete graph
+- Native HRG (Krioukov et al.), both a simple reference version and a
+  scalable parallel version using shared memory and tiled computation.
+
+Main concepts for the hyperbolic model
+- Each node is placed in a hyperbolic disk of radius R. Angles are uniform; the
+  radial coordinate is sampled so that cosh(alpha * r) is uniform in [1, cosh(alpha * R)].
+- The hyperbolic distance d between two nodes can be computed via cosh(alpha d)
+  from the radii and the angle difference (law of cosines in the hyperbolic plane).
+- Edges are independent given positions: p(d) = 1 / (1 + exp((d - R) / (2T))).
+  Temperature T = 0 gives a hard threshold at d <= R.
+- The parallel generator precomputes cosh/sinh of the radii and cos/sin of the
+  angles, stores them in shared memory, and assigns disjoint tiles of the upper
+  triangle to worker processes. This avoids duplicates and minimizes overhead.
+
+Usage (example)
+>>> n, edges = erdos_renyi(100, 0.05, seed=1)
+>>> n, edges = make_hyperbolic_random_graph(10000, R=10.0, alpha=1.0, T=0.5, seed=123, n_jobs=-1)
+"""
 import random
 from typing import List, Tuple
 import os
@@ -11,17 +41,39 @@ except Exception:
     _ne = None
     print(f"[WARNING] numexpr not available; falling back to numpy for hyperbolic random graph generation.")
 
+# Global references for worker processes. We attach shared-memory views here.
 _global = {"thetas": None, "cah": None, "sah": None}  # cosh(alpha r), sinh(alpha r)
 
-def _add_undirected(edges, u, v):
+
+def _add_undirected(
+        edges: set,
+        u: int,
+        v: int
+        ) -> None:
+    """
+    Insert an undirected edge (u, v) in canonical form (u < v); skip self-loops.
+    """
     if u == v: 
         return
     if u > v:
         u, v = v, u
     edges.add((u, v))
 
-def _init_hrg_shm(meta):
-    """Initializer for worker processes: attach to shared memory blocks."""
+
+def _init_hrg_shm(
+        meta: dict
+        ) -> None:
+    """
+    Initializer for HRG worker processes: attach to shared memory arrays.
+
+    Parameters
+    - meta: dict mapping key -> (name, shape, dtype_str) for each shared array
+      where keys are: 'cah', 'sah', 'cos_t', 'sin_t'.
+
+    Behavior
+    - Opens SharedMemory blocks by name and creates NumPy views for each.
+    - Stores views in the module-level _global dict so workers can read them.
+    """
     # meta maps key -> (name, shape, dtype_str)
     ca_name, ca_shape, ca_dtype = meta["cah"]
     sa_name, sa_shape, sa_dtype = meta["sah"]
@@ -43,11 +95,40 @@ def _init_hrg_shm(meta):
     _global["cos_t"] = np.ndarray(ct_shape, dtype=np.dtype(ct_dtype), buffer=shm_ct.buf)
     _global["sin_t"] = np.ndarray(st_shape, dtype=np.dtype(st_dtype), buffer=shm_st.buf)
 
-def _tile_worker(i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed):
+
+def _tile_worker(
+        i0: int, 
+        i1: int, 
+        j0: int, 
+        j1: int, 
+        is_diag: bool, 
+        cR: float, 
+        R: float, 
+        alpha: float, 
+        T: float, 
+        seed: int
+        ) -> np.ndarray:
     """
-    Compute edges inside a tile [i0:i1] x [j0:j1] using GEMM-friendly cosine:
-        cos(Delta theta) = cos theta_i cos theta_j + sin theta_i sin theta_j.
-    For T=0, threshold in 'cosh space'. For T>0, compute d and sample via logistic.
+    Compute edges inside a tile [i0:i1] x [j0:j1] of the adjacency upper triangle.
+
+    Method
+    - Use the identity cos(Delta theta) = cos(theta_i)cos(theta_j) + sin(theta_i)sin(theta_j).
+    - Compute cosh(alpha d) = cosh(alpha r_i)cosh(alpha r_j)
+      - sinh(alpha r_i)sinh(alpha r_j) * cos(Delta theta).
+    - For T = 0: add an edge if cosh(alpha d) <= cosh(alpha R) (hard threshold).
+    - For T > 0: compute d = arccosh(max(1, cosh(alpha d))) / alpha and connect
+      with probability p(d) = 1 / (1 + exp((d - R)/(2T))).
+
+    Parameters
+    - i0, i1, j0, j1: integer tile bounds
+    - is_diag: True if this tile is on the diagonal; we then keep only the
+      strict upper triangle within the tile to avoid duplicates
+    - cR: cosh(alpha * R)
+    - R, alpha, T: HRG parameters
+    - seed: 64-bit seed to initialize an independent RNG stream per tile
+
+    Returns
+    - 2D int64 array of shape (m, 2) with rows [u, v] (u < v), or empty array.
     """
     cah = _global["cah"];   sah = _global["sah"]
     cos_t = _global["cos_t"]; sin_t = _global["sin_t"]
@@ -58,7 +139,7 @@ def _tile_worker(i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed):
     cosi = cos_t[i0:i1]; sini = sin_t[i0:i1]
     cosj = cos_t[j0:j1]; sinj = sin_t[j0:j1]
 
-    # cos(Delta theta) via two outer products
+    # cos(Delta theta) via two outer products (gemm-friendly)
     ococ  = np.outer(cosi, cosj)
     osisj = np.outer(sini, sinj)
     # Outer products for radial hyperbolic terms
@@ -106,7 +187,17 @@ def _tile_worker(i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed):
     v = j0 + jj
     return np.stack((u, v), axis=1).astype(np.int64)
 
-def erdos_renyi(n: int, p: float, seed: int = 0) -> Tuple[int, List[Tuple[int,int]]]:
+
+def erdos_renyi(
+        n: int, 
+        p: float, 
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Erdos--Renyi G(n, p): connect each pair independently with probability p.
+
+    Returns (n, sorted list of undirected edges (u, v) with u < v).
+    """
     rnd = random.Random(seed)
     edges = set()
     for u in range(n):
@@ -115,8 +206,20 @@ def erdos_renyi(n: int, p: float, seed: int = 0) -> Tuple[int, List[Tuple[int,in
                 edges.add((u, v))
     return n, sorted(edges)
 
-def watts_strogatz(n: int, k: int, beta: float, seed: int = 0) -> Tuple[int, List[Tuple[int,int]]]:
-    """Ring lattice where each node connects to k/2 neighbors on each side; then rewire each edge (u,v) with prob beta."""
+
+def watts_strogatz(
+        n: int, 
+        k: int, 
+        beta: float, 
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """Watts--Strogatz small-world model.
+
+    Start with a ring where each node connects to k/2 neighbors on each side,
+    then rewire each ring edge with probability beta to a random endpoint.
+
+    Returns (n, sorted list of edges).
+    """
     assert k % 2 == 2 or k % 2 == 0
     rnd = random.Random(seed)
     edges = set()
@@ -126,8 +229,7 @@ def watts_strogatz(n: int, k: int, beta: float, seed: int = 0) -> Tuple[int, Lis
         for d in range(1, half+1):
             v = (u + d) % n
             _add_undirected(edges, u, v)
-    # rewire
-    # Iterate over original edges (directional sense) to attempt rewiring of one orientation
+    # rewire one orientation of each original edge
     for u in range(n):
         for d in range(1, half+1):
             v = (u + d) % n
@@ -144,8 +246,18 @@ def watts_strogatz(n: int, k: int, beta: float, seed: int = 0) -> Tuple[int, Lis
                         break
     return n, sorted(edges)
 
-def barabasi_albert(n: int, m: int, seed: int = 0) -> Tuple[int, List[Tuple[int,int]]]:
-    """Preferential attachment: start with a clique of size m+1 and attach new nodes with m edges proportional to degree."""
+
+def barabasi_albert(
+        n: int, 
+        m: int, 
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """Barabasi--Albert preferential attachment.
+
+    Start with a clique of size m+1. Each new node attaches to m existing
+    nodes chosen with probability proportional to degree.
+    Returns (n, sorted edges).
+    """
     assert m >= 1 and n >= m+1
     rnd = random.Random(seed)
     edges = set()
@@ -177,8 +289,17 @@ def barabasi_albert(n: int, m: int, seed: int = 0) -> Tuple[int, List[Tuple[int,
             mult.append(new)
     return n, sorted(edges)
 
-def random_geometric(n: int, r: float, seed: int = 0) -> Tuple[int, List[Tuple[int,int]]]:
-    """Unit square geometric graph: connect if Euclidean distance < r."""
+
+def random_geometric(
+        n: int, 
+        r: float, 
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Random geometric graph in the unit square: connect if Euclidean distance < r.
+
+    Returns (n, sorted edges).
+    """
     rnd = random.Random(seed)
     pts = [(rnd.random(), rnd.random()) for _ in range(n)]
     edges = set()
@@ -192,13 +313,26 @@ def random_geometric(n: int, r: float, seed: int = 0) -> Tuple[int, List[Tuple[i
                 _add_undirected(edges, u, v)
     return n, sorted(edges)
 
-def cycle_graph(n: int) -> Tuple[int, List[Tuple[int,int]]]:
+
+def cycle_graph(
+        n: int
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Cycle on n nodes: edges (0,1), (1,2), ..., (n-1,0).
+    """
     edges = set()
     for u in range(n):
         _add_undirected(edges, u, (u+1)%n)
     return n, sorted(edges)
 
-def grid_graph(m: int, n: int) -> Tuple[int, List[Tuple[int,int]]]:
+
+def grid_graph(
+        m: int, 
+        n: int
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    m x n rectangular grid with 4-neighbor connectivity.
+    """
     edges = set()
     def id(i,j): return i*n + j
     for i in range(m):
@@ -207,8 +341,16 @@ def grid_graph(m: int, n: int) -> Tuple[int, List[Tuple[int,int]]]:
             if j+1 < n: _add_undirected(edges, id(i,j), id(i,j+1))
     return m*n, sorted(edges)
 
-def dary_tree(d: int, h: int) -> Tuple[int, List[Tuple[int,int]]]:
-    """Rooted d-ary tree of height h (root at level 0)."""
+
+def dary_tree(
+        d: int, 
+        h: int
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Rooted d-ary tree of height h (root at level 0).
+
+    Returns (n, sorted edges). For d <= 1, this degenerates to a path of length h.
+    """
     if h < 0: 
         return 0, []
     if d < 1:
@@ -224,19 +366,36 @@ def dary_tree(d: int, h: int) -> Tuple[int, List[Tuple[int,int]]]:
                 _add_undirected(edges, p, c)
     return n, sorted(edges)
 
-def complete_graph(n: int) -> Tuple[int, List[Tuple[int,int]]]:
+
+def complete_graph(
+        n: int
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Complete graph K_n: all pairs connected.
+    """
     edges = set()
     for u in range(n):
         for v in range(u+1, n):
             _add_undirected(edges, u, v)
     return n, sorted(edges)
 
-def deprecated_make_hyperbolic_random_graph(n: int, R: float, alpha: float = 1.0, T: float = 0.0, seed: int = 0):
-    """Generates a random graph in the native hyperbolic model (Krioukov et al. 2010).
-    Nodes are distributed in a hyperbolic disk of radius R with curvature -alpha^2.
-    Each pair of nodes at hyperbolic distance d is connected with probability 
-    p(d) = 1/(1 + exp((d-R)/(2T))). T=0 gives a sharp threshold at d=R.
-    Returns (n, edges) where edges is a list of (u,v) with u < v.
+
+def deprecated_make_hyperbolic_random_graph(
+        n: int, 
+        R: float, 
+        alpha: float = 1.0, 
+        T: float = 0.0, 
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Reference (single-process) HRG generator for clarity and testing.
+
+    Native hyperbolic model (Krioukov et al. 2010). Nodes are distributed in a
+    hyperbolic disk of radius R with curvature -alpha^2. Connection probability:
+        p(d) = 1 / (1 + exp((d - R) / (2T)))
+    with T = 0 giving a hard threshold at d <= R.
+
+    Returns (n, sorted edges). Slower than the parallel version but easy to read.
     """
     rng = np.random.default_rng(seed)
 
@@ -275,40 +434,50 @@ def deprecated_make_hyperbolic_random_graph(n: int, R: float, alpha: float = 1.0
 
 
 def make_hyperbolic_random_graph(
-    n: int, R: float, alpha: float = 1.0, T: float = 0.0, seed: int = 0,
-    n_jobs: int | None = None, block_size: int | None = None
-):
+    n: int, 
+    R: float, 
+    alpha: float = 1.0, 
+    T: float = 0.0, 
+    seed: int = 0,
+    n_jobs: int | None = None, 
+    block_size: int | None = None
+    ) -> Tuple[int, List[Tuple[int,int]]]:
     """
-    Parallel generator for the native HRG (Krioukov et al.):
-      - Positions: theta ~ Unif[0,2pi), radial via cosh(alpha r) in [1, cosh(alpha R)]
-      - Connection: p(d) = 1 / (1 + exp((d-R)/(2T)))  (T=0 => hard threshold d<=R)
-      
+    Parallel generator for the native HRG (Krioukov et al.).
+
+    Positions
+    - theta ~ Uniform[0, 2π)
+    - cosh(alpha * r) ~ Uniform[1, cosh(alpha * R)]  (so r is concentrated near R)
+
+    Connection probability
+    - p(d) = 1 / (1 + exp((d - R) / (2T))).
+      T = 0 gives a hard threshold at d <= R.
+
+    Parallelism strategy
+    - Precompute arrays: cos(theta), sin(theta), cosh(alpha r), sinh(alpha r).
+    - Place these arrays in OS shared memory blocks so worker processes can read
+      them without copying. Workers attach in _init_hrg_shm.
+    - Partition the upper triangle of the adjacency matrix into tiles. Each
+      worker computes edges for its tiles; diagonal tiles use a strict upper
+      triangle mask to avoid self-loops and duplicates.
+
     Parameters
-    ----------
-    n : int
-        Number of nodes
-    R : float
-        Disk radius parameter
-    alpha : float, default=1.0
-        Curvature parameter (curvature = -alpha^2)
-    T : float, default=0.0
-        Temperature parameter (T=0 gives hard threshold)
-    seed : int, default=0
-        Random seed
-    n_jobs : int or None, default=None
-        Number of parallel jobs. Follows scikit-learn conventions:
+    - n : int Number of nodes
+    - R : float Disk radius parameter
+    - alpha : float, default=1.0 Curvature parameter (curvature = -alpha^2)
+    - T : float, default=0.0 Temperature parameter (T=0 gives hard threshold)
+    - seed : int, default=0 Random seed
+    - n_jobs : int or None, default=None Number of parallel jobs. Follows scikit-learn conventions:
         - None: use all available CPU cores
         - 1: sequential execution
         - -1: use all available CPU cores
         - > 1: use exactly n_jobs processes
         - < -1: use (n_cpus + 1 + n_jobs) processes
-    block_size : int or None, default=None
-        Tile size for parallelization. If None, chosen adaptively.
+    - block_size : int or None, default=None Tile size for parallelization. If None, 
+        chosen adaptively. Larger tiles reduce overhead; smaller tiles increase load balance.
         
     Returns
-    -------
-    tuple of (int, list)
-        (n, sorted list of edges (u,v) with u < v)
+    - tuple of (n, sorted list of edges (u, v) with u < v)
     """
     if n <= 1:
         return n, []
@@ -364,6 +533,7 @@ def make_hyperbolic_random_graph(
     shm_st = shared_memory.SharedMemory(create=True, size=sin_t.nbytes)
 
     try:
+        # Copy data into shared memory buffers
         ca_view = np.ndarray(cah.shape, dtype=cah.dtype, buffer=shm_ca.buf); ca_view[:] = cah
         sa_view = np.ndarray(sah.shape, dtype=sah.dtype, buffer=shm_sa.buf); sa_view[:] = sah
         ct_view = np.ndarray(cos_t.shape, dtype=cos_t.dtype, buffer=shm_ct.buf); ct_view[:] = cos_t
@@ -376,7 +546,7 @@ def make_hyperbolic_random_graph(
             "sin_t": (shm_st.name, sin_t.shape, str(sin_t.dtype)),
         }
 
-        # --- Enumerate tiles covering the upper triangle
+        # --- Enumerate tiles covering the upper triangle (avoid duplicates)
         tiles = []
         for i0 in range(0, n, block_size):
             i1 = min(n, i0 + block_size)
@@ -389,9 +559,8 @@ def make_hyperbolic_random_graph(
 
         edges_parts = []
         
-        # Handle sequential execution case
+        # Handle sequential execution case without multiprocessing overhead
         if resolved_n_jobs == 1:
-            # Sequential execution: compute tiles directly without multiprocessing
             # Initialize global state for sequential execution
             _global["cah"] = cah
             _global["sah"] = sah
@@ -402,7 +571,7 @@ def make_hyperbolic_random_graph(
                 edges_part = _tile_worker(i0, i1, j0, j1, is_diag, cR, R, alpha, T, seed)
                 edges_parts.append(edges_part)
         else:
-            # Parallel execution
+            # Parallel execution using a process pool
             with ProcessPoolExecutor(
                 max_workers=resolved_n_jobs, initializer=_init_hrg_shm, initargs=(meta,)
             ) as ex:
@@ -413,7 +582,7 @@ def make_hyperbolic_random_graph(
                 for f in as_completed(futs):
                     edges_parts.append(f.result())
 
-        # --- Merge and sort edges
+        # --- Merge and sort edges (u < v)
         if edges_parts:
             E = np.vstack(edges_parts) if len(edges_parts) > 1 else edges_parts[0]
             if E.size == 0:
@@ -426,7 +595,7 @@ def make_hyperbolic_random_graph(
             edges = []
 
     finally:
-        # detach in parent and free shared memory blocks
+        # Detach in parent and free shared memory blocks to avoid leaks
         for shm in (shm_ca, shm_sa, shm_ct, shm_st):
             try:
                 shm.close()
@@ -441,15 +610,21 @@ def make_hyperbolic_random_graph(
 
 # Test snippet to verify all graph generators work correctly
 if __name__ == "__main__":
-    print("Testing graph generators...")
+    print("[TEST] Initializing graph generators...")
     
     # Test parameters
     test_n = 10
     test_seed = 42
     
-    def validate_graph(name, n, edges):
-        """Basic validation for graph structure."""
-        print(f"{name}: n={n}, |E|={len(edges)}")
+    def validate_graph(
+            name, 
+            n, 
+            edges
+            ) -> None:
+        """
+        Basic validation for graph structure (bounds, canonical edges, duplicates).
+        """
+        print(f"[TEST] {name}: n={n}, |E|={len(edges)}")
         
         # Check all edges are valid
         for u, v in edges:
@@ -472,17 +647,17 @@ if __name__ == "__main__":
             ("Binary Tree (h=3)", lambda: dary_tree(2, 3)),
             ("Complete", lambda: complete_graph(5)),  # smaller for complete graph
             ("Hyperbolic (deprecated)", lambda: deprecated_make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed)),
-            ("Hyperbolic (parallel)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=1)),  # Use sequential 
-            ("Hyperbolic (parallel multi)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=-1)),  # Use all available CPUs
+            ("Hyperbolic (parallel)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=1)),  # sequential 
+            ("Hyperbolic (parallel multi)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=-1)),  # all CPUs
         ]
         for name, gen_func in generators:
             try:
                 n, edges = gen_func()
                 validate_graph(name, n, edges)
             except Exception as e:
-                print(f"{name}: FAILED - {e}")
-        
-        print("\nAll tests completed!")
-        
+                print(f"[TEST] {name}: FAILED - {e}")
+
+        print("[TEST] All tests completed!")
+
     except Exception as e:
-        print(f"Test suite failed: {e}")
+        print(f"[TEST] Test suite failed: {e}")
