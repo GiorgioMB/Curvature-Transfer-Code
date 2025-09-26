@@ -591,7 +591,7 @@ def _init_worker(
 
 def _edge_metrics_worker(
     eidx: int
-    ) -> Tuple[int, float, float, float, float, float, float, float, float, float, float]:
+    ) -> Tuple[int, float, float, float, float, float, float, float, float, float, float, float]:
     """Worker task to compute per-edge metrics for edge index eidx.
 
     Returns a tuple aligned to the arrays produced by compute_all():
@@ -611,9 +611,9 @@ def _edge_metrics_worker(
     tri = len(C)
 
     # Count cross connections that close 4-cycles going through Ui and Uj
-    Xi_left  = sum(len(neighbors[k] & Uj) for k in Ui)
-    Xi_right = sum(len(neighbors[w] & Ui) for w in Uj)
-    Xi = Xi_left + Xi_right
+    xi_u = sum(1 for k in Ui if (neighbors[k] & Uj))
+    xi_v = sum(1 for w in Uj if (neighbors[w] & Ui))
+    Xi = xi_u + xi_v
 
     # varpi_max: maximum cross-degree seen from Ui into Nj \ {i} or vice versa
     setNj_noi = Nj - {i}
@@ -628,7 +628,7 @@ def _edge_metrics_worker(
 
     deg_i = int(deg_arr[i])
     deg_j = int(deg_arr[j])
-    sho_max = max(1, varpi_max * max(deg_i, deg_j))
+    sho_max = varpi_max * max(deg_i, deg_j)
     C4 = (float(Xi) / float(sho_max)) if Xi > 0 and sho_max > 0 else 0.0
 
     # Balanced Forman curvature (see c_BF_edge for the formula derivation)
@@ -809,9 +809,9 @@ class CurvatureEngine:
         Uj = Nj - (Ni | {i})
         tri = len(Ci)
 
-        Xi_left  = sum(len(self.neighbors[k] & Uj) for k in Ui)
-        Xi_right = sum(len(self.neighbors[w] & Ui) for w in Uj)
-        Xi = Xi_left + Xi_right
+        xi_u = sum(1 for k in Ui if (neighbors[k] & Uj))
+        xi_v = sum(1 for w in Uj if (neighbors[w] & Ui))
+        Xi = xi_u + xi_v
 
         setNj_noi = Nj - {i}
         setNi_noj = Ni - {j}
@@ -825,7 +825,7 @@ class CurvatureEngine:
 
         deg_i = self.deg[i]
         deg_j = self.deg[j]
-        sho_max = max(1, varpi_max * max(deg_i, deg_j))
+        sho_max = varpi_max * max(deg_i, deg_j)
 
         return EdgeLocal(i=i, j=j, deg_i=deg_i, deg_j=deg_j, Ni=Ni, Nj=Nj, C=Ci, Ui=Ui, Uj=Uj,
                          tri=tri, Xi=Xi, varpi_max=varpi_max, sho_max=sho_max)
