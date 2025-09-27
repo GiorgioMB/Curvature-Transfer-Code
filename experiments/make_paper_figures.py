@@ -404,13 +404,14 @@ def _scatter_ribbon(ax: plt.Axes,
                     bf: np.ndarray, 
                     orv: np.ndarray,
                     lower_from_bf: Optional[np.ndarray] = None,
+                    upper_from_bf: Optional[np.ndarray] = None,
                     nbins: int = 28
                     ) -> None:
     """
     Scatter plot of bf vs or with an observed quantile ribbon.
 
-    The function optionally overlays the median of the predicted lower
-    transfer (BF->OR) after binning by bf. If the dataset is very large, a
+    The function optionally overlays the median of the predicted lower and/or
+    upper transfer (BF->OR) after binning by bf. If the dataset is very large, a
     fixed-size random subsample is used for the scatter for clarity.
 
     Parameters
@@ -418,6 +419,7 @@ def _scatter_ribbon(ax: plt.Axes,
     - bf: Edgewise Balanced Forman curvature values.
     - orv: Edgewise Ollivier--Ricci curvature values.
     - lower_from_bf: Optional edgewise BF->OR lower transfer predictions.
+    - upper_from_bf: Optional edgewise BF->OR upper transfer predictions.
     - nbins: Number of bins to use for computing the quantile ribbon.
     """
     # Subsample if large for visual clarity
@@ -441,6 +443,11 @@ def _scatter_ribbon(ax: plt.Axes,
     if low_s is not None:
         _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, label=r"lower transfer (BF$\rightarrow$OR): median")
+    # Predicted BF->OR upper (median per bin)
+    if upper_from_bf is not None:
+        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
+        ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
+                label=r"upper transfer (BF$\rightarrow$OR): median"
     ax.set_title(r"$\mathfrak{c}_{\mathrm{BF}}$ vs $\mathfrak{c}_{\mathrm{OR}}$ (edgewise)")
     ax.set_xlabel(DISPLAY["c_BF"])
     ax.set_ylabel(DISPLAY["c_OR"])
@@ -524,7 +531,7 @@ def _make_run_figures(
     # 3) Scatter BF vs OR with ribbons
     if (cBF is not None) and (cOR is not None):
         fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _scatter_ribbon(ax, cBF, cOR, lower_from_bf=cOR_lo, nbins=28)
+        _scatter_ribbon(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
         suptitle = rf"{pretty_tag}"
         fig.suptitle(suptitle, y=0.99, fontsize=13)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
@@ -568,7 +575,7 @@ def generate_paper_figures(
 
 def _generate_for_run_dir(
         run_dir: str, 
-        bins: int = 60, 
+        bins: int = 120, 
         keep_existing: bool = False
         ) -> None:
     """
