@@ -611,8 +611,8 @@ def _edge_metrics_worker(
     tri = len(C)
 
     # Count cross connections that close 4-cycles going through Ui and Uj
-    xi_u = sum(1 for k in Ui if (neighbors[k] & Uj))
-    xi_v = sum(1 for w in Uj if (neighbors[w] & Ui))
+    xi_u = sum(1 for k in Ui if (self.neighbors[k] & Uj))
+    xi_v = sum(1 for w in Uj if (self.neighbors[w] & Ui))
     Xi = xi_u + xi_v
 
     # varpi_max: maximum cross-degree seen from Ui into Nj \ {i} or vice versa
@@ -1232,6 +1232,9 @@ class CurvatureEngine:
         zetas = self._as_edgewise(zeta, "zeta")
         M = len(self.edges)
         out = np.zeros(M, dtype=float)
+        cOR0_all = None
+        if sharp:
+            cOR0_all = self._get_c_OR0_all(force_recompute=False)
 
         for eidx in range(M):
             loc = self._local_for_edge(eidx)
@@ -1253,15 +1256,22 @@ class CurvatureEngine:
             Zscr = max(0.0, (float(zetas[eidx]) - S - C4) / T)
             Zbar_max = Zscr / dmax
             Zbar_min = Zscr / dmin
-            phi0 = -max(0.0, K - Zbar_max) - max(0.0, K - Zbar_min) + Zbar_max
+            zeta_e = float(zetas[eidx])
+            leftover = max(0.0, zeta_e - S - T * (dmin - 1.0))
+            S_floor = 0.5 * max(C4, leftover)
+            phi0 = ( -max(0.0, K - Zbar_max - S_floor)
+                     -max(0.0, K - Zbar_min - S_floor)
+                     + Zbar_max )
 
+            
             ai = self._alpha(di)
             aj = self._alpha(dj)
             a_min = ai if ai <= aj else aj
             a_max = aj if ai <= aj else ai
             Delta = abs(ai - aj)
-            if sharp:
-                a_star = a_min if phi0 >= 0.0 else a_max
+            if sharp and cOR0_all is not None:
+                cOR0 = float(cOR0_all[eidx])
+                a_star = a_min if cOR0 >= 0.0 else a_max
             else:
                 a_star = a_min
             out[eidx] = (1.0 - a_star) * phi0 - Delta
@@ -1321,12 +1331,15 @@ class CurvatureEngine:
 
             def C_alpha(t: float) -> float:
                 return min(t * abs(wi - wj), A_u(t, i_deg, wi) + A_u(t, j_deg, wj))
+            
+            def D_alpha(t: float) -> float:
+                return ( (i_deg + j_deg - 2.0) - 2.0 * t ) / Sigma
 
             zi, zj = self._z_i_j(i_deg, j_deg)
             ri, bri, rj, brj = self._r_terms(i_deg, j_deg)
             def Psi(t: float) -> float:
                 return (-1.0 + 2.0*(zi+zj) + (ri+bri+rj+brj) + 2.0*t*w_wedge
-                        + max(0.0, min(A_min(t), B_alpha(t))) + C_alpha(t))
+                         + max(0.0, min(A_min(t), B_alpha(t), D_alpha(t))) + C_alpha(t))
 
             # t is effectively the number of triangles but can be relaxed
             t_max = min(i_deg, j_deg) - 1.0
@@ -1351,7 +1364,18 @@ class CurvatureEngine:
                 t_scap = (wi * (i_deg - 1.0) + wj * (j_deg - 1.0)) / denom
                 cand.append(t_scap)
             cand.append(t_max)
-
+            denom_iD = (2.0 / Sigma - wi)
+            if abs(denom_iD) > 1e-15:
+                tiD = ( (i_deg + j_deg - 2.0)/Sigma - wi * (i_deg - 1.0) ) / denom_iD
+                cand.append(tiD)
+            denom_jD = (2.0 / Sigma - wj)
+            if abs(denom_jD) > 1e-15:
+                tjD = ( (i_deg + j_deg - 2.0)/Sigma - wj * (j_deg - 1.0) ) / denom_jD
+                cand.append(tjD)
+            denom_BD = (2.0 - sho_max_star * T)
+            if abs(denom_BD) > 1e-15:
+                tBD = ( (i_deg + j_deg - 2.0) - sho_max_star * b ) / denom_BD
+                cand.append(tBD)
             best = -math.inf
             for t in cand:
                 if not np.isfinite(t):
@@ -1417,14 +1441,17 @@ class CurvatureEngine:
     def _g_nonlazy(
         di: int, 
         dj: int, 
-        t: float
+        t: float,
+        s: float = 0.0
         ) -> float:
         """
         Helper function for non-lazy coverage tradeoff as a function of triangles.
+        with quadrangle matching floor s ≥ 0 entering as K -> [K - s]_+.
         """
         rho_min = float(min(di, dj))
         rho_max = float(max(di, dj))
-        K = max(0.0, 1.0 - 1.0/rho_min - 1.0/rho_max)
+        K0 = 1.0 - 1.0/rho_min - 1.0/rho_max
+        K = max(0.0, K0 - max(0.0, s))
         zmax = t / rho_max
         zmin = t / rho_min
         return -max(0.0, K - zmax) - max(0.0, K - zmin) + zmax
@@ -1434,6 +1461,7 @@ class CurvatureEngine:
         di: int, 
         dj: int, 
         s0: float, 
+        s: float = 0.0,
         tol: float = 1e-12
         ) -> float:
         """
@@ -1443,15 +1471,15 @@ class CurvatureEngine:
         """
         t_lo = 0.0
         t_hi = float(min(di, dj) - 1)
-        g_lo = self._g_nonlazy(di, dj, t_lo)
+        g_lo = self._g_nonlazy(di, dj, t_lo, s=s)
         if s0 <= g_lo + tol:
             return 0.0
-        g_hi = self._g_nonlazy(di, dj, t_hi)
+        g_hi = self._g_nonlazy(di, dj, t_hi, s=s)
         if s0 >= g_hi - tol:
             return t_hi
         for _ in range(50):
             t_mid = 0.5 * (t_lo + t_hi)
-            if self._g_nonlazy(di, dj, t_mid) <= s0 + tol:
+            if self._g_nonlazy(di, dj, t_mid, s=s) <= s0 + tol:
                 t_lo = t_mid
             else:
                 t_hi = t_mid
@@ -1497,8 +1525,9 @@ class CurvatureEngine:
                 a_star = min(ai, aj)
             denom = (1.0 - a_star)
             s0 = float('inf') if denom <= 0 else (theta_e + Delta) / denom
-            u_max = self._u_max_from_s0(i_deg, j_deg, s0)
             C4 = self._C4_edge(loc.Xi, loc.sho_max)
+            s_floor = 0.5 * C4
+            u_max = self._u_max_from_s0(i_deg, j_deg, s0, s=s_floor)
             out[eidx] = S + T * u_max + C4
         return out
 
