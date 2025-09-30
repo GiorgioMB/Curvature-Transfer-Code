@@ -442,12 +442,13 @@ def _scatter_ribbon(ax: plt.Axes,
     # Predicted BF->OR lower (median per bin)
     if low_s is not None:
         _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, label=r"lower transfer (BF$\rightarrow$OR): median")
+        ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
+                label=r"lower transfer (BF$\rightarrow$OR): median")
     # Predicted BF->OR upper (median per bin)
     if upper_from_bf is not None:
         _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
-                label=r"upper transfer (BF$\rightarrow$OR): median"
+                label=r"upper transfer (BF$\rightarrow$OR): median")
     ax.set_title(r"$\mathfrak{c}_{\mathrm{BF}}$ vs $\mathfrak{c}_{\mathrm{OR}}$ (edgewise)")
     ax.set_xlabel(DISPLAY["c_BF"])
     ax.set_ylabel(DISPLAY["c_OR"])
