@@ -270,6 +270,8 @@ def _pretty_from_tag(
             "jazz": "Jazz Musicians",
             "power_grid": "Western US Power Grid",
             "yeast": "Yeast Transcription Network",
+            "arxiv": "arXiv hep-ph citation network",
+            "wikipedia": "en-Wikipedia article-category network"
         }
         return f"Real network: {pretty_map.get(name, name.replace('_',' '))}"
     # Fallback: return the raw tag
