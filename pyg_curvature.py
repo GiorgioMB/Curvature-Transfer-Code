@@ -809,8 +809,8 @@ class CurvatureEngine:
         Uj = Nj - (Ni | {i})
         tri = len(Ci)
 
-        xi_u = sum(1 for k in Ui if (neighbors[k] & Uj))
-        xi_v = sum(1 for w in Uj if (neighbors[w] & Ui))
+        xi_u = sum(1 for k in Ui if (self.neighbors[k] & Uj))
+        xi_v = sum(1 for w in Uj if (self.neighbors[w] & Ui))
         Xi = xi_u + xi_v
 
         setNj_noi = Nj - {i}
