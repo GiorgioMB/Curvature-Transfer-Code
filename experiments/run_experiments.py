@@ -27,6 +27,7 @@ import gzip
 import argparse
 from typing import Tuple, List
 import numpy as np
+import csv
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
