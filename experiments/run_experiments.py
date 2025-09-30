@@ -23,8 +23,9 @@ $ python run_experiments.py --hrg 1000 7.0 1.0 0.0 --jobs -1 --skip-plots
 See argument help for all options.
 """
 import os
+import gzip
 import argparse
-from typing import Dict, Tuple, List
+from typing import Tuple, List
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -131,46 +132,88 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[60]]
     elif args.preset == "paper":
         # (a) Random models
-        args.hrg = args.hrg or [[300, 5.0, 1.0, 0.0], [350, 5.0, 1.0, 0.5]]
-        args.er = args.er or [[800, 0.015], [800, 0.03]]
-        args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2]]
-        args.ba = args.ba or [[800, 2], [800, 3], [800, 5]]
-        args.rg = args.rg or [[800, 0.08], [800, 0.10]]
+        args.hrg = args.hrg or [[400, 5.0, 1.0, 0.0], [450, 5.0, 1.0, 0.5]]
+        args.er = args.er or [[800, 0.015], [800, 0.03], [1600, 0.1]]
+        args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2], [1700, 14, 0.1]]
+        args.ba = args.ba or [[800, 2], [800, 3], [800, 5], [1200, 5]]
+        args.rg = args.rg or [[800, 0.08], [800, 0.10], [1600, 0.2]]
         # (b) Canonical families
-        args.cycle = args.cycle or [[240]]
-        args.grid = args.grid or [[28, 28]]
-        args.tree = args.tree or [[3, 7], [4, 6]]
-        args.complete = args.complete or [[70]]
+        args.cycle = args.cycle or [[240], [300], [1000]]
+        args.grid = args.grid or [[28, 28], [40, 40], [100, 100]]
+        args.tree = args.tree or [[3, 7], [4, 6], [10, 4]]
+        args.complete = args.complete or [[70], [80], [100]]
         args.include_real = True
         args.skip_plots = True  # generate paper figures instead
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
-    """Load real network edge lists from CSVs in the given directory.
+    """Load real network edge lists from CSV or CSV.GZ files in the given directory.
 
-    Each file should have two columns (u, v) per row, with optional # comments.
-    Returns a list of (name, n, edges) where n is the number of nodes.
+    Looks for files named <name>.csv or <name>.csv.gz for each dataset name.
+    Each file should have two integer columns (u, v) per row.
+    Lines starting with '#' or empty lines are ignored.
+
+    Returns:
+        List of (name, n, edges) where:
+          - name is the dataset name
+          - n is 1 + max node id (0 if no edges)
+          - edges is a sorted list of undirected, deduplicated edges (u < v)
     """
-    out = []
-    import csv
-    for name in ["karate", "jazz", "power_grid", "yeast"]:
-        path = os.path.join(data_dir, f"{name}.csv")
-        if not os.path.exists(path):
+    out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
+
+    # Add "wikipedia" and keep existing datasets
+    dataset_names = ["karate", "jazz", "power_grid", "yeast", "arxiv", "wikipedia"]
+
+    def _open_maybe_gz(path_csv: str):
+        """Return (fh, used_path) for either .csv.gz (preferred if exists) or .csv."""
+        path_gz = path_csv + ".gz"
+        if os.path.exists(path_gz):
+            # text mode with universal newline handling; UTF-8 assumed
+            return gzip.open(path_gz, mode="rt", encoding="utf-8", newline=""), path_gz
+        elif os.path.exists(path_csv):
+            return open(path_csv, mode="r", encoding="utf-8", newline=""), path_csv
+        else:
+            return None, None
+
+    for name in dataset_names:
+        base_path = os.path.join(data_dir, f"{name}.csv")
+        fh, used_path = _open_maybe_gz(base_path)
+        if fh is None:
+            # File (csv or csv.gz) not present; skip
             continue
+
         edges = set()
-        with open(path, "r") as f:
-            r = csv.reader(f)
-            for row in r:
-                if not row or row[0].startswith("#"):
+        try:
+            reader = csv.reader(fh)
+            for row in reader:
+                if not row:
                     continue
-                u = int(row[0]); v = int(row[1])
-                if u == v: 
+                # allow comments even if the line has trailing commas
+                first = (row[0] or "").strip()
+                if first.startswith("#"):
                     continue
-                if u > v: 
-                    u,v = v,u
-                edges.add((u,v))
-        n = 1 + max([max(u,v) for (u,v) in edges]) if edges else 0
+                # be defensive: skip non-integer rows gracefully (e.g., headers)
+                try:
+                    u = int(first)
+                    v = int((row[1] or "").strip())
+                except (ValueError, IndexError):
+                    # Not a valid (u,v) pair; ignore row
+                    continue
+
+                if u == v:
+                    continue
+                if u > v:
+                    u, v = v, u
+                edges.add((u, v))
+        finally:
+            fh.close()
+
+        n = 1 + max((max(u, v) for (u, v) in edges), default=-1)
+        if n < 0:
+            n = 0  # no edges
+
         out.append((name, n, sorted(edges)))
+
     return out
 
 
