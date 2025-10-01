@@ -611,8 +611,8 @@ def _edge_metrics_worker(
     tri = len(C)
 
     # Count cross connections that close 4-cycles going through Ui and Uj
-    xi_u = sum(1 for k in Ui if (self.neighbors[k] & Uj))
-    xi_v = sum(1 for w in Uj if (self.neighbors[w] & Ui))
+    xi_u = sum(1 for k in Ui if (neighbors[k] & Uj))
+    xi_v = sum(1 for w in Uj if (neighbors[w] & Ui))
     Xi = xi_u + xi_v
 
     # varpi_max: maximum cross-degree seen from Ui into Nj \ {i} or vice versa
