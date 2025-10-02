@@ -133,16 +133,16 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[60]]
     elif args.preset == "paper":
         # (a) Random models
-        args.hrg = args.hrg or [[400, 5.0, 1.0, 0.0], [450, 5.0, 1.0, 0.5]]
-        args.er = args.er or [[800, 0.015], [800, 0.03], [1600, 0.1]]
-        args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2], [1700, 14, 0.1]]
-        args.ba = args.ba or [[800, 2], [800, 3], [800, 5], [1200, 5]]
-        args.rg = args.rg or [[800, 0.08], [800, 0.10], [1600, 0.2]]
+        args.hrg = args.hrg or [[300, 5.0, 1.0, 0.0], [400, 5.0, 1.0, 0.5]]
+        args.er = args.er or [[800, 0.015], [800, 0.03], [1600, 0.04]]
+        args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2], [1600, 14, 0.1]]
+        args.ba = args.ba or [[800, 2], [800, 3], [800, 5], [1600, 2]]
+        args.rg = args.rg or [[800, 0.08], [800, 0.1], [1600, 0.08]]
         # (b) Canonical families
-        args.cycle = args.cycle or [[240], [300], [1000]]
-        args.grid = args.grid or [[28, 28], [40, 40], [100, 100]]
-        args.tree = args.tree or [[3, 7], [4, 6], [10, 4]]
-        args.complete = args.complete or [[70], [80], [100]]
+        args.cycle = args.cycle or [[200], [400], [600]]
+        args.grid = args.grid or [[28, 28], [40, 40], [52, 52]]
+        args.tree = args.tree or [[3, 7], [4, 6], [5, 5]]
+        args.complete = args.complete or [[100], [120], [140]]
         args.include_real = True
         args.skip_plots = True  # generate paper figures instead
 
