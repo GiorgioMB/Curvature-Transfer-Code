@@ -9,9 +9,11 @@ Included models
 - Watts--Strogatz small-world model
 - Barabasi--Albert preferential attachment
 - Random geometric (unit square)
-- Cycle, grid, d-ary tree, complete graph
-- Native HRG (Krioukov et al.), both a simple reference version and a
-  scalable parallel version using shared memory and tiled computation.
+- Random d-regular
+- Stochastic Block Model (SBM): homogeneous assortative / disassortative
+- Cycle, grid, d-ary tree, complete graph, toroidal 
+- Native HRG (Krioukov et al.), both a simple reference version and a scalable parallel 
+  version using shared memory and tiled computation.
 
 Main concepts for the hyperbolic model
 - Each node is placed in a hyperbolic disk of radius R. Angles are uniform; the
@@ -313,6 +315,53 @@ def random_geometric(
                 _add_undirected(edges, u, v)
     return n, sorted(edges)
 
+def d_regular_graph(
+        n: int,
+        d: int,
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Random d-regular simple graph on n nodes using a configuration-model pairing
+    with rejection (restart on dead-ends). Requires 0 <= d < n and n*d even.
+    Returns (n, sorted edges).
+    """
+    if d < 0 or d >= n:
+        raise ValueError("d must satisfy 0 <= d < n")
+    if (n * d) % 2 != 0:
+        raise ValueError("n * d must be even for a d-regular graph")
+    if d == 0:
+        return n, []
+    rnd = random.Random(seed)
+    max_tries = 128
+    for _ in range(max_tries):
+        # Multiset of 'stubs' (one per half-edge)
+        stubs = [u for u in range(n) for _ in range(d)]
+        rnd.shuffle(stubs)
+        edges = set()
+        ok = True
+        while stubs:
+            u = stubs.pop()
+            # find a partner v that avoids loops/multi-edges
+            found = False
+            for k in range(len(stubs)):
+                v = stubs[k]
+                if v == u:
+                    continue
+                e = (u, v) if u < v else (v, u)
+                if e in edges:
+                    continue
+                # pair u with v
+                stubs.pop(k)
+                edges.add(e)
+                found = True
+                break
+            if not found:
+                ok = False
+                break
+        if ok and len(edges) == (n * d) // 2:
+            return n, sorted(edges)
+    raise RuntimeError("Failed to generate a simple d-regular graph after multiple attempts")
+
 
 def cycle_graph(
         n: int
@@ -341,6 +390,21 @@ def grid_graph(
             if j+1 < n: _add_undirected(edges, id(i,j), id(i,j+1))
     return m*n, sorted(edges)
 
+def torus_graph(
+        m: int,
+        n: int
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    m x n toroidal grid (C_m x C_n) with 4-neighbor connectivity and wraparound.
+    Returns (m*n, sorted edges).
+    """
+    edges = set()
+    def id(i,j): return i*n + j
+    for i in range(m):
+        for j in range(n):
+            _add_undirected(edges, id(i,j), id((i+1) % m, j))
+            _add_undirected(edges, id(i,j), id(i, (j+1) % n))
+    return m*n, sorted(edges)
 
 def dary_tree(
         d: int, 
@@ -608,6 +672,76 @@ def make_hyperbolic_random_graph(
     return n, edges
 
 
+def stochastic_block_model(
+        sizes: List[int],
+        P: List[List[float]],
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Undirected Stochastic Block Model (SBM).
+
+    Parameters
+    - sizes: list of community sizes [n1, n2, ..., nk], each > 0
+    - P: k x k symmetric matrix of connection probabilities in [0, 1]
+    - seed: RNG seed
+
+    Returns (n, sorted list of undirected edges (u, v) with u < v).
+    """
+    k = len(sizes)
+    assert k >= 1 and all(s > 0 for s in sizes), "sizes must be positive"
+    assert len(P) == k and all(len(row) == k for row in P), "P must be k x k"
+    # light symmetry / bounds checks
+    for i in range(k):
+        for j in range(k):
+            pij = P[i][j]
+            assert 0.0 <= pij <= 1.0, "probabilities must be in [0, 1]"
+            if i <= j:
+                # tolerate tiny float differences
+                assert abs(P[j][i] - pij) < 1e-12, "P must be symmetric for undirected graphs"
+
+    rnd = random.Random(seed)
+    n = sum(sizes)
+    edges = set()
+
+    # block offsets
+    offsets = []
+    cur = 0
+    for s in sizes:
+        offsets.append(cur)
+        cur += s
+
+    # sample edges block-by-block (upper triangle, avoid duplicates)
+    for a in range(k):
+        oa, sa = offsets[a], sizes[a]
+        for b in range(a, k):
+            ob, sb = offsets[b], sizes[b]
+            p = P[a][b]
+            for i in range(sa):
+                u = oa + i
+                j_start = i + 1 if a == b else 0
+                for j in range(j_start, sb):
+                    v = ob + j
+                    if rnd.random() < p:
+                        _add_undirected(edges, u, v)
+    return n, sorted(edges)
+
+def make_sbm_graph(
+        sizes: List[int],
+        p_in: float,
+        p_out: float,
+        seed: int = 0
+        ) -> Tuple[int, List[Tuple[int,int]]]:
+    """
+    Homogeneous SBM with within-block p_in and between-block p_out.
+    Assortative when p_in > p_out, disassortative when p_in < p_out.
+    """
+    k = len(sizes)
+    P = [[p_out]*k for _ in range(k)]
+    for i in range(k):
+        P[i][i] = p_in
+    return stochastic_block_model(sizes, P, seed)
+
+
 # Test snippet to verify all graph generators work correctly
 if __name__ == "__main__":
     print("[TEST] Initializing graph generators...")
@@ -649,6 +783,8 @@ if __name__ == "__main__":
             ("Hyperbolic (deprecated)", lambda: deprecated_make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed)),
             ("Hyperbolic (parallel)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=1)),  # sequential 
             ("Hyperbolic (parallel multi)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=-1)),  # all CPUs
+            ("SBM (assortative)", lambda: make_sbm_graph([3, 4, 3], 0.8, 0.2, test_seed)),
+            ("SBM (disassortative)", lambda: make_sbm_graph([3, 4, 3], 0.2, 0.8, test_seed)),
         ]
         for name, gen_func in generators:
             try:
