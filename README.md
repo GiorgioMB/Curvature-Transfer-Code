@@ -21,16 +21,20 @@ We then produce distributional artifacts:
 
 ### (a) Random graph models
 
-- **Erdős–Rényi** `G(n,p)`
+- **Erdős–Rényi** (n,p)
 - **Watts–Strogatz** small-world model (n, k, beta)
 - **Barabási–Albert** preferential attachment (n, m)
 - **Random geometric** in the unit square with radius `r`
-- **Hyperbolic random graphs** 
+- **Random d-regular** graphs (n, d)
+- **Hyperbolic random graphs** (n, R, alpha, T)
+- **2-block SBM (equal communities)** (n, p_in, p_out)
+
 
 ### (b) Canonical combinatorial families
 
 - Cycles `C_n`
 - 2D Grids `Grid(m, n)`
+- Toroidal grids `C_m x C_n` (wraparound)
 - `d`-ary trees of height `h` (finite)
 - Complete graphs `K_n`
 
@@ -41,6 +45,7 @@ Place edge list CSVs under `experiments/data/` to include these in a run:
 - Jazz collaboration network (`jazz.csv`, from Glaiser--Danon 2003)
 - Western US power grid (`power_grid.csv` from Watts--Strogatz 1998)
 - Yeast transcription network (`yeast.csv` from Milo et al. 2002)
+- arXiv hep-ph citation network (`arxiv.csv`)
 
 **Format:** CSV with two integer columns `u,v` (0-indexed) and no header.
 If a file is missing, it is simply skipped.
@@ -69,8 +74,11 @@ python experiments/run_experiments.py \
   --ws 300 6 0.15 \
   --ba 300 2 \
   --rg 300 0.09 \
+  --rreg 300 8 \
+  --sbm2 300 0.012 0.004 \
   --cycle 200 \
   --grid 20 20 \
+  --torus 20 20 \
   --tree 3 6 \
   --complete 60 \
   --include-real
