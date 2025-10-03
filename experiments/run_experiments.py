@@ -23,7 +23,6 @@ $ python run_experiments.py --hrg 1000 7.0 1.0 0.0 --jobs -1 --skip-plots
 See argument help for all options.
 """
 import os
-import gzip
 import argparse
 from typing import Tuple, List
 import numpy as np
@@ -162,9 +161,9 @@ def handle_presets(args, seed: int):
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
-    """Load real network edge lists from CSV or CSV.GZ files in the given directory.
-
-    Looks for files named <name>.csv or <name>.csv.gz for each dataset name.
+    """Load real network edge lists from CSV files in the given directory.
+    
+    Looks for files named <name>.csv for each dataset name.
     Each file should have two integer columns (u, v) per row.
     Lines starting with '#' or empty lines are ignored.
 
@@ -176,26 +175,13 @@ def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]
     """
     out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
 
-    # Add "wikipedia" and keep existing datasets
-    dataset_names = ["karate", "jazz", "power_grid", "yeast", "arxiv", "wikipedia"]
-
-    def _open_maybe_gz(path_csv: str):
-        """Return (fh, used_path) for either .csv.gz (preferred if exists) or .csv."""
-        path_gz = path_csv + ".gz"
-        if os.path.exists(path_gz):
-            # text mode with universal newline handling; UTF-8 assumed
-            return gzip.open(path_gz, mode="rt", encoding="utf-8", newline=""), path_gz
-        elif os.path.exists(path_csv):
-            return open(path_csv, mode="r", encoding="utf-8", newline=""), path_csv
-        else:
-            return None, None
+    dataset_names = ["karate", "jazz", "power_grid", "yeast", "arxiv"]
 
     for name in dataset_names:
         base_path = os.path.join(data_dir, f"{name}.csv")
-        fh, used_path = _open_maybe_gz(base_path)
-        if fh is None:
-            # File (csv or csv.gz) not present; skip
+        if not os.path.exists(base_path):
             continue
+        fh = open(base_path, mode="r", encoding="utf-8", newline="")
 
         edges = set()
         try:
