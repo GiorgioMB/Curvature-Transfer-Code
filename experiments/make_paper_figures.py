@@ -196,105 +196,115 @@ def _read_edges(
 # Pretty naming for tags (for titles and file names)
 # ==============================
 
-def _pretty_from_tag(
-        tag: str
-        ) -> str:
+def _pretty_from_tag(tag: str) -> str:
     """
-    Convert a run tag (e.g., "er_n2000_p0.01") to a human-friendly title.
-
-    Known patterns (Erdos--Renyi, Watts--Strogatz, Barabasi--Albert, Random
-    Geometric, Hyperbolic Random Graph, and canonical families) are translated
-    into descriptive strings. If no pattern matches, the raw tag is returned.
-
-    Parameters
-    - tag: The identifier string recorded in the manifest for a run.
-
-    Returns
-    - A display string suitable for figure titles and filenames.
+    Short, publication-friendly display name for a run tag.
+    Examples:
+      - "er_n2000_p0.01" -> "ER $n=2000$, $p=0.01$"
+      - "ws_n1000_k10_b0.2" -> "WS $n=1000$, $k=10$, $\\beta=0.2$"
+      - "ba_n5000_m3" -> "BA $n=5000$, $m=3$"
+      - "real_karate" -> "Real: Zachary Karate"
     """
     import re
     t = tag
+
     # ER: er_n{n}_p{p}
     m = re.fullmatch(r"er_n(\d+)_p([0-9.]+)", t)
     if m:
         n, p = m.groups()
-        return rf"Erdős-Rényi $G(n,p)$ ($n={int(n)}$, $p={p}$)"
+        return rf"ER $n={int(n)}$, $p={p}$"
+
     # WS: ws_n{n}_k{k}_b{beta}
     m = re.fullmatch(r"ws_n(\d+)_k(\d+)_b([0-9.]+)", t)
     if m:
         n, k, b = m.groups()
-        return rf"Watts-Strogatz ($n={int(n)}$, $k={int(k)}$, $\beta={b}$)"
+        return rf"WS $n={int(n)}$, $k={int(k)}$, $\beta={b}$"
+
     # BA: ba_n{n}_m{m}
     m = re.fullmatch(r"ba_n(\d+)_m(\d+)", t)
     if m:
         n, m2 = m.groups()
-        return rf"Barabási-Albert ($n={int(n)}$, $m={int(m2)}$)"
+        return rf"BA $n={int(n)}$, $m={int(m2)}$"
+
     # RG: rg_n{n}_r{r}
     m = re.fullmatch(r"rg_n(\d+)_r([0-9.]+)", t)
     if m:
         n, r = m.groups()
-        return rf"Random Geometric ($n={int(n)}$, $r={r}$)"
+        return rf"RG $n={int(n)}$, $r={r}$"
+
+
+    # 2-block SBM: sbm2_n{n}_pin{p_in}_pout{p_out}
+    m = re.fullmatch(r"sbm2_n(\d+)_pin([0-9.]+)_pout([0-9.]+)", t)
+    if m:
+        n, pin, pout = m.groups()
+        return rf"SBM2 $n={int(n)}$, $p_{{\mathrm{{in}}}}={pin}$, $p_{{\mathrm{{out}}}}={pout}$"
+
     # HRG: hrg_n{n}_R{R}_a{alpha}_T{T}
     m = re.fullmatch(r"hrg_n(\d+)_R([0-9.]+)_a([0-9.]+)_T([0-9.]+)", t)
     if m:
         n, R, a, T = m.groups()
-        return rf"Hyperbolic Random Graph ($n={int(n)}$, $R={R}$, $\alpha={a}$, $T={T}$)"
+        return rf"HRG $n={int(n)}$, $R={R}$, $\alpha={a}$, $T={T}$"
+
     # Canonical families
     m = re.fullmatch(r"cycle_n(\d+)", t)
     if m:
         (n,) = m.groups()
         return rf"Cycle $C_{{{int(n)}}}$"
+
+    m = re.fullmatch(r"torus_(\d+)x(\d+)", t)
+    if m:
+        m1, n1 = m.groups()
+        return rf"Torus $C_{{{int(m1)}}}\times C_{{{int(n1)}}}$"
+    m = re.fullmatch(r"torus_(\d+)x(\d+)_edges", t)
+    if m:
+        m1, n1 = m.groups()
+        return rf"Torus $C_{{{int(m1)}}}\times C_{{{int(n1)}}}$"
+
+    m = re.fullmatch(r"rreg_n(\d+)_d(\d+)", t)
+    if m:
+        n, d = m.groups()
+        return rf"d-Reg $n={int(n)}$, $d={int(d)}$"
+
     m = re.fullmatch(r"grid_(\d+)x(\d+)", t)
     if m:
         m1, n1 = m.groups()
-        return rf"Grid$_{{{int(m1)}\times {int(n1)}}}$"
-    # Handle tags that might include _edges suffix
+        return rf"Grid ${{{int(m1)}\times {int(n1)}}}$"
+
     m = re.fullmatch(r"grid_(\d+)x(\d+)_edges", t)
     if m:
         m1, n1 = m.groups()
-        return rf"Grid$_{{{int(m1)}\times {int(n1)}}}$"
+        return rf"Grid ${{{int(m1)}\times {int(n1)}}}$"
+
     m = re.fullmatch(r"tree_d(\d+)_h(\d+)", t)
     if m:
         d, h = m.groups()
-        return rf"${int(d)}$-ary Tree ($d={int(d)}$, $h={int(h)}$)"
+        return rf"{int(d)}-ary Tree ($h={int(h)}$)"
+
     m = re.fullmatch(r"complete_n(\d+)", t)
     if m:
         (n,) = m.groups()
-        return rf"Complete Graph $K_{{{int(n)}}}$"
-    # Real networks
+        return rf"Complete $K_{{{int(n)}}}$"
+
+    # Real networks (remove/avoid Wikipedia mention)
     m = re.fullmatch(r"real_(.+)", t)
     if m:
         name = m.group(1)
+        # Any 'wiki' variant maps to a generic label; no Wikipedia mention
+        if re.search(r"wiki", name, flags=re.IGNORECASE):
+            return "Real network"
+
         pretty_map = {
-            "karate": "Zachary Karate Club",
+            "karate": "Zachary Karate",
             "jazz": "Jazz Musicians",
-            "power_grid": "Western US Power Grid",
-            "yeast": "Yeast Transcription Network",
-            "arxiv": "arXiv hep-ph citation network",
-            "wikipedia": "en-Wikipedia article-category network"
+            "power_grid": "US Power Grid",
+            "yeast": "Yeast TF",
+            "arxiv": "arXiv hep-ph citations",
         }
-        return f"Real network: {pretty_map.get(name, name.replace('_',' '))}"
-    # Fallback: return the raw tag
+        return f"Real: {pretty_map.get(name, name.replace('_', ' '))}"
+
+    # Fallback
     return t
 
-def _slugify(
-        s: str
-        ) -> str:
-    """
-    Make an ASCII-safe slug suitable for file names from an arbitrary string.
-
-    Parameters
-    - s: Input string that may contain spaces, punctuation, or non-ASCII chars.
-
-    Returns
-    - A lowercase-ish, underscore-separated slug with ASCII-only characters.
-    """
-    import re, unicodedata
-    s = unicodedata.normalize("NFKD", s)
-    s = s.encode("ascii", "ignore").decode("ascii")
-    s = re.sub(r"[^\w\-]+", "_", s).strip("_")
-    s = re.sub(r"__+", "_", s)
-    return s
 
 # ==============================
 # Plot primitives
@@ -492,7 +502,6 @@ def _make_run_figures(
         return
     df = _read_edges(csv_path)
 
-    # Retrieve arrays (robust to missing cols)
     as_np = lambda name: pd.to_numeric(df[name], errors="coerce").to_numpy() if name in df.columns else None
 
     cOR     = as_np("c_OR")
@@ -507,36 +516,34 @@ def _make_run_figures(
     fig_dir = os.path.join(run_root, "figures_paper")
     safe_tag = tag.replace("/", "-").replace(" ", "_").replace(".", "_")
     pretty_tag = pretty or _pretty_from_tag(tag)
-    pretty_slug = _slugify(pretty_tag)
 
-    # 1) OR histogram with transfer overlays
+    # 1) OR histogram (short title; run name as suptitle)
     if cOR is not None:
         fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        title = rf"{pretty_tag} — {DISPLAY['c_OR']} distribution"
         _hist_with_bands(ax, obs=cOR, lower=cOR_lo, upper=cOR_up, env=env_up, theta=theta_t,
                          lower_label=r"BF$\rightarrow$OR lower (dist.)", upper_label=r"BF$\rightarrow$OR upper (dist.)",
-                         bins=bins, title=title, xlabel=DISPLAY["c_OR"])
-        fig.tight_layout()
+                         bins=bins, title=DISPLAY['c_OR'] + r" dist.", xlabel=DISPLAY["c_OR"])
+        fig.suptitle(pretty_tag, y=0.99, fontsize=12)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
         fig.savefig(os.path.join(fig_dir, f"fig_cOR_hist__{safe_tag}.png"))
         plt.close(fig)
 
-    # 2) BF histogram with OR->BF overlays
+    # 2) BF histogram (short title; run name as suptitle)
     if cBF is not None:
         fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        title = rf"{pretty_tag} — {DISPLAY['c_BF']} distribution"
         _hist_with_bands(ax, obs=cBF, lower=cBF_lo, upper=cBF_up, env=None, theta=None,
                          lower_label=r"OR$\rightarrow$BF lower (dist.)", upper_label=r"OR$\rightarrow$BF upper (dist.)",
-                         bins=bins, title=title, xlabel=DISPLAY["c_BF"])
-        fig.tight_layout()
+                         bins=bins, title=DISPLAY['c_BF'] + r" dist.", xlabel=DISPLAY["c_BF"])
+        fig.suptitle(pretty_tag, y=0.99, fontsize=12)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
         fig.savefig(os.path.join(fig_dir, f"fig_cBF_hist__{safe_tag}.png"))
         plt.close(fig)
 
-    # 3) Scatter BF vs OR with ribbons
+    # 3) Scatter BF vs OR (short title already set inside helper; keep short suptitle)
     if (cBF is not None) and (cOR is not None):
         fig, ax = plt.subplots(figsize=(6.6, 4.9))
         _scatter_ribbon(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
-        suptitle = rf"{pretty_tag}"
-        fig.suptitle(suptitle, y=0.99, fontsize=13)
+        fig.suptitle(pretty_tag, y=0.99, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
         fig.savefig(os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}.png"))
         plt.close(fig)
