@@ -76,6 +76,10 @@ def add_family_args(parser: argparse.ArgumentParser):
                         help="Barabasi-Albert (n, m) with integer m")
     parser.add_argument("--rg", nargs=2, type=float, action="append", metavar=("n","r"),
                         help="Random geometric (n, radius)")
+    parser.add_argument("--rreg", nargs=2, type=int, action="append", metavar=("n","d"),
+                        help="Random d-regular graph (n, d)")
+    parser.add_argument("--sbm2", nargs=3, type=float, action="append", metavar=("n","p_in","p_out"),
+                        help="2-block homogeneous SBM with equal-size communities; n, p_in, p_out")
     parser.add_argument(
         "--hrg", nargs=4, type=float, action="append",
         metavar=("n","R","alpha","T"),
@@ -92,6 +96,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     # Canonical graphs
     parser.add_argument("--cycle", nargs=1, type=int, action="append", metavar=("n",), help="Cycle C_n")
     parser.add_argument("--grid", nargs=2, type=int, action="append", metavar=("m","n"), help="Grid m x n")
+    parser.add_argument("--torus", nargs=2, type=int, action="append", metavar=("m","n"), help="Toroidal grid C_m x C_n (wraparound)")
     parser.add_argument("--tree", nargs=2, type=int, action="append", metavar=("d","h"), help="d-ary tree of height h")
     parser.add_argument("--complete", nargs=1, type=int, action="append", metavar=("n",), help="Complete graph K_n")
     # Real networks (optional)
@@ -132,17 +137,26 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
     elif args.preset == "paper":
-        # (a) Random models
-        args.hrg = args.hrg or [[300, 5.0, 1.0, 0.0], [400, 5.0, 1.0, 0.5]]
-        args.er = args.er or [[800, 0.015], [800, 0.03], [1600, 0.04]]
-        args.ws = args.ws or [[800, 6, 0.05], [800, 10, 0.2], [1600, 14, 0.1]]
-        args.ba = args.ba or [[800, 2], [800, 3], [800, 5], [1600, 2]]
-        args.rg = args.rg or [[800, 0.08], [800, 0.1], [1600, 0.08]]
+        # (a) Random models (degree-matched where applicable)
+        args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
+        # ER with p=c/(n-1), c≈8
+        args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
+        # WS with k=10 at two betas and two sizes
+        args.ws  = args.ws  or [[800, 10, 0.05], [800, 10, 0.2], [1600, 10, 0.05], [1600, 10, 0.2]]
+        # BA with size × m sweep
+        args.ba  = args.ba  or [[800, 2], [800, 5], [1600, 2], [1600, 5]]
+        # RGG with r = sqrt(8/(n*pi))
+        args.rg  = args.rg  or [[800, 0.056419], [1600, 0.039894]]
+        # Random d-regular (expanders-like baselines)
+        args.rreg = args.rreg or [[1000, 8], [2000, 8]]
+        # SBM (2 equal blocks), assortative and disassortative at same n and mean degree
+        args.sbm2 = args.sbm2 or [[1000, 0.012018, 0.004006], [1000, 0.004002, 0.012006]]
         # (b) Canonical families
-        args.cycle = args.cycle or [[200], [400], [600]]
-        args.grid = args.grid or [[28, 28], [40, 40], [52, 52]]
-        args.tree = args.tree or [[3, 7], [4, 6], [5, 5]]
-        args.complete = args.complete or [[100], [120], [140]]
+        args.cycle = args.cycle or [[600]]
+        args.grid  = args.grid  or [[40, 40]]
+        args.torus = args.torus or [[32, 32], [40, 40]]
+        args.tree  = args.tree  or [[4, 6]]
+        args.complete = args.complete or [[120]]
         args.include_real = True
         args.skip_plots = True  # generate paper figures instead
 
@@ -244,6 +258,18 @@ def main():
     if args.rg:
         for n, r in args.rg:
             runs.append(("rg_n{}_r{}".format(int(n), float(r)), *models.random_geometric(int(n), float(r), seed=seed)))
+    if args.rreg:
+        for n, d in args.rreg:
+            runs.append(("rreg_n{}_d{}".format(int(n), int(d)), *models.d_regular_graph(int(n), int(d), seed=seed)))
+    if args.sbm2:
+        for n, p_in, p_out in args.sbm2:
+            n = int(n)
+            a = n // 2
+            b = n - a
+            runs.append((
+                "sbm2_n{}_pin{}_pout{}".format(n, float(p_in), float(p_out)),
+                *models.make_sbm_graph([a, b], float(p_in), float(p_out), seed=seed)
+            ))
     if hasattr(args, "hrg") and args.hrg:
         for n, R, alpha, T in args.hrg:
             runs.append((
@@ -261,6 +287,9 @@ def main():
     if args.grid:
         for m, n in args.grid:
             runs.append(("grid_{}x{}".format(int(m), int(n)), *models.grid_graph(int(m), int(n))))
+    if args.torus:
+        for m, n in args.torus:
+            runs.append(("torus_{}x{}".format(int(m), int(n)), *models.torus_graph(int(m), int(n))))
     if args.tree:
         for d, h in args.tree:
             runs.append(("tree_d{}_h{}".format(int(d), int(h)), *models.dary_tree(int(d), int(h))))
