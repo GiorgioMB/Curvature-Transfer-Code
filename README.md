@@ -56,9 +56,11 @@ Install requirements and run a preset suite (options: paper, small, tiny).
 **Important**: PyTorch 2.1 wheels are compiled against NumPy 1.x; you must pin `numpy==1.26.4` to avoid ABI errors with NumPy 2.x.
 
 ```bash
+# create the environment with the correct version of python
+python3.9 -m venv .venv
 # install with the correct wheel indexes
 python -m pip install -U -r requirements.txt \
-  --index-url https://download.pytorch.org/whl/cpu \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
   -f https://data.pyg.org/whl/torch-2.1.0+cpu.html
 
 # then run a preset suite
