@@ -18,3 +18,4 @@ torch-spline-conv==1.2.2+pt21cpu
 
 # Miscellaneous
 pytest==8.4.2
+pandas==2.3.2
