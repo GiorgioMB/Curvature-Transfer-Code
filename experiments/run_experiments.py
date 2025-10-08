@@ -30,6 +30,8 @@ import csv
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import glob
+import json
 
 import models
 from make_paper_figures import generate_paper_figures
@@ -111,6 +113,12 @@ def add_family_args(parser: argparse.ArgumentParser):
         action="store_true",
         help="Generate paper figures after the runs (on by default for --preset paper)"
     )
+    parser.add_argument(
+        "--soft-restart",
+        action="store_true",
+        help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists; rebuild manifest to include all CSVs in the folder and (if --auto-figures) render figures for all of them."
+    )
+ 
 
 
 def handle_presets(args, seed: int):
@@ -229,73 +237,143 @@ def main():
     handle_presets(args, seed)
     if getattr(args, "preset", None) == "paper" and not getattr(args, "auto_figures", False):
         args.auto_figures = True
-    runs = []
-
-    # Random families
-    if args.er:
-        for n, p in args.er:
-            runs.append(("er_n{}_p{}".format(int(n), float(p)), *models.erdos_renyi(int(n), float(p), seed=seed)))
-    if args.ws:
-        for n, k, beta in args.ws:
-            runs.append(("ws_n{}_k{}_b{}".format(int(n), int(k), float(beta)), *models.watts_strogatz(int(n), int(k), float(beta), seed=seed)))
-    if args.ba:
-        for n, m in args.ba:
-            runs.append(("ba_n{}_m{}".format(int(n), int(m)), *models.barabasi_albert(int(n), int(m), seed=seed)))
-    if args.rg:
-        for n, r in args.rg:
-            runs.append(("rg_n{}_r{}".format(int(n), float(r)), *models.random_geometric(int(n), float(r), seed=seed)))
-    if args.rreg:
-        for n, d in args.rreg:
-            runs.append(("rreg_n{}_d{}".format(int(n), int(d)), *models.d_regular_graph(int(n), int(d), seed=seed)))
-    if args.sbm2:
-        for n, p_in, p_out in args.sbm2:
-            n = int(n)
-            a = n // 2
-            b = n - a
-            runs.append((
-                "sbm2_n{}_pin{}_pout{}".format(n, float(p_in), float(p_out)),
-                *models.make_sbm_graph([a, b], float(p_in), float(p_out), seed=seed)
-            ))
-    if hasattr(args, "hrg") and args.hrg:
-        for n, R, alpha, T in args.hrg:
-            runs.append((
-                "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T)),
-                *models.make_hyperbolic_random_graph(
-                    int(n), float(R),
-                    alpha=float(alpha), T=float(T), seed=seed,
-                    n_jobs=args.jobs, block_size=args.block_size
-                )
-            ))
-    # Canonical
-    if args.cycle:
-        for (n,) in args.cycle:
-            runs.append(("cycle_n{}".format(int(n)), *models.cycle_graph(int(n))))
-    if args.grid:
-        for m, n in args.grid:
-            runs.append(("grid_{}x{}".format(int(m), int(n)), *models.grid_graph(int(m), int(n))))
-    if args.torus:
-        for m, n in args.torus:
-            runs.append(("torus_{}x{}".format(int(m), int(n)), *models.torus_graph(int(m), int(n))))
-    if args.tree:
-        for d, h in args.tree:
-            runs.append(("tree_d{}_h{}".format(int(d), int(h)), *models.dary_tree(int(d), int(h))))
-    if args.complete:
-        for (n,) in args.complete:
-            runs.append(("complete_n{}".format(int(n)), *models.complete_graph(int(n))))
-
-    # Real graphs
-    if args.include_real:
-        for name, n, edges in load_real_graphs(os.path.join(os.path.dirname(__file__), "data")):
-            runs.append((f"real_{name}", n, edges))
-
-    # Output dir
+    # Resolve output dir early (needed to decide which runs can be skipped).
     run_name = args.run_name or ("preset_" + args.preset if args.preset else "custom")
     out_dir = os.path.join(os.path.dirname(__file__), "out", run_name)
     ensure_dir(out_dir)
 
+    # Load prior manifest summaries (to avoid recomputing them).
+    prev_summary = {}
+    man_path = os.path.join(out_dir, "manifest.json")
+    if getattr(args, "soft_restart", False):
+        if os.path.exists(man_path):
+            try:
+                _prev = json.load(open(man_path, "r"))
+                for r in _prev.get("runs", []):
+                    t = r.get("tag")
+                    if t:
+                        prev_summary[t] = r.get("summary")
+            except Exception:
+                prev_summary = {}
+                print(f"[warn] Could not load prior manifest from {man_path}")
+        else:
+            # No manifest? That's fine—soft restart will rebuild it from any CSVs present.
+            print(f"[info] No manifest found at {man_path}; will rebuild from existing CSVs (if any).")
+ 
+
+    def _csv_base(tag: str) -> str:
+        return tag.replace(".", "_")
+
+    def _csv_path_for(tag: str) -> str:
+        return os.path.join(out_dir, f"{_csv_base(tag)}_edges.csv")
+
+    def _infer_nm_from_csv(path_csv: str) -> Tuple[int, int]:
+        """Infer (n, m) from a per-edge CSV without loading it fully."""
+        import csv as _csv
+        m = 0
+        max_id = -1
+        with open(path_csv, "r", newline="") as fh:
+            rd = _csv.reader(fh)
+            _ = next(rd, None)  # header
+            for row in rd:
+                if not row or len(row) < 2:
+                    continue
+                try:
+                    u = int(float(row[0])); v = int(float(row[1]))
+                except Exception:
+                    continue
+                m += 1
+                if u > max_id: max_id = u
+                if v > max_id: max_id = v
+        n = (max_id + 1) if m > 0 else 0
+        return n, m
+
+    # Plan: which runs to compute vs which to skip (already have CSVs).
+    to_compute = []            # list[(tag, gen_callable returning (n, edges))]
+    skipped = []               # list[(tag, csv_path)]
+
+    def plan_run(tag: str, gen_callable):
+        csv_path = _csv_path_for(tag)
+        if getattr(args, "soft_restart", False) and os.path.exists(csv_path):
+            print(f"[skip] {tag}: found existing CSV -> {os.path.relpath(csv_path, out_dir)}")
+            skipped.append((tag, csv_path))
+        else:
+            to_compute.append((tag, gen_callable))
+ 
+
+    # Random families
+    if args.er:
+        for n, p in args.er:
+            tag = "er_n{}_p{}".format(int(n), float(p))
+            plan_run(tag, lambda n=int(n), p=float(p): models.erdos_renyi(int(n), float(p), seed=seed))
+    if args.ws:
+        for n, k, beta in args.ws:
+            tag = "ws_n{}_k{}_b{}".format(int(n), int(k), float(beta))
+            plan_run(tag, lambda n=int(n), k=int(k), beta=float(beta): models.watts_strogatz(int(n), int(k), float(beta), seed=seed))
+    if args.ba:
+        for n, m in args.ba:
+            tag = "ba_n{}_m{}".format(int(n), int(m))
+            plan_run(tag, lambda n=int(n), m=int(m): models.barabasi_albert(int(n), int(m), seed=seed))
+    if args.rg:
+        for n, r in args.rg:
+            tag = "rg_n{}_r{}".format(int(n), float(r))
+            plan_run(tag, lambda n=int(n), r=float(r): models.random_geometric(int(n), float(r), seed=seed))
+    if args.rreg:
+        for n, d in args.rreg:
+            tag = "rreg_n{}_d{}".format(int(n), int(d))
+            plan_run(tag, lambda n=int(n), d=int(d): models.d_regular_graph(int(n), int(d), seed=seed))
+
+    if args.sbm2:
+        for n, p_in, p_out in args.sbm2:
+            n = int(n); p_in = float(p_in); p_out = float(p_out)
+            a = n // 2; b = n - a
+            tag = "sbm2_n{}_pin{}_pout{}".format(n, p_in, p_out)
+            plan_run(tag, lambda a=a, b=b, p_in=p_in, p_out=p_out: models.make_sbm_graph([a, b], float(p_in), float(p_out), seed=seed))
+
+    if hasattr(args, "hrg") and args.hrg:
+        for n, R, alpha, T in args.hrg:
+            tag = "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T))
+            plan_run(tag, lambda n=int(n), R=float(R), alpha=float(alpha), T=float(T):
+                     models.make_hyperbolic_random_graph(
+                         int(n), float(R), alpha=float(alpha), T=float(T),
+                         seed=seed, n_jobs=args.jobs, block_size=args.block_size))
+
+    # Canonical
+    if args.cycle:
+        for (n,) in args.cycle:
+            tag = "cycle_n{}".format(int(n))
+            plan_run(tag, lambda n=int(n): models.cycle_graph(int(n)))
+
+    if args.grid:
+        for m, n in args.grid:
+            tag = "grid_{}x{}".format(int(m), int(n))
+            plan_run(tag, lambda m=int(m), n=int(n): models.grid_graph(int(m), int(n)))
+
+    if args.torus:
+        for m, n in args.torus:
+            tag = "torus_{}x{}".format(int(m), int(n))
+            plan_run(tag, lambda m=int(m), n=int(n): models.torus_graph(int(m), int(n)))
+
+    if args.tree:
+        for d, h in args.tree:
+            tag = "tree_d{}_h{}".format(int(d), int(h))
+            plan_run(tag, lambda d=int(d), h=int(h): models.dary_tree(int(d), int(h)))
+ 
+    if args.complete:
+        for (n,) in args.complete:
+            tag = "complete_n{}".format(int(n))
+            plan_run(tag, lambda n=int(n): models.complete_graph(int(n)))
+    # Real graphs
+    if args.include_real:
+        for name, n, edges in load_real_graphs(os.path.join(os.path.dirname(__file__), "data")):
+            tag = f"real_{name}"
+            plan_run(tag, lambda n=n, edges=edges: (n, edges))
+
     manifest = {"runs": [], "notes": "Distributional histograms and envelope/transfer coverage"}
 
-    for tag, n, edges in runs:
+    # Compute the planned runs (no CSV present yet).
+    for tag, gen in to_compute:
+        n, edges = gen()
         print(f"[run] {tag}: n={n}, m={len(edges)}")
         curv = compute_curvatures(n, edges, n_jobs=args.jobs)
         # Save edge-level table
@@ -313,8 +391,27 @@ def main():
             _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag} — slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
             _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag} — slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
             
+    # Add entries for runs we skipped (existing CSVs).
+    for tag, csv_path in skipped:
+        n, m = _infer_nm_from_csv(csv_path)
+        manifest["runs"].append({"tag": tag, "n": n, "m": m, "summary": prev_summary.get(tag)})
+
+    # If soft-restart, include any stray CSVs already in the folder (not in current args).
+    if getattr(args, "soft_restart", False):
+        # Even if no families were requested on the CLI (e.g., pure resume),
+        # rebuild the manifest from all CSVs present so downstream steps
+        # (like --auto-figures) can run.
+        seen_bases = { (r.get("tag","")).replace(".", "_") for r in manifest["runs"] }
+        for path in glob.glob(os.path.join(out_dir, "*_edges.csv")):
+             base = os.path.basename(path)[:-len("_edges.csv")]
+             if base in seen_bases:
+                 continue
+             n, m = _infer_nm_from_csv(path)
+             manifest["runs"].append({"tag": base, "n": n, "m": m, "summary": prev_summary.get(base)})
+        if not manifest["runs"]:
+            print(f"[info] Soft-restart found no *_edges.csv in {out_dir}. Nothing to do.")
+
     # Write manifest
-    import json
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
 
