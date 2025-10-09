@@ -750,6 +750,8 @@ class CurvatureEngine:
         - (use_parallel, max_workers) where max_workers follows ProcessPoolExecutor.
           If use_parallel == "auto", caller decides based on graph size.
         """
+        if n_jobs is not None:
+            n_jobs = self._validate_n_jobs(n_jobs)
         effective_n_jobs = n_jobs if n_jobs is not None else self.n_jobs
         
         if effective_n_jobs is None:
@@ -1643,6 +1645,7 @@ class CurvatureEngine:
                     n_jobs = None  # Keep auto behavior
                 else:
                     n_jobs = None
+            
         
         # Resolve parallelization strategy
         use_parallel, resolved_max_workers = self._resolve_n_jobs(n_jobs)
