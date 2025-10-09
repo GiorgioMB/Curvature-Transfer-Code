@@ -90,6 +90,8 @@ Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
 - The test suite verifies, per edge of a graph:
   - **Two-sided transfer inequalities** between Balanced Forman (BF) and Ollivier–Ricci (OR) curvature
   - **Lazy-to-non-lazy comparison** and the **lazy transport envelope** upper bound for $c_{\rm OR}$
+  - **Property-based tests** assert shape invariants, universal bounds ($c_{\rm OR}, c_{\rm OR-0} \le 1$), degree-1 BF rule, $\Theta$-envelope consistency, and that the bounds contain the exact curvatures
+
   - **Monotone coverage envelope**: the affine bound $\Theta_\alpha(\triangle)=Const_\alpha+Slope_\alpha\triangle$ with strictly positive slope and $\mathfrak c_{\rm OR}(i,j)\le \Theta_\alpha(\triangle(i,j))$
   - **Structural 4-cycle coverage bounds** used by the BF curvature: $\Xi_{ij}\le \varrho_i+\varrho_j-2-2\,\triangle(i,j)$
   and $\Xi_{ij}\le sho_{\max}(i,j)=\varpi_{\max}(i,j)\,\max\{\varrho_i,\varrho_j\}$
