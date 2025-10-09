@@ -99,7 +99,6 @@ Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
   (same degrees and triangle count but different coverage), showing the lazy transport envelope is larger when coverage is larger.
 How to run the tests:
 ```bash
-python -m pip install -U pytest hypothesis
 pytest -q                 # fast tests (skips @slow and runs property-based tests)
 pytest -q -m slow         # include parallel equivalence test
 ```
