@@ -63,8 +63,8 @@ def add_preset_args(parser: argparse.ArgumentParser):
         "--preset",
         type=str,
         default=None,
-        choices=["tiny", "small", "paper"],
-        help="Run a predefined suite (tiny, small, or paper)"
+        choices=["tiny", "small", "paper", "benchmark"],
+        help="Run a predefined suite (tiny, small, paper or benchmark)"
     )
     
 
@@ -168,6 +168,8 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[120]]
         args.include_real = True
         args.skip_plots = True  # generate paper figures instead
+    elif args.preset == "benchmark":
+        args.complete = args.complete or [[40]]
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
