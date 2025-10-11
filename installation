@@ -1,0 +1,25 @@
+if command -v uv >/dev/null; then
+  VENV="uv venv --python 3.11 .venv"
+  PIP="uv pip"
+else
+  VENV="python3.11 -m venv .venv"
+  PIP="pip"
+fi
+
+eval "$VENV"
+source .venv/bin/activate
+
+$PIP install -U -r requirements.base.txt
+$PIP install -U torch torchvision torchaudio \
+  --extra-index-url https://download.pytorch.org/whl/cpu
+
+TORCH=$(python - <<'PY'
+import torch
+print(torch.__version__.split('+')[0])
+PY
+)
+
+$PIP install -U torch_geometric torch-scatter torch-sparse torch-cluster torch-spline-conv \
+  -f https://data.pyg.org/whl/torch-$TORCH+cpu.html
+
+deactivate

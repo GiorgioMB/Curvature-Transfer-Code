@@ -53,13 +53,14 @@ If a file is missing, it is simply skipped.
 
 ## Usage
 Install requirements and run a preset suite (options: paper, small, tiny).
-**Important**: PyTorch 2.1 wheels are compiled against NumPy 1.x; you must pin `numpy==1.26.4` to avoid ABI errors with NumPy 2.x.
+The code runs in python3.11
 
 ```bash
-# install with the correct wheel indexes
-python -m pip install -U -r requirements.txt \
-  --index-url https://download.pytorch.org/whl/cpu \
-  -f https://data.pyg.org/whl/torch-2.1.0+cpu.html
+# only if you require cpu
+source installation
+
+# only if you require gpu 
+source installation-gpu
 
 # then run a preset suite
 python experiments/run_experiments.py --preset paper
