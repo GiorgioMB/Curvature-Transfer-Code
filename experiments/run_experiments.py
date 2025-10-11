@@ -32,6 +32,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import glob
 import json
+import time
+from datetime import datetime
 
 import models
 from make_paper_figures import generate_paper_figures
@@ -373,9 +375,20 @@ def main():
 
     # Compute the planned runs (no CSV present yet).
     for tag, gen in to_compute:
+        now_iso_string = datetime.now().strftime("%Y-%m-%d--%H:%M:%S%z")
+        
         n, edges = gen()
-        print(f"[run] {tag}: n={n}, m={len(edges)}")
+        print(f"{now_iso_string} [run] {tag}: n={n}, m={len(edges)}", end="")
+
+        # Time the curvature calculations
+        time_start = time.time()
         curv = compute_curvatures(n, edges, n_jobs=args.jobs)
+        time_end = time.time()
+        total_seconds = int(time_end - time_start)
+        h, rem = divmod(total_seconds, 3600)
+        m, s = divmod(rem, 60)
+        print(f", t:{h:02d}:{m:02d}:{s:02d}s")
+        
         # Save edge-level table
         base_name = tag.replace(".", "_")
         if not args.skip_csv:
