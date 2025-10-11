@@ -88,13 +88,15 @@ Outputs from compute_all()
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple, Set, Any, Deque, Iterator, cast
+from typing import Dict, List, Optional, Sequence, Tuple, Set, Any, Deque, cast
 from collections import deque
 
 import os
 import math
 import numpy as np
 import numpy.typing as npt
+from numba import njit, types
+from numba.typed import List as NumbaList
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 try:
@@ -241,8 +243,10 @@ def _pairwise_distances_between_sets(
 
 # ---------------------------------------------------
 # Transportation (EMD / W1) solver on small supports
+# WIP add numba compatibility
 # ---------------------------------------------------
 
+@njit
 def _northwest_corner(
     supply: np.ndarray, 
     demand: np.ndarray
@@ -259,14 +263,14 @@ def _northwest_corner(
     S = supply.copy()
     D = demand.copy()
     m, n = len(S), len(D)
-    X = np.zeros((m, n), dtype=float)
-    basis: Set[Tuple[int,int]] = set()
+    X = np.zeros((m, n), dtype=np.float64)
+    basis = set()
 
     i = 0
     j = 0
     tol = 1e-15
     while i < m and j < n:
-        x = min(S[i], D[j])
+        x = S[i] if S[i] < D[j] else D[j]
         X[i, j] += x
         basis.add((i, j))
         S[i] -= x
@@ -305,6 +309,7 @@ def _northwest_corner(
     return X, basis
 
 
+@njit
 def _compute_potentials(
     cost: np.ndarray, 
     basis: Set[Tuple[int,int]]
@@ -316,45 +321,66 @@ def _compute_potentials(
     Unreachable entries (in degenerate cases) are set to 0, which is safe.
     """
     m, n = cost.shape
-    u = np.full(m, np.nan, dtype=float)
-    v = np.full(n, np.nan, dtype=float)
+    u = np.full(m, np.nan, dtype=np.float64)
+    v = np.full(n, np.nan, dtype=np.float64)
     u[0] = 0.0
 
-    rows_to_cols = {i: [] for i in range(m)}
-    cols_to_rows = {j: [] for j in range(n)}
-    for (i,j) in basis:
+    rows_to_cols = NumbaList()
+    for _ in range(m):
+        rows_to_cols.append(NumbaList.empty_list(types.int64))
+    cols_to_rows = NumbaList()
+    for _ in range(n):
+        cols_to_rows.append(NumbaList.empty_list(types.int64))
+    for it in basis:
+        i = it[0]
+        j = it[1]
         rows_to_cols[i].append(j)
         cols_to_rows[j].append(i)
 
-    from collections import deque
-    q = deque()
-    q.append(('r', 0))
+    st_type = np.empty(m + n, dtype=np.int8)
+    st_idx = np.empty(m + n, dtype=np.int64)
+    top = 0
+    st_type[top] = 0
+    st_idx[top] = 0
+    top += 1
+
     seen_r = set([0])
     seen_c = set()
-    while q:
-        typ, idx = q.popleft()
-        if typ == 'r':
+    while top > 0:
+        top -= 1
+        typ = st_type[top]
+        idx = st_idx[top]
+        if typ == 0:
             i = idx
-            for j in rows_to_cols[i]:
-                if math.isnan(v[j]):
+            lst = rows_to_cols[i]
+            for k in range(len(lst)):
+                j = lst[k]
+                if np.isnan(v[j]):
                     v[j] = cost[i, j] - u[i]
                 if j not in seen_c:
                     seen_c.add(j)
-                    q.append(('c', j))
+                    st_type[top] = 1
+                    st_idx[top] = j
+                    top += 1
         else:
             j = idx
-            for i in cols_to_rows[j]:
-                if math.isnan(u[i]):
+            lst = cols_to_rows[j]
+            for k in range(len(lst)):
+                i = lst[k]
+                if np.isnan(u[i]):
                     u[i] = cost[i, j] - v[j]
                 if i not in seen_r:
                     seen_r.add(i)
-                    q.append(('r', i))
+                    st_type[top] = 0
+                    st_idx[top] = i
+                    top += 1
 
     u[np.isnan(u)] = 0.0
     v[np.isnan(v)] = 0.0
     return u, v
 
 
+@njit
 def _find_cycle(
     basis: Set[Tuple[int,int]], 
     enter: Tuple[int,int], 
@@ -368,78 +394,87 @@ def _find_cycle(
     row and column moves. We return the cycle as a list of (i, j, sign), where
     sign is +1 or -1 according to the standard MODI update rule.
     """
-    (i0, j0) = enter
-    rows_to_cols: Dict[int, Set[int]] = {i: set() for i in range(m)}
-    cols_to_rows: Dict[int, Set[int]] = {j: set() for j in range(n)}
-    for (i,j) in basis:
-        rows_to_cols[i].add(j)
-        cols_to_rows[j].add(i)
+    i0, j0 = enter
+    rows_to_cols = NumbaList()
+    for _ in range(m):
+        rows_to_cols.append(NumbaList.empty_list(types.int64))
+    cols_to_rows = NumbaList()
+    for _ in range(n):
+        cols_to_rows.append(NumbaList.empty_list(types.int64))
+    for it in basis:
+        rows_to_cols[it[0]].append(it[1])
+        cols_to_rows[it[1]].append(it[0])
 
-    # BFS in the bipartite graph of basic variables to connect row i0 to column j0
-    start = ('r', i0)
-    goal = ('c', j0)
-    q: Deque[Any] = deque([start])
-    parent: Dict[Any, Optional[Any]] = {start: None}
-    visited: Set[Any] = {start}
-
-    def neighbors(node):
-        typ, idx = node
-        if typ == 'r':
-            for jj in rows_to_cols[idx]:
-                node2 = ('c', jj)
-                if node2 not in visited:
-                    yield node2
-        else:
-            for ii in cols_to_rows[idx]:
-                node2 = ('r', ii)
-                if node2 not in visited:
-                    yield node2
-
+    tot = m + n
+    start, goal = i0, m + j0
+    q = np.empty(tot, dtype=np.int64)
+    head = tail = 0
+    q[tail]; q[tail] = start; tail += 1
+    visited = np.zeros(tot, dtype=np.uint8)
+    parent = np.full(tot, -1, dtype=np.int64)
+    visited[start] = 1
     found = False
-    while q:
-        node = q.popleft()
-        if node == goal:
-            found = True
-            break
-        for nb in neighbors(node):
-            visited.add(nb)
-            parent[nb] = node
-            q.append(nb)
+    while head < tail:
+        node = q[head]; head += 1
+        if node < m:
+            for k in range(len(rows_to_cols[node])):
+                nb = m + rows_to_cols[node][k]
+                if visited[nb] == 0:
+                    visited[nb] = 1
+                    parent[nb] = node
+                    q[tail] = nb; tail += 1
+                    if nb == goal:
+                        found = True; head = tail; break
+        else:
+            j = node - m
+            for k in range(len(cols_to_rows[j])):
+                nb = cols_to_rows[j][k]
+                if visited[nb] == 0:
+                    visited[nb] = 1
+                    parent[nb] = node
+                    q[tail] = nb; tail += 1
 
     if not found:
-        # Fall back to a small 4-cycle when a direct BFS failed (degenerate case)
-        row_cols = [j for (i,j) in basis if i == i0 and j != j0]
-        col_rows = [i for (i,j) in basis if j == j0 and i != i0]
-        if row_cols and col_rows:
-            j1 = row_cols[0]
-            i1 = col_rows[0]
-            cycle = [(i0,j0, +1), (i0,j1, -1), (i1,j1, +1), (i1,j0, -1)]
-            return cycle
+        row_cols = NumbaList.empty_list(types.int64)
+        for k in range(len(rows_to_cols[i0])):
+            jj = rows_to_cols[i0][k]
+            if jj != j0: row_cols.append(jj)
+        col_rows = NumbaList.empty_list(types.int64)
+        for k in range(len(cols_to_rows[j0])):
+            ii = cols_to_rows[j0][k]
+            if ii != i0: col_rows.append(ii)
+        if len(row_cols) > 0 and len(col_rows) > 0:
+            j1 = row_cols[0]; i1 = col_rows[0]
+            cyc = NumbaList()
+            cyc.append((i0, j0, 1))
+            cyc.append((i0, j1, -1))
+            cyc.append((i1, j1, 1))
+            cyc.append((i1, j0, -1))
+            return cyc
         raise RuntimeError("Failed to find cycle for MODI. Basis may be inconsistent.")
 
-    # Reconstruct the alternating path, then convert to a signed cycle
-    nodes: List[Any] = []
-    cur: Optional[Any] = goal
-    while cur is not None:
-        nodes.append(cur)
-        cur = parent.get(cur, None)
-    nodes = list(reversed(nodes))
+    nodes = NumbaList(); cur = goal
+    while cur != -1:
+        nodes.append(cur); cur = parent[cur]
+    rev = NumbaList()
+    for t in range(len(nodes)):
+        rev.append(nodes[len(nodes)-1-t])
 
-    cycle: List[Tuple[int,int,int]] = [(i0, j0, +1)]
-    for k in range(len(nodes) - 1):
-        a = nodes[k]; b = nodes[k+1]
-        if a[0] == 'r' and b[0] == 'c':
-            i = a[1]; j = b[1]
-        elif a[0] == 'c' and b[0] == 'r':
-            i = b[1]; j = a[1]
+    cyc = NumbaList()
+    cyc.append((i0, j0, 1))
+    for k in range(len(rev) - 1):
+        a = rev[k]; b = rev[k + 1]
+        if a < m and b >= m:
+            i = a; j = b - m
+        elif a >= m and b < m:
+            i = b; j = a - m
         else:
             continue
-        sign = -1 if (k % 2 == 0) else +1
-        cycle.append((i, j, sign))
-
-    return cycle
+        cyc.append((i, j, -1 if (k % 2 == 0) else 1))
+    return cyc
 
 
+@njit
 def _transportation_simplex(
     cost: np.ndarray, 
     supply: np.ndarray, 
@@ -465,51 +500,69 @@ def _transportation_simplex(
     - Numerical tolerances are conservative to keep results stable.
     """
     m, n = cost.shape
-    assert supply.shape == (m,) and demand.shape == (n,)
+    assert supply.shape[0] == m and demand.shape[0] == n
     if not np.isclose(supply.sum(), demand.sum(), atol=1e-9):
         raise ValueError("Supply and demand must sum to the same total.")
 
     X, basis = _northwest_corner(supply, demand)
 
     for _ in range(max_iter):
-        # 1) Compute potentials and reduced costs
         u, v = _compute_potentials(cost, basis)
-        rc = np.full_like(cost, np.nan, dtype=float)
+
+        min_rc = np.inf
+        enter_i = -1
+        enter_j = -1
         for i in range(m):
+            ui = u[i]
             for j in range(n):
-                if (i,j) not in basis:
-                    rc[i,j] = cost[i,j] - (u[i] + v[j])
-        # 2) If all reduced costs >= 0, we are optimal
-        mask = ~np.isnan(rc)
-        if not np.any(mask):
+                if (i, j) not in basis:
+                    rc = cost[i, j] - (ui + v[j])
+                    if rc < min_rc:
+                        min_rc = rc
+                        enter_i = i
+                        enter_j = j
+
+        if not np.isfinite(min_rc) or min_rc >= -tol:
             break
-        min_rc = np.min(rc[mask])
-        if min_rc >= -tol:
-            break
-        # 3) Enter the most negative reduced-cost cell and pivot along its cycle
-        enter_idx = cast(Tuple[int,int], np.unravel_index(np.nanargmin(rc), rc.shape))  # type: ignore[arg-type]
-        cycle = _find_cycle(basis, enter_idx, m, n)
-        theta = math.inf
-        minus_cells = []
-        for (i,j,sgn) in cycle:
+
+        cycle = _find_cycle(basis, (enter_i, enter_j), m, n)
+
+        theta = np.inf
+        minus_cells = NumbaList()
+        for t in range(len(cycle)):
+            i, j, sgn = cycle[t]
             if sgn < 0:
-                minus_cells.append((i,j))
-                theta = min(theta, X[i,j])
+                minus_cells.append((i, j))
+                if X[i, j] < theta:
+                    theta = X[i, j]
         if not np.isfinite(theta):
             theta = 0.0
-        for (i,j,sgn) in cycle:
-            X[i,j] = X[i,j] + theta if sgn > 0 else X[i,j] - theta
-            if abs(X[i,j]) < tol:
-                X[i,j] = 0.0
-        basis.add(enter_idx)
-        zeros = [(i,j) for (i,j) in minus_cells if X[i,j] <= tol]
-        if zeros:
-            basis.remove(zeros[0])
+
+        for t in range(len(cycle)):
+            i, j, sgn = cycle[t]
+            if sgn > 0:
+                X[i, j] = X[i, j] + theta
+            else:
+                X[i, j] = X[i, j] - theta
+            if abs(X[i, j]) < tol:
+                X[i, j] = 0.0
+
+        basis.add((enter_i, enter_j))
+        removed = False
+        for k in range(len(minus_cells)):
+            i, j = minus_cells[k]
+            if X[i, j] <= tol:
+                basis.remove((i, j))
+                removed = True
+                break
+        if not removed and len(minus_cells) > 0:
+            i, j = minus_cells[0]
+            basis.remove((i, j))
 
     value = float((X * cost).sum())
     return X, value
 
-
+@njit
 def wasserstein1_uniform(
     cost: np.ndarray, 
     n_left: int, 
@@ -530,11 +583,10 @@ def wasserstein1_uniform(
     assert m == n_left and n == n_right
     if m == 0 or n == 0:
         return 0.0
-    supply = np.full(m, 1.0/m, dtype=float)
-    demand = np.full(n, 1.0/n, dtype=float)
+    supply = np.full(m, 1.0 / m, dtype=np.float64)
+    demand = np.full(n, 1.0 / n, dtype=np.float64)
     _, val = _transportation_simplex(cost, supply, demand)
     return float(val)
-
 
 # ------------------------------
 # Core engine
