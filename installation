@@ -22,4 +22,6 @@ PY
 $PIP install -U torch_geometric torch-scatter torch-sparse torch-cluster torch-spline-conv \
   -f https://data.pyg.org/whl/torch-$TORCH+cpu.html
 
+$PIP install -U numba
+
 deactivate
