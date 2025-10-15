@@ -45,7 +45,7 @@ Place edge list CSVs under `experiments/data/` to include these in a run:
 - Jazz collaboration network (`jazz.csv`, from Glaiser--Danon 2003)
 - Western US power grid (`power_grid.csv` from Watts--Strogatz 1998)
 - Yeast transcription network (`yeast.csv` from Milo et al. 2002)
-- arXiv hep-ph citation network (`arxiv.csv`)
+- arXiv hep-ph citation network (`arxiv.csv` from Gehrke et al. 2003)
 
 **Format:** CSV with two integer columns `u,v` (0-indexed) and no header.
 If a file is missing, it is simply skipped.
