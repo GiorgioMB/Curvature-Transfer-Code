@@ -141,10 +141,9 @@ def compute_curvatures(
     eng = pc.CurvatureEngine(Data(num_nodes, edge_index), n_jobs=n_jobs)
 
     base = eng.compute_all()
-
     # Compute transfer bounds in both directions
-    or_from_bf = eng.bounds_from_BF()
-    bf_from_or = eng.bounds_from_OR()
+    or_from_bf = eng.bounds_from_BF(base["c_BF"])
+    bf_from_or = eng.bounds_from_OR(base["c_OR"])
 
     # Compute lazy transport envelope and linear Theta evaluated at t = triangles
     M = len(base["edges"])

@@ -1587,7 +1587,7 @@ class CurvatureEngine:
 
     def bounds_from_BF(
         self, 
-        c_BF: Optional[np.ndarray] = None
+        c_BF: np.ndarray,
         ) -> Dict[str, np.ndarray]:
         """
         Convenience: given BF, return lower/upper bounds for OR per edge.
@@ -1595,18 +1595,14 @@ class CurvatureEngine:
         If c_BF is None, we compute everything first. The result dictionary has
         keys: "c_BF", "c_OR_lower_from_c_BF", "c_OR_upper_from_c_BF".
         """
-        if c_BF is None:
-            base = self.compute_all()  # may run in parallel (auto)
-            c_BF = base["c_BF"]
-        else:
-            c_BF = self._values_to_undirected(c_BF, edge_index=self._original_edge_index, agg="mean")
+        c_BF = self._values_to_undirected(c_BF, edge_index=self._original_edge_index, agg="mean")
         lower = self.varphi_BF_to_OR(c_BF)
         upper = self.psi_BF_to_OR(c_BF)
         return {"c_BF": c_BF, "c_OR_lower_from_c_BF": lower, "c_OR_upper_from_c_BF": upper}
 
     def bounds_from_OR(
         self, 
-        c_OR: Optional[np.ndarray] = None, 
+        c_OR: np.ndarray, 
         use_sign_sharpening: bool = True, 
         reuse_cOR0: bool = True
         ) -> Dict[str, np.ndarray]:
@@ -1616,11 +1612,7 @@ class CurvatureEngine:
         If c_OR is None, we compute everything first. The result dictionary has
         keys: "c_OR", "c_BF_lower_from_c_OR", "c_BF_upper_from_c_OR".
         """
-        if c_OR is None:
-            base = self.compute_all()  # may run in parallel (auto)
-            c_OR = base["c_OR"]
-        else:
-            c_OR = self._values_to_undirected(c_OR, edge_index=self._original_edge_index, agg="mean")
+        c_OR = self._values_to_undirected(c_OR, edge_index=self._original_edge_index, agg="mean")
         if reuse_cOR0:
             # warm the cache so psi_OR_to_BF uses the vectorized path
             self._get_c_OR0_all(force_recompute=False)
