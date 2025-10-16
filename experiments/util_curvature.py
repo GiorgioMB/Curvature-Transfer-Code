@@ -51,6 +51,7 @@ if ROOT not in sys.path:
 
 import pyg_curvature as pc
 
+float = np.float32
 
 @dataclass
 class CurvatureResult:

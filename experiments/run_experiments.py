@@ -229,6 +229,17 @@ def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]
 
     return out
 
+def np_encoder(obj):
+    if isinstance(obj, (np.float16, np.float32, np.float64)):
+        return float(obj)
+    if isinstance(obj, (np.int16, np.int32, np.int64)):
+        return int(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    # Let json raise for anything else
+    raise TypeError(f"Type not serializable: {type(obj)}")
 
 def main():
     """Main experiment loop: parse args, generate graphs, compute curvatures, save outputs."""
@@ -428,7 +439,7 @@ def main():
 
     # Write manifest
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
+        json.dump(manifest, f, indent=2, default=np_encoder)
 
     # Optionally build the paper figures once all CSVs are in place
     if getattr(args, "auto_figures", False):
