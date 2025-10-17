@@ -566,8 +566,8 @@ def _transportation_simplex(
 @njit
 def wasserstein1_uniform(
     cost: np.ndarray, 
-    n_left: int, 
-    n_right: int
+    supply: np.ndarray, 
+    demand: np.ndarray
     ) -> float:
     """
     Compute W1 (Earth Mover) distance with uniform marginals.
@@ -581,11 +581,13 @@ def wasserstein1_uniform(
     - Minimal average transport cost between the two uniform distributions.
     """
     m, n = cost.shape
-    assert m == n_left and n == n_right
+
     if m == 0 or n == 0:
         return 0.0
-    supply = np.full(m, 1.0 / m, dtype=np.float64)
-    demand = np.full(n, 1.0 / n, dtype=np.float64)
+
+    supply[:] = 1.0 / m
+    demand[:] =  1.0 / n
+
     _, val = _transportation_simplex(cost, supply, demand)
     return float(val)
 
@@ -696,7 +698,9 @@ def _edge_metrics_worker(
     left_lazy  = [i] + sorted(Ni)
     right_lazy = [j] + sorted(Nj)
     C_lazy = _pairwise_distances_between_sets(left_lazy, right_lazy, neighbors, default_far=10)
-    W1_lazy = wasserstein1_uniform(C_lazy, len(left_lazy), len(right_lazy))
+    supply = np.empty(C_lazy.shape[0], dtype=np.float64)
+    demand = np.empty(C_lazy.shape[1], dtype=np.float64)
+    W1_lazy = wasserstein1_uniform(C_lazy, supply, demand)
     c_OR = float(1.0 - W1_lazy)
 
     # Non-lazy variant: supports are neighbors only
@@ -708,7 +712,9 @@ def _edge_metrics_worker(
         c_OR0 = 0.0
     else:
         C_non = _pairwise_distances_between_sets(left, right, neighbors, default_far=10)
-        W1_non = wasserstein1_uniform(C_non, len(left), len(right))
+        supply_non = np.empty(C_non.shape[0], dtype=np.float64)
+        demand_non = np.empty(C_non.shape[1], dtype=np.float64)
+        W1_non = wasserstein1_uniform(C_non, supply_non, demand_non)
         c_OR0 = float(1.0 - W1_non)
 
     # Parameters for the Theta_alpha linear envelope used in transfer bounds
@@ -1034,8 +1040,10 @@ class CurvatureEngine:
         return 1 - W1.
         """
         i, j = self.edges[idx]
-        C, left, right = self._cost_matrix_lazy_supports(i, j)
-        W1 = wasserstein1_uniform(C, len(left), len(right))
+        C, _, _ = self._cost_matrix_lazy_supports(i, j)
+        supply = np.empty(C.shape[0], dtype=np.float64)
+        demand = np.empty(C.shape[1], dtype=np.float64)
+        W1 = wasserstein1_uniform(C, supply, demand)
         return float(1.0 - W1)
 
     def c_OR0_edge(
@@ -1054,7 +1062,9 @@ class CurvatureEngine:
             return 1.0
         if len(left) == 0 or len(right) == 0:
             return 0.0
-        W1 = wasserstein1_uniform(C, len(left), len(right))
+        supply = np.empty(C.shape[0], dtype=np.float64)
+        demand = np.empty(C.shape[1], dtype=np.float64)
+        W1 = wasserstein1_uniform(C, supply, demand)
         return float(1.0 - W1)
 
     def _get_c_OR0_all(self, 

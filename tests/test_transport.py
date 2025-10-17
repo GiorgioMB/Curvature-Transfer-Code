@@ -47,5 +47,7 @@ def test_wasserstein1_uniform(pc):
     # Using the same 2x2 case: uniform marginals -> value 0
     cost = np.array([[0.0, 2.0],
                      [2.0, 0.0]], dtype=float)
-    w = pc.wasserstein1_uniform(cost, n_left=2, n_right=2)
+    supply = np.empty(cost.shape[0], dtype=np.float64)
+    demand = np.empty(cost.shape[1], dtype=np.float64)
+    w = pc.wasserstein1_uniform(cost, supply, demand)
     assert np.isclose(w, 0.0, atol=1e-12)
