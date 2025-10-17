@@ -63,8 +63,8 @@ def add_preset_args(parser: argparse.ArgumentParser):
         "--preset",
         type=str,
         default=None,
-        choices=["tiny", "small", "paper", "benchmark"],
-        help="Run a predefined suite (tiny, small, paper or benchmark)"
+        choices=["tiny", "small", "paper", "medium", "benchmark"],
+        help="Run a predefined suite (tiny, small, medium, paper or benchmark)"
     )
     
 
@@ -145,6 +145,20 @@ def handle_presets(args, seed: int):
         args.grid = args.grid or [[20, 20]]
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
+    elif args.preset == "medium":
+        args.hrg = args.hrg or [[500, 5.0, 1.0, 0.0], [500, 5.0, 1.0, 0.5]]
+        args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
+        args.ws  = args.ws  or [[800, 10, 0.05], [800, 10, 0.2], [1600, 10, 0.05], [1600, 10, 0.2]]
+        args.ba  = args.ba  or [[800, 2], [800, 5], [1600, 2], [1600, 5]]
+        args.rg  = args.rg  or [[800, 0.056419], [1600, 0.039894]]
+        args.rreg = args.rreg or [[1000, 8], [2000, 8]]
+        args.sbm2 = args.sbm2 or [[1000, 0.012018, 0.004006], [1000, 0.004002, 0.012006]]
+        args.cycle = args.cycle or [[600]]
+        args.grid  = args.grid  or [[40, 40]]
+        args.torus = args.torus or [[32, 32], [40, 40]]
+        args.tree  = args.tree  or [[4, 6]]
+        args.complete = args.complete or [[120]]
+        args.skip_plots = True
     elif args.preset == "paper":
         # (a) Random models (degree-matched where applicable)
         args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
