@@ -1642,7 +1642,6 @@ class CurvatureEngine:
         self,
         n_jobs: Optional[int] = None,
         chunksize: int = 64,
-        # Legacy parameters for backward compatibility
         parallel: Optional[bool | str] = None,
         max_workers: Optional[int] = None,
         ) -> Dict[str, np.ndarray]:
@@ -1669,8 +1668,7 @@ class CurvatureEngine:
         - Theta_Const, Theta_Slope: parameters of a linear envelope
         """
         M = len(self.edges)
-        
-        # Handle legacy parameters with deprecation warnings
+
         if parallel is not None or max_workers is not None:
             import warnings
             warnings.warn(
@@ -1678,28 +1676,23 @@ class CurvatureEngine:
                 DeprecationWarning,
                 stacklevel=2
             )
-            
-            # Convert legacy parameters to n_jobs if n_jobs not explicitly set
             if n_jobs is None:
-                if parallel == False:
+                if parallel is False:
                     n_jobs = 1
-                elif parallel == True:
+                elif parallel is True:
                     n_jobs = max_workers if max_workers is not None else -1
                 elif parallel == "auto":
-                    n_jobs = None  # Keep auto behavior
+                    n_jobs = None
                 else:
                     n_jobs = None
-            
-        
-        # Resolve parallelization strategy
-        use_parallel, resolved_max_workers = self._resolve_n_jobs(n_jobs)
-        
-        # Handle auto mode
-        if use_parallel == "auto":
-            use_parallel = (M >= 512)
-            resolved_max_workers = None
 
-        # Allocate outputs
+        use_parallel, resolved_max_workers = self._resolve_n_jobs(n_jobs)
+
+        if use_parallel == "auto":
+            if resolved_max_workers is None:
+                resolved_max_workers = os.cpu_count() or 1
+            use_parallel = M >= resolved_max_workers * 256
+
         deg_i = np.zeros(M, dtype=float)
         deg_j = np.zeros(M, dtype=float)
         tri = np.zeros(M, dtype=float)
@@ -1713,38 +1706,73 @@ class CurvatureEngine:
         ThS = np.zeros(M, dtype=float)
 
         if not use_parallel:
-            # Sequential path (simple and predictable)
             for eidx in range(M):
                 loc = self._local_for_edge(eidx)
                 deg_i[eidx] = loc.deg_i
                 deg_j[eidx] = loc.deg_j
-                tri[eidx]   = loc.tri
-                Xi[eidx]    = loc.Xi
-                sho[eidx]   = loc.sho_max
-                C4[eidx]    = self._C4_edge(loc.Xi, loc.sho_max)
-                cBF[eidx]   = self.c_BF_edge(eidx)
-                cOR[eidx]   = self.c_OR_edge(eidx)
-                cOR0[eidx]  = self.c_OR0_edge(eidx)
+                tri[eidx] = loc.tri
+                Xi[eidx] = loc.Xi
+                sho[eidx] = loc.sho_max
+                C4[eidx] = self._C4_edge(loc.Xi, loc.sho_max)
+                cBF[eidx] = self.c_BF_edge(eidx)
+                cOR[eidx] = self.c_OR_edge(eidx)
+                cOR0[eidx] = self.c_OR0_edge(eidx)
                 _, cst, slp = self.Theta_alpha(eidx, t=None)
-                ThC[eidx]   = cst
-                ThS[eidx]   = slp
+                ThC[eidx] = cst
+                ThS[eidx] = slp
         else:
-            # Parallel path using processes with a read-only global state
-            state = self._build_worker_state()
             if resolved_max_workers is None:
                 resolved_max_workers = os.cpu_count() or 1
 
-            with ProcessPoolExecutor(max_workers=resolved_max_workers, initializer=_init_worker, initargs=(state,)) as ex:
-                for (idx, di, dj, t, xi, sho_i, c4, bf, orv, or0, cst, slp) in ex.map(_edge_metrics_worker, range(M), chunksize=chunksize):
-                    i = int(idx)
-                    deg_i[i] = di; deg_j[i] = dj; tri[i] = t
-                    Xi[i] = xi; sho[i] = sho_i; C4[i] = c4
-                    cBF[i] = bf; cOR[i] = orv; cOR0[i] = or0
-                    ThC[i] = cst; ThS[i] = slp
+            if chunksize is None or chunksize <= 0:
+                target = max(1, M // max(1, resolved_max_workers * 4))
+                chunksize = int(min(8192, max(256, target)))
+
+            state = getattr(self, "_worker_state", None)
+            if state is None:
+                state = self._build_worker_state()
+                self._worker_state = state
+
+            pool = getattr(self, "_pool", None)
+            pool_workers = getattr(self, "_pool_workers", None)
+            need_new_pool = pool is None or pool_workers != resolved_max_workers
+
+            if need_new_pool:
+                if pool is not None:
+                    try:
+                        pool.shutdown(cancel_futures=True)
+                    except Exception:
+                        pass
+                pool = ProcessPoolExecutor(
+                    max_workers=resolved_max_workers,
+                    initializer=_init_worker,
+                    initargs=(state,)
+                )
+                self._pool = pool
+                self._pool_workers = resolved_max_workers
+
+            ex = self._pool
+
+            for item in ex.map(_edge_metrics_worker, range(M), chunksize=chunksize):
+                idx, di, dj, t, xi, sho_i, c4, bf, orv, or0, cst, slp = item
+                i = int(idx)
+                deg_i[i] = di
+                deg_j[i] = dj
+                tri[i] = t
+                Xi[i] = xi
+                sho[i] = sho_i
+                cBF[i] = bf
+                cOR[i] = orv
+                cOR0[i] = or0
+                ThC[i] = cst
+                ThS[i] = slp
+
+            np.divide(Xi, np.maximum(sho, 1e-12), out=C4)
 
         result = {
             "edges": np.array(self.edges, dtype=int),
-            "deg_i": deg_i, "deg_j": deg_j,
+            "deg_i": deg_i,
+            "deg_j": deg_j,
             "triangle": tri,
             "Xi": Xi,
             "sho_max": sho,
@@ -1755,7 +1783,7 @@ class CurvatureEngine:
             "Theta_Const": ThC,
             "Theta_Slope": ThS,
         }
-        # Warm caches for downstream calls
+
         self._cache["_compute_all_last"] = result
         self._cache["_c_OR0_all"] = cOR0.copy()
         return result
