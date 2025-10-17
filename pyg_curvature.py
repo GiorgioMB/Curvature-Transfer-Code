@@ -98,6 +98,7 @@ import numpy.typing as npt
 from numba import njit, types
 from numba.typed import List as NumbaList
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from time import perf_counter
 
 try:
     import torch
@@ -1640,10 +1641,8 @@ class CurvatureEngine:
 
     def compute_all(
         self,
+        chunksize = None,
         n_jobs: Optional[int] = None,
-        chunksize: int = 64,
-        parallel: Optional[bool | str] = None,
-        max_workers: Optional[int] = None,
         ) -> Dict[str, np.ndarray]:
         """
         Compute base curvatures and per-edge structural terms.
@@ -1669,29 +1668,12 @@ class CurvatureEngine:
         """
         M = len(self.edges)
 
-        if parallel is not None or max_workers is not None:
-            import warnings
-            warnings.warn(
-                "Parameters 'parallel' and 'max_workers' are deprecated. Use 'n_jobs' instead.",
-                DeprecationWarning,
-                stacklevel=2
-            )
-            if n_jobs is None:
-                if parallel is False:
-                    n_jobs = 1
-                elif parallel is True:
-                    n_jobs = max_workers if max_workers is not None else -1
-                elif parallel == "auto":
-                    n_jobs = None
-                else:
-                    n_jobs = None
-
         use_parallel, resolved_max_workers = self._resolve_n_jobs(n_jobs)
 
         if use_parallel == "auto":
             if resolved_max_workers is None:
                 resolved_max_workers = os.cpu_count() or 1
-            use_parallel = M >= resolved_max_workers * 256
+            use_parallel = (M >= resolved_max_workers * 256)
 
         deg_i = np.zeros(M, dtype=float)
         deg_j = np.zeros(M, dtype=float)
@@ -1724,10 +1706,6 @@ class CurvatureEngine:
             if resolved_max_workers is None:
                 resolved_max_workers = os.cpu_count() or 1
 
-            if chunksize is None or chunksize <= 0:
-                target = max(1, M // max(1, resolved_max_workers * 4))
-                chunksize = int(min(8192, max(256, target)))
-
             state = getattr(self, "_worker_state", None)
             if state is None:
                 state = self._build_worker_state()
@@ -1753,6 +1731,19 @@ class CurvatureEngine:
 
             ex = self._pool
 
+            if chunksize is None or chunksize <= 0:
+                pilot = min(4096, M)
+                pilot_n = min(64, pilot)
+
+                t0 = perf_counter()
+                # run a tiny mapped batch to estimate per-edge time, discard results
+                list(ex.map(_edge_metrics_worker, range(pilot_n), chunksize=pilot_n))
+                t1 = perf_counter()
+
+                per_edge = max((t1 - t0) / max(1, pilot_n), 1e-4)
+                target_block_time = 0.2  # seconds
+                chunksize = int(np.clip(target_block_time / per_edge, 64, 8192))
+                
             for item in ex.map(_edge_metrics_worker, range(M), chunksize=chunksize):
                 idx, di, dj, t, xi, sho_i, c4, bf, orv, or0, cst, slp = item
                 i = int(idx)

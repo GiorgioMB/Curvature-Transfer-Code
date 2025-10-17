@@ -169,7 +169,7 @@ def handle_presets(args, seed: int):
         args.include_real = True
         args.skip_plots = True  # generate paper figures instead
     elif args.preset == "benchmark":
-        args.complete = args.complete or [[40]]
+        args.complete = args.complete or [[80]]
 
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
