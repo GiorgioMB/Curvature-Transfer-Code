@@ -247,7 +247,7 @@ def _pairwise_distances_between_sets(
 # WIP add numba compatibility
 # ---------------------------------------------------
 
-@njit
+@njit(fastmath=True)
 def _northwest_corner(
     supply: np.ndarray, 
     demand: np.ndarray
@@ -310,7 +310,7 @@ def _northwest_corner(
     return X, basis
 
 
-@njit
+@njit(fastmath=True)
 def _compute_potentials(
     cost: np.ndarray, 
     basis: Set[Tuple[int,int]]
@@ -381,7 +381,7 @@ def _compute_potentials(
     return u, v
 
 
-@njit
+@njit(fastmath=True)
 def _find_cycle(
     basis: Set[Tuple[int,int]], 
     enter: Tuple[int,int], 
@@ -475,7 +475,7 @@ def _find_cycle(
     return cyc
 
 
-@njit
+@njit(fastmath=True)
 def _transportation_simplex(
     cost: np.ndarray, 
     supply: np.ndarray, 
@@ -563,7 +563,7 @@ def _transportation_simplex(
     value = float((X * cost).sum())
     return X, value
 
-@njit
+@njit(fastmath=True)
 def wasserstein1_uniform(
     cost: np.ndarray, 
     supply: np.ndarray, 
