@@ -1641,7 +1641,6 @@ class CurvatureEngine:
 
     def compute_all(
         self,
-        chunksize = None,
         n_jobs: Optional[int] = None,
         ) -> Dict[str, np.ndarray]:
         """
@@ -1650,8 +1649,6 @@ class CurvatureEngine:
         Parameters
         - n_jobs: control parallelism (see class docstring). If None, uses the
           instance default which in turn defaults to auto.
-        - chunksize: batch size for executor.map in the parallel path.
-        - parallel, max_workers: deprecated legacy arguments.
 
         Returns
         A dictionary of numpy arrays, one entry per undirected edge, containing:
@@ -1669,10 +1666,10 @@ class CurvatureEngine:
         M = len(self.edges)
 
         use_parallel, resolved_max_workers = self._resolve_n_jobs(n_jobs)
+        if resolved_max_workers is None:
+            resolved_max_workers = os.cpu_count() or 1
 
         if use_parallel == "auto":
-            if resolved_max_workers is None:
-                resolved_max_workers = os.cpu_count() or 1
             use_parallel = (M >= resolved_max_workers * 256)
 
         deg_i = np.zeros(M, dtype=float)
@@ -1688,24 +1685,31 @@ class CurvatureEngine:
         ThS = np.zeros(M, dtype=float)
 
         if not use_parallel:
-            for eidx in range(M):
-                loc = self._local_for_edge(eidx)
-                deg_i[eidx] = loc.deg_i
-                deg_j[eidx] = loc.deg_j
-                tri[eidx] = loc.tri
-                Xi[eidx] = loc.Xi
-                sho[eidx] = loc.sho_max
-                C4[eidx] = self._C4_edge(loc.Xi, loc.sho_max)
-                cBF[eidx] = self.c_BF_edge(eidx)
-                cOR[eidx] = self.c_OR_edge(eidx)
-                cOR0[eidx] = self.c_OR0_edge(eidx)
-                _, cst, slp = self.Theta_alpha(eidx, t=None)
-                ThC[eidx] = cst
-                ThS[eidx] = slp
-        else:
-            if resolved_max_workers is None:
-                resolved_max_workers = os.cpu_count() or 1
+            def _edge_metrics_block(lo, hi):
+                for eidx in range(lo, hi):
+                    loc = self._local_for_edge(eidx)
+                    deg_i[eidx] = loc.deg_i
+                    deg_j[eidx] = loc.deg_j
+                    tri[eidx] = loc.tri
+                    Xi[eidx] = loc.Xi
+                    sho[eidx] = loc.sho_max
+                    cBF[eidx] = self.c_BF_edge(eidx)
+                    cOR[eidx] = self.c_OR_edge(eidx)
+                    cOR0[eidx] = self.c_OR0_edge(eidx)
+                    _, cst, slp = self.Theta_alpha(eidx, t=None)
+                    ThC[eidx] = cst
+                    ThS[eidx] = slp
+                    C4[eidx] = self._C4_edge(loc.Xi, loc.sho_max)
+                    
+            target_tasks_per_worker = 8    
+            bs = max(8192, (M + resolved_max_workers*target_tasks_per_worker - 1) //
+                    (resolved_max_workers*target_tasks_per_worker))            
+            with ThreadPoolExecutor(max_workers=resolved_max_workers) as ex:
+                futs = [ex.submit(_edge_metrics_block, i, min(i + bs, M)) for i in range(0, M, bs)]
+                for f in futs:
+                    f.result()
 
+        else:
             state = getattr(self, "_worker_state", None)
             if state is None:
                 state = self._build_worker_state()
@@ -1730,19 +1734,15 @@ class CurvatureEngine:
                 self._pool_workers = resolved_max_workers
 
             ex = self._pool
+            pilot_n = min(64, M)
 
-            if chunksize is None or chunksize <= 0:
-                pilot = min(4096, M)
-                pilot_n = min(64, pilot)
+            t0 = perf_counter()
+            list(ex.map(_edge_metrics_worker, range(pilot_n), chunksize=pilot_n))
+            t1 = perf_counter()
 
-                t0 = perf_counter()
-                # run a tiny mapped batch to estimate per-edge time, discard results
-                list(ex.map(_edge_metrics_worker, range(pilot_n), chunksize=pilot_n))
-                t1 = perf_counter()
-
-                per_edge = max((t1 - t0) / max(1, pilot_n), 1e-4)
-                target_block_time = 0.2  # seconds
-                chunksize = int(np.clip(target_block_time / per_edge, 64, 8192))
+            per_edge = max((t1 - t0) / max(1, pilot_n), 1e-4)
+            target_block_time = 0.2  # seconds
+            chunksize = int(np.clip(target_block_time / per_edge, 64, 8192))
                 
             for item in ex.map(_edge_metrics_worker, range(M), chunksize=chunksize):
                 idx, di, dj, t, xi, sho_i, c4, bf, orv, or0, cst, slp = item
