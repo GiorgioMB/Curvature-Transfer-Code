@@ -55,6 +55,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import re
 
 # ==============================
 # Style
@@ -205,7 +206,6 @@ def _pretty_from_tag(tag: str) -> str:
       - "ba_n5000_m3" -> "BA $n=5000$, $m=3$"
       - "real_karate" -> "Real: Zachary Karate"
     """
-    import re
     t = tag
 
     # ER: er_n{n}_p{p}
