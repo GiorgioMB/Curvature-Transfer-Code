@@ -87,6 +87,20 @@ python experiments/run_experiments.py \
 
 Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
 
+## Development
+
+Profiling
+
+To measure performance in order to optimize the code, we used the Python's **cProfile** to count function call time and count. Notably, there is a fixed cost in compilation time to running the _njit_ compilation step.
+```python 
+python -m cProfile experiments/run_experiments.py --preset small > experiments/out/profiler_results.txt 
+```
+
+In order to easily profile the cpu threads in an aggregate manner, we used the rust program **py-spy**, which plots the results in an intuitive graphical format. 
+```python 
+py-spy record --subprocesses -o out/profile.svg --rate 25 -- python experiments/run_experiments.py --preset small
+```
+
 ## Notes and Tests
 - The test suite verifies, per edge of a graph:
   - **Two-sided transfer inequalities** between Balanced Forman (BF) and Ollivier–Ricci (OR) curvature
