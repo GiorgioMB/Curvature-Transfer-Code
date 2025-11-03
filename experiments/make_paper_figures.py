@@ -613,7 +613,9 @@ def _make_run_figures(
                             bins=bins, title=f"Olivier-Ricci Curvature", xlabel="Curvature " + DISPLAY["c_OR"])
         fig.suptitle(pretty_tag, y=0.90, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.96])
-        fig.savefig(os.path.join(fig_dir, f"fig_cOR_hist__{safe_tag}.png"))
+        filename = os.path.join(fig_dir, f"fig_cOR_hist__{safe_tag}.png")
+        if not keep_existing or not os.path.exists(filename):
+            fig.savefig(filename)
         plt.close(fig)
         
         # quantile plot    
@@ -631,7 +633,9 @@ def _make_run_figures(
         )
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
-        fig.savefig(os.path.join(fig_dir, f"fig_cOR_quantile__{safe_tag}.png"))
+        filename = os.path.join(fig_dir, f"fig_cOR_quantile__{safe_tag}.png")
+        if not keep_existing or not os.path.exists(filename):
+            fig.savefig(filename)
         plt.close(fig)
 
     # 2) BF histogram (short title; run name as suptitle)
@@ -642,7 +646,9 @@ def _make_run_figures(
                             bins=bins, title="Balanced Forman Curvature", xlabel="Curvature " + DISPLAY["c_BF"])
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.96])
-        fig.savefig(os.path.join(fig_dir, f"fig_cBF_hist__{safe_tag}.png"))
+        filename = os.path.join(fig_dir, f"fig_cBF_hist__{safe_tag}.png")
+        if not keep_existing or not os.path.exists(filename):
+            fig.savefig(filename)
         plt.close(fig)
 
         # quantile plot
@@ -660,7 +666,9 @@ def _make_run_figures(
         )
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
-        fig.savefig(os.path.join(fig_dir, f"fig_cBF_quantile__{safe_tag}.png"))
+        filename = os.path.join(fig_dir, f"fig_cBF_quantile__{safe_tag}.png")
+        if not keep_existing or not os.path.exists(filename):
+            fig.savefig(filename)
         plt.close(fig)
 
     # 3) Scatter BF vs OR (short title already set inside helper; keep short suptitle)
@@ -670,7 +678,9 @@ def _make_run_figures(
         _scatter_ribbon(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
-        fig.savefig(os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}.png"))
+        filename = os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}.png")
+        if not keep_existing or not os.path.exists(filename):
+            fig.savefig(filename)
         plt.close(fig)
         
         # plot with 2D hist
@@ -678,7 +688,9 @@ def _make_run_figures(
         _scatter_ribbon_hist(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.97])
-        fig.savefig(os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}_2d_Hist.png"))
+        filename = os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}_2d_Hist.png")
+        if not keep_existing or not os.path.exists(filename):
+            fig.savefig(filename)
         plt.close(fig)
                         
         
