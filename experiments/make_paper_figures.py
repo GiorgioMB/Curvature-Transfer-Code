@@ -321,7 +321,7 @@ def _hist_with_bands(
         theta: Optional[np.ndarray] = None,
         lower_label: Optional[str] = None,
         upper_label: Optional[str] = None,
-        bins: int = 60,
+        bins: int | str = "auto",
         title: str = "", 
         xlabel: str = ""
         ) -> None:
@@ -336,7 +336,7 @@ def _hist_with_bands(
     - env: Optional transport envelope values (edgewise) drawn as a step outline.
     - theta: Optional Theta-at-t values (edgewise) drawn as a step outline.
     - lower_label, upper_label: Legend labels for the overlay distributions.
-    - bins: Number of histogram bins.
+    - bins: Number of histogram bins or plt bins option.
     - title: Axes title.
     - xlabel: X-axis label.
     """
@@ -420,7 +420,7 @@ def _scatter_ribbon(ax: plt.Axes,
                     orv: np.ndarray,
                     lower_from_bf: Optional[np.ndarray] = None,
                     upper_from_bf: Optional[np.ndarray] = None,
-                    nbins: int = 28
+                    nbins: int | str = "auto",
                     ) -> None:
     """
     Scatter plot of bf vs or with an observed quantile ribbon.
@@ -435,7 +435,7 @@ def _scatter_ribbon(ax: plt.Axes,
     - orv: Edgewise Ollivier--Ricci curvature values.
     - lower_from_bf: Optional edgewise BF->OR lower transfer predictions.
     - upper_from_bf: Optional edgewise BF->OR upper transfer predictions.
-    - nbins: Number of bins to use for computing the quantile ribbon.
+    - nbins: Number of bins to use for computing the quantile ribbon or plt bins option.
     """
     # Subsample if large for visual clarity
     n = len(bf)
@@ -446,22 +446,23 @@ def _scatter_ribbon(ax: plt.Axes,
         low_s = lower_from_bf[sel] if lower_from_bf is not None else None
     else:
         bf_s, or_s, low_s = bf, orv, lower_from_bf
-
+    
+    nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
     ax.scatter(bf_s, or_s, s=6, alpha=0.28, color=COL_OBS, linewidth=0, label="Edges (sample)")
     # Observed quantile ribbon of OR|BF
-    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins)
+    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
     if len(xc) > 0:
         ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7, label=r"[median $\mathfrak{c}_{\mathrm{OR}} ] \mid \mathfrak{c}_{\mathrm{BF}}$")
         ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--")
         ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--")
     # Predicted BF->OR lower (median per bin)
     if low_s is not None:
-        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
+        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
                 label=r"L. Transfer >(BF$\rightarrow$OR): median")
     # Predicted BF->OR upper (median per bin)
     if upper_from_bf is not None:
-        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
+        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
                 label=r"U. Transfer (BF$\rightarrow$OR): median")
     ax.set_title(r"Comparison between $\mathfrak{c}_{\mathrm{BF}}$ and $\mathfrak{c}_{\mathrm{OR}}$")
@@ -477,7 +478,7 @@ def _scatter_ribbon_hist(ax: plt.Axes,
                     orv: np.ndarray,
                     lower_from_bf: Optional[np.ndarray] = None,
                     upper_from_bf: Optional[np.ndarray] = None,
-                    nbins: int = 28) -> None:
+                    nbins: int | str = "auto") -> None:
     
     h, _, _, quad = ax.hist2d(bf, orv, bins=30, cmap="Blues")
     quad.set_zorder(0)
@@ -488,10 +489,12 @@ def _scatter_ribbon_hist(ax: plt.Axes,
     cbar.ax.yaxis.set_major_locator(ticker.MultipleLocator(1 if hmax <= 10 else 10))
     cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
     cbar.update_normal(quad)
+    
+    nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
 
     sample_proxy = Patch(facecolor=plt.get_cmap("Blues")(0.6), edgecolor="none", label="Edges (sample)")
 
-    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins)
+    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
     if len(xc) > 0:
         ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7,
                 label=r"[median $\mathfrak{c}_{\mathrm{OR}} ] \mid \mathfrak{c}_{\mathrm{BF}}$", zorder=3)
@@ -499,12 +502,12 @@ def _scatter_ribbon_hist(ax: plt.Axes,
         ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
 
     if lower_from_bf is not None:
-        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
+        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
                 label=r"L. Transfer (BF$\rightarrow$OR): median", zorder=3)
 
     if upper_from_bf is not None:
-        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins, qs=(0.5, 0.5, 0.5))
+        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
                 label=r"U. Transfer (BF$\rightarrow$OR): median", zorder=3)
 
@@ -563,7 +566,7 @@ def _make_run_figures(
         run_root: str, 
         tag: str, 
         pretty: Optional[str], 
-        bins: int = 60, 
+        bins: int | str = "auto",
         keep_existing: bool = False
         ) -> None:
     """
@@ -580,7 +583,7 @@ def _make_run_figures(
     - tag: The run identifier used to locate the edge CSV.
     - pretty: Optional pre-specified display name for titles; falls back to a
       derived pretty name from the tag.
-    - bins: Number of histogram bins.
+    - bins: Number of histogram bins or plt bins option.
     - keep_existing: Currently used by the caller to control directory setup;
       the function itself always writes or overwrites files by name.
     """
@@ -731,7 +734,7 @@ def generate_paper_figures(
 
 def _generate_for_run_dir(
         run_dir: str, 
-        bins: int = 120, 
+        bins: int | str = "auto",
         keep_existing: bool = False
         ) -> None:
     """
@@ -743,7 +746,7 @@ def _generate_for_run_dir(
 
     Parameters
     - run_dir: Absolute path to a specific run directory containing outputs.
-    - bins: Number of bins for histograms.
+    - bins: Number of bins for histograms or plt bins option.
     - keep_existing: Whether to keep an existing figures_paper/ directory.
     """
     man = _load_manifest(run_dir)
@@ -771,6 +774,16 @@ def _generate_for_run_dir(
         pretty = r.get("title") or r.get("pretty")  # optional pretty name in manifest
         _make_run_figures(run_dir, tag, pretty, bins=bins, keep_existing=keep_existing)
 
+_ALLOWED = {"auto","fd","scott","sturges","doane","rice","sqrt","stone"}
+
+def parse_bins(s):
+    try:
+        return int(s)
+    except ValueError:
+        s = s.lower()
+        if s in _ALLOWED: return s
+        raise argparse.ArgumentTypeError(f"bins must be int or one of: {', '.join(sorted(_ALLOWED))}")
+
 def main():
     """
     Command-line entry point.
@@ -782,7 +795,13 @@ def main():
     ap = argparse.ArgumentParser(description="Generate paper-ready figures from experiment outputs.")
     ap.add_argument("--out-root", type=str, default=None, help="Root folder containing run subfolders (default: experiments/out)")
     ap.add_argument("--run-name", type=str, default=None, help="Specific run folder name to process (default: all under out-root)")
-    ap.add_argument("--bins", type=int, default=60)
+    ap.add_argument(
+        "--bins",
+        type=parse_bins,
+        default="scott",
+        metavar="INT|RULE",
+        help="Number of bins or rule: auto, fd, scott, sturges, doane, rice, sqrt, stone",
+    )
     ap.add_argument("--keep-existing", action="store_true", help="Keep existing figures directory instead of recreating it")
     args = ap.parse_args()
     generate_paper_figures(out_root=args.out_root, run_name=args.run_name, bins=args.bins, keep_existing=args.keep_existing)
