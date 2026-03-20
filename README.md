@@ -1,5 +1,5 @@
 # Curvature Transfer: Comparing Edgewise Graph Curvatures and Analytic Envelopes
-In this repo we implement the experiments described in the paper `Transport Envelopes and Edgewise Transfer Between Balanced Forman and Ollivier-Ricci Curvatures`. 
+In this repo we implement the experiments described in the paper [Transport Envelopes and Edgewise Transfer Between Balanced Forman and Ollivier-Ricci Curvatures](https://arxiv.org/abs/2603.13535). 
 The aim is to produce *histograms of edgewise curvature* and compare them against the analytic envelopes and transfer inequalities derived in the paper.
 
 Concretely, for each graph instance we compute per-edge:
