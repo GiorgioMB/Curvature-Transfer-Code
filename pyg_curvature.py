@@ -16,7 +16,7 @@ Main concepts at a glance:
 - Ollivier--Ricci curvature (c_OR):
   A transport-based score that compares the neighborhood of the two endpoints.
   We place a small amount of probability at each endpoint and spread the rest
-  uniformly over its neighbors (this is the “lazy” version used here). We then
+  uniformly over its neighbors (this is the "lazy" version used here). We then
   compute the minimal average distance needed to move the mass from one side to
   the other. The curvature is 1 minus that minimal transport cost.
 
@@ -605,7 +605,7 @@ class EdgeLocal:
     - C: common neighbors (triangles touching (i, j))
     - Ui, Uj: neighbors unique to i or j (excluding the other endpoint)
     - tri: number of common neighbors, i.e., len(C)
-    - Xi: number of 4-cycle “cross” connections between Ui and Uj
+    - Xi: number of 4-cycle "cross" connections between Ui and Uj
     - varpi_max: max number of cross-edges from a single node in Ui to Nj \ {i}
                  or from a single node in Uj to Ni \ {j}
     - sho_max: a scaling factor that upper-bounds Xi (used in the C4 term)
@@ -692,7 +692,7 @@ def _edge_metrics_worker(
         T_tri = (2.0*tri/max(deg_i,deg_j)) + (tri/min(deg_i,deg_j))
         c_BF = float(S - 0.0 + T_tri + C4)
 
-    # Lazy Ollivier–Ricci curvature: supports are [i] + neighbors(i) and [j] + neighbors(j)
+    # Lazy Ollivier-Ricci curvature: supports are [i] + neighbors(i) and [j] + neighbors(j)
     left_lazy  = [i] + sorted(Ni)
     right_lazy = [j] + sorted(Nj)
     C_lazy = _pairwise_distances_between_sets(left_lazy, right_lazy, neighbors, default_far=10)
@@ -1752,13 +1752,12 @@ class CurvatureEngine:
                 tri[i] = t
                 Xi[i] = xi
                 sho[i] = sho_i
+                C4[i] = c4
                 cBF[i] = bf
                 cOR[i] = orv
                 cOR0[i] = or0
                 ThC[i] = cst
                 ThS[i] = slp
-
-            np.divide(Xi, np.maximum(sho, 1e-12), out=C4)
 
         result = {
             "edges": np.array(self.edges, dtype=int),
