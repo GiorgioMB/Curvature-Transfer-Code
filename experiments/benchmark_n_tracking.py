@@ -4,24 +4,35 @@ import sys
 import csv
 import time
 from concurrent.futures import ProcessPoolExecutor
-
 import numpy as np
 from torch_geometric.utils import erdos_renyi_graph
 from torch_geometric.data import Data
+import random
+import torch
+import pyg_curvature as pc
+
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import pyg_curvature as pc
 
 # Global reference for the worker processes to prevent PyTorch/PyG object pickling
 _SHARED_ENGINE = None
+
+def set_deterministic_seed(seed: int = 42):
+    """Fixes the PRNG state for Python, NumPy, and PyTorch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def _init_benchmark_worker(state_dict):
     """
     Initializes a lightweight engine shell in the worker process.
     """
+    set_deterministic_seed(42)
     global _SHARED_ENGINE
     _SHARED_ENGINE = pc.CurvatureEngine.__new__(pc.CurvatureEngine)
     _SHARED_ENGINE.edges = state_dict["edges"]
@@ -55,11 +66,17 @@ def run_benchmark(
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     
     completed_n = set()
+    expected_cols = ["n", "p", "num_edges", "avg_deg", "ot_time_sec", "bounds_time_sec"]
+
     if os.path.exists(output_csv):
         with open(output_csv, "r") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                completed_n.add(int(row["n"]))
+                if all(row.get(col) is not None and str(row[col]).strip() != "" for col in expected_cols):
+                    try:
+                        completed_n.add(int(row["n"]))
+                    except ValueError:
+                        pass
     else:
         with open(output_csv, "w", newline="") as f:
             writer = csv.writer(f)
@@ -112,4 +129,5 @@ def run_benchmark(
             writer.writerow([n, p, M, f"{avg_deg:.2f}", f"{t_ot_total:.4f}", f"{t_bounds_total:.4f}"])
 
 if __name__ == "__main__":
+    set_deterministic_seed(42) ##Modify this and line 36 to use another seed
     run_benchmark()
