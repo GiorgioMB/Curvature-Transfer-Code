@@ -2,8 +2,8 @@
 Experiment runner for graph curvature distributions and envelope coverage
 
 This script orchestrates the generation of random and canonical graphs,
-computes edge curvatures and transfer bounds, and saves detailed outputs
-(CSV, JSON, plots) for downstream analysis or paper figures.
+computes edge curvatures and transfer bounds, and saves detailed outputs (CSV, JSON, plots)
+for downstream analysis or paper figures.
 
 Features
 --------
@@ -12,15 +12,14 @@ Features
 - Computes both Balanced Forman and lazy Ollivier--Ricci curvatures, plus tight
   per-edge transfer bounds and envelopes.
 - Saves per-edge tables, summary statistics, and histograms for each run.
+- Orchestrates exact OT vs. combinatorial bounds runtime benchmarking.
 - Can generate all paper figures in one go (see --auto-figures).
 
 Usage (command line)
 --------------------
 $ python run_experiments.py --preset tiny
 $ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
-$ python run_experiments.py --hrg 1000 7.0 1.0 0.0 --jobs -1 --skip-plots
-
-See argument help for all options.
+$ python run_experiments.py --preset paper --run-benchmark
 """
 import os
 import argparse
@@ -39,11 +38,9 @@ import models
 from make_paper_figures import generate_paper_figures
 from util_curvature import compute_curvatures, write_edge_table, summarize_run
 
-
 def ensure_dir(path: str) -> None:
     """Create directory if it does not exist (no error if already present)."""
     os.makedirs(path, exist_ok=True)
-
 
 def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
     """Save a histogram of arr to a PNG file with a title."""
@@ -56,17 +53,15 @@ def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
     plt.savefig(path_png, dpi=150)
     plt.close()
 
-
 def add_preset_args(parser: argparse.ArgumentParser):
     """Add --preset argument for quick experiment suites."""
     parser.add_argument(
         "--preset",
         type=str,
         default=None,
-        choices=["tiny", "small", "paper", "medium", "benchmark"],
-        help="Run a predefined suite (tiny, small, medium, paper or benchmark)"
+        choices=["tiny", "small", "medium", "paper"],
+        help="Run a predefined suite (tiny, small, medium, or paper)"
     )
-    
 
 def add_family_args(parser: argparse.ArgumentParser):
     """Add arguments for all supported graph families and experiment controls."""
@@ -88,6 +83,7 @@ def add_family_args(parser: argparse.ArgumentParser):
         metavar=("n","R","alpha","T"),
         help="Hyperbolic random graph (native model): n, disk radius R, curvature -alpha^2, temperature T"
     )
+
     # Parallelism controls
     parser.add_argument("--jobs", type=int, default=None,
                         help="Number of parallel jobs for both HRG generation and curvature computation. "
@@ -102,8 +98,17 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--torus", nargs=2, type=int, action="append", metavar=("m","n"), help="Toroidal grid C_m x C_n (wraparound)")
     parser.add_argument("--tree", nargs=2, type=int, action="append", metavar=("d","h"), help="d-ary tree of height h")
     parser.add_argument("--complete", nargs=1, type=int, action="append", metavar=("n",), help="Complete graph K_n")
-    # Real networks (optional)
+
+    # Real networks
     parser.add_argument("--include-real", action="store_true", help="Include real networks present in experiments/data/*.csv")
+
+    # Benchmarking controls
+    parser.add_argument("--run-benchmark", action="store_true", help="Execute the runtime scaling benchmark comparing Exact OT and Combinatorial Bounds.")
+    parser.add_argument("--bench-min-n", type=int, default=50, help="Minimum number of nodes for the runtime benchmark.")
+    parser.add_argument("--bench-max-n", type=int, default=20000, help="Maximum number of nodes for the runtime benchmark.")
+    parser.add_argument("--bench-graphs", type=int, default=100, help="Total number of graph instances evaluated in the benchmark.")
+    parser.add_argument("--bench-seed", type=int, default=42, help="Random seed for the benchmark generation.")
+
     # Misc
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--run-name", type=str, default=None, help="Name subfolder under out/")
@@ -120,14 +125,14 @@ def add_family_args(parser: argparse.ArgumentParser):
         action="store_true",
         help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists; rebuild manifest to include all CSVs in the folder and (if --auto-figures) render figures for all of them."
     )
- 
-
 
 def handle_presets(args, seed: int):
     """Fill in default arguments for --preset suites if not already set."""
     if args.preset is None:
         return
+
     if args.preset == "tiny":
+        args.run_benchmark = False
         args.er = args.er or [[150, 0.02]]
         args.ws = args.ws or [[150, 6, 0.1]]
         args.ba = args.ba or [[150, 2]]
@@ -137,6 +142,9 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 5]]
         args.complete = args.complete or [[40]]
     elif args.preset == "small":
+        args.run_benchmark = True
+        args.bench_max_n = 3000
+        args.bench_graphs = 20
         args.er = args.er or [[400, 0.02], [400, 0.04]]
         args.ws = args.ws or [[400, 6, 0.1], [400, 8, 0.2]]
         args.ba = args.ba or [[400, 2], [400, 3]]
@@ -146,6 +154,10 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
     elif args.preset == "medium":
+        args.run_benchmark = True
+        args.bench_min_n = 50
+        args.bench_max_n = 5000
+        args.bench_graphs = 50
         args.hrg = args.hrg or [[500, 5.0, 1.0, 0.0], [500, 5.0, 1.0, 0.5]]
         args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
         args.ws  = args.ws  or [[800, 10, 0.05], [800, 10, 0.2], [1600, 10, 0.05], [1600, 10, 0.2]]
@@ -160,73 +172,48 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[120]]
         args.skip_plots = True
     elif args.preset == "paper":
-        # (a) Random models (degree-matched where applicable)
+        args.run_benchmark = True
+        args.bench_min_n = 50
+        args.bench_max_n = 20000
+        args.bench_graphs = 100
         args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
-        # ER with p=c/(n-1), c≈8
         args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
-        # WS with k=10 at two betas and two sizes
         args.ws  = args.ws  or [[800, 10, 0.05], [800, 10, 0.2], [1600, 10, 0.05], [1600, 10, 0.2]]
-        # BA with size × m sweep
         args.ba  = args.ba  or [[800, 2], [800, 5], [1600, 2], [1600, 5]]
-        # RGG with r = sqrt(8/(n*pi))
         args.rg  = args.rg  or [[800, 0.056419], [1600, 0.039894]]
-        # Random d-regular (expanders-like baselines)
         args.rreg = args.rreg or [[1000, 8], [2000, 8]]
-        # SBM (2 equal blocks), assortative and disassortative at same n and mean degree
         args.sbm2 = args.sbm2 or [[1000, 0.012018, 0.004006], [1000, 0.004002, 0.012006]]
-        # (b) Canonical families
         args.cycle = args.cycle or [[600]]
         args.grid  = args.grid  or [[40, 40]]
         args.torus = args.torus or [[32, 32], [40, 40]]
         args.tree  = args.tree  or [[4, 6]]
         args.complete = args.complete or [[120]]
         args.include_real = True
-        args.skip_plots = True  # generate paper figures instead
-    elif args.preset == "benchmark":
-        args.complete = args.complete or [[80]]
-
+        args.skip_plots = True
+    
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
-    """Load real network edge lists from CSV files in the given directory.
-    
-    Looks for files named <name>.csv for each dataset name.
-    Each file should have two integer columns (u, v) per row.
-    Lines starting with '#' or empty lines are ignored.
-
-    Returns:
-        List of (name, n, edges) where:
-          - name is the dataset name
-          - n is 1 + max node id (0 if no edges)
-          - edges is a sorted list of undirected, deduplicated edges (u < v)
-    """
     out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
-
     dataset_names = ["karate", "jazz", "power_grid", "yeast", "arxiv"]
-
     for name in dataset_names:
         base_path = os.path.join(data_dir, f"{name}.csv")
         if not os.path.exists(base_path):
             continue
         fh = open(base_path, mode="r", encoding="utf-8", newline="")
-
         edges = set()
         try:
             reader = csv.reader(fh)
             for row in reader:
                 if not row:
                     continue
-                # allow comments even if the line has trailing commas
                 first = (row[0] or "").strip()
                 if first.startswith("#"):
                     continue
-                # be defensive: skip non-integer rows gracefully (e.g., headers)
                 try:
                     u = int(first)
                     v = int((row[1] or "").strip())
                 except (ValueError, IndexError):
-                    # Not a valid (u,v) pair; ignore row
                     continue
-
                 if u == v:
                     continue
                 if u > v:
@@ -234,13 +221,10 @@ def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]
                 edges.add((u, v))
         finally:
             fh.close()
-
         n = 1 + max((max(u, v) for (u, v) in edges), default=-1)
         if n < 0:
-            n = 0  # no edges
-
+            n = 0
         out.append((name, n, sorted(edges)))
-
     return out
 
 def np_encoder(obj):
@@ -252,26 +236,24 @@ def np_encoder(obj):
         return bool(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
-    # Let json raise for anything else
     raise TypeError(f"Type not serializable: {type(obj)}")
 
 def main():
-    """Main experiment loop: parse args, generate graphs, compute curvatures, save outputs."""
     parser = argparse.ArgumentParser(description="Run curvature distribution experiments.")
     add_preset_args(parser)
     add_family_args(parser)
     args = parser.parse_args()
-    seed = int(args.seed)
 
+    seed = int(args.seed)
     handle_presets(args, seed)
+
     if getattr(args, "preset", None) == "paper" and not getattr(args, "auto_figures", False):
         args.auto_figures = True
-    # Resolve output dir early (needed to decide which runs can be skipped).
+
     run_name = args.run_name or ("preset_" + args.preset if args.preset else "custom")
     out_dir = os.path.join(os.path.dirname(__file__), "out", run_name)
     ensure_dir(out_dir)
 
-    # Load prior manifest summaries (to avoid recomputing them).
     prev_summary = {}
     man_path = os.path.join(out_dir, "manifest.json")
     if getattr(args, "soft_restart", False):
@@ -286,9 +268,7 @@ def main():
                 prev_summary = {}
                 print(f"[warn] Could not load prior manifest from {man_path}")
         else:
-            # No manifest? That's fine—soft restart will rebuild it from any CSVs present.
-            print(f"[info] No manifest found at {man_path}; will rebuild from existing CSVs (if any).")
- 
+            print(f"[info] No manifest found at {man_path}; rebuilding from existing CSVs.")
 
     def _csv_base(tag: str) -> str:
         return tag.replace(".", "_")
@@ -297,13 +277,12 @@ def main():
         return os.path.join(out_dir, f"{_csv_base(tag)}_edges.csv")
 
     def _infer_nm_from_csv(path_csv: str) -> Tuple[int, int]:
-        """Infer (n, m) from a per-edge CSV without loading it fully."""
         import csv as _csv
         m = 0
         max_id = -1
         with open(path_csv, "r", newline="") as fh:
             rd = _csv.reader(fh)
-            _ = next(rd, None)  # header
+            _ = next(rd, None)
             for row in rd:
                 if not row or len(row) < 2:
                     continue
@@ -317,9 +296,8 @@ def main():
         n = (max_id + 1) if m > 0 else 0
         return n, m
 
-    # Plan: which runs to compute vs which to skip (already have CSVs).
-    to_compute = []            # list[(tag, gen_callable returning (n, edges))]
-    skipped = []               # list[(tag, csv_path)]
+    to_compute = []
+    skipped = []
 
     def plan_run(tag: str, gen_callable):
         csv_path = _csv_path_for(tag)
@@ -328,9 +306,8 @@ def main():
             skipped.append((tag, csv_path))
         else:
             to_compute.append((tag, gen_callable))
- 
 
-    # Random families
+    # Construct execution plan over graph families
     if args.er:
         for n, p in args.er:
             tag = "er_n{}_p{}".format(int(n), float(p))
@@ -351,14 +328,12 @@ def main():
         for n, d in args.rreg:
             tag = "rreg_n{}_d{}".format(int(n), int(d))
             plan_run(tag, lambda n=int(n), d=int(d): models.d_regular_graph(int(n), int(d), seed=seed))
-
     if args.sbm2:
         for n, p_in, p_out in args.sbm2:
             n = int(n); p_in = float(p_in); p_out = float(p_out)
             a = n // 2; b = n - a
             tag = "sbm2_n{}_pin{}_pout{}".format(n, p_in, p_out)
             plan_run(tag, lambda a=a, b=b, p_in=p_in, p_out=p_out: models.make_sbm_graph([a, b], float(p_in), float(p_out), seed=seed))
-
     if hasattr(args, "hrg") and args.hrg:
         for n, R, alpha, T in args.hrg:
             tag = "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T))
@@ -367,32 +342,27 @@ def main():
                          int(n), float(R), alpha=float(alpha), T=float(T),
                          seed=seed, n_jobs=args.jobs, block_size=args.block_size))
 
-    # Canonical
     if args.cycle:
         for (n,) in args.cycle:
             tag = "cycle_n{}".format(int(n))
             plan_run(tag, lambda n=int(n): models.cycle_graph(int(n)))
-
     if args.grid:
         for m, n in args.grid:
             tag = "grid_{}x{}".format(int(m), int(n))
             plan_run(tag, lambda m=int(m), n=int(n): models.grid_graph(int(m), int(n)))
-
     if args.torus:
         for m, n in args.torus:
             tag = "torus_{}x{}".format(int(m), int(n))
             plan_run(tag, lambda m=int(m), n=int(n): models.torus_graph(int(m), int(n)))
-
     if args.tree:
         for d, h in args.tree:
             tag = "tree_d{}_h{}".format(int(d), int(h))
             plan_run(tag, lambda d=int(d), h=int(h): models.dary_tree(int(d), int(h)))
- 
     if args.complete:
         for (n,) in args.complete:
             tag = "complete_n{}".format(int(n))
             plan_run(tag, lambda n=int(n): models.complete_graph(int(n)))
-    # Real graphs
+
     if args.include_real:
         for name, n, edges in load_real_graphs(os.path.join(os.path.dirname(__file__), "data")):
             tag = f"real_{name}"
@@ -400,14 +370,12 @@ def main():
 
     manifest = {"runs": [], "notes": "Distributional histograms and envelope/transfer coverage"}
 
-    # Compute the planned runs (no CSV present yet).
     for tag, gen in to_compute:
         now_iso_string = datetime.now().strftime("%Y-%m-%d--%H:%M:%S%z")
         
         n, edges = gen()
         print(f"{now_iso_string} [run] {tag}: n={n}, m={len(edges)}", end="")
-
-        # Time the curvature calculations
+        
         time_start = time.time()
         curv = compute_curvatures(n, edges, n_jobs=args.jobs)
         time_end = time.time()
@@ -416,31 +384,24 @@ def main():
         m, s = divmod(rem, 60)
         print(f", t:{h:02d}:{m:02d}:{s:02d}s")
         
-        # Save edge-level table
         base_name = tag.replace(".", "_")
         if not args.skip_csv:
             write_edge_table(os.path.join(out_dir, f"{base_name}_edges.csv"), curv)
-        # Summaries
+            
         summary = summarize_run(curv)
         manifest["runs"].append({"tag": tag, "n": n, "m": len(edges), "summary": summary})
-
-        # Plots
+        
         if not args.skip_plots:
-            _plot_hist(curv.base["c_OR"], f"{tag} — c_OR", os.path.join(out_dir, f"{base_name}__hist_cOR.png"), bins=args.bins)
-            _plot_hist(curv.base["c_BF"], f"{tag} — c_BF", os.path.join(out_dir, f"{base_name}__hist_cBF.png"), bins=args.bins)
-            _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag} — slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
-            _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag} — slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
+            _plot_hist(curv.base["c_OR"], f"{tag}   c_OR", os.path.join(out_dir, f"{base_name}__hist_cOR.png"), bins=args.bins)
+            _plot_hist(curv.base["c_BF"], f"{tag}   c_BF", os.path.join(out_dir, f"{base_name}__hist_cBF.png"), bins=args.bins)
+            _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag}   slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
+            _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag}   slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
             
-    # Add entries for runs we skipped (existing CSVs).
     for tag, csv_path in skipped:
         n, m = _infer_nm_from_csv(csv_path)
         manifest["runs"].append({"tag": tag, "n": n, "m": m, "summary": prev_summary.get(tag)})
 
-    # If soft-restart, include any stray CSVs already in the folder (not in current args).
     if getattr(args, "soft_restart", False):
-        # Even if no families were requested on the CLI (e.g., pure resume),
-        # rebuild the manifest from all CSVs present so downstream steps
-        # (like --auto-figures) can run.
         seen_bases = { (r.get("tag","")).replace(".", "_") for r in manifest["runs"] }
         for path in glob.glob(os.path.join(out_dir, "*_edges.csv")):
              base = os.path.basename(path)[:-len("_edges.csv")]
@@ -449,13 +410,11 @@ def main():
              n, m = _infer_nm_from_csv(path)
              manifest["runs"].append({"tag": base, "n": n, "m": m, "summary": prev_summary.get(base)})
         if not manifest["runs"]:
-            print(f"[info] Soft-restart found no *_edges.csv in {out_dir}. Nothing to do.")
+            print(f"[info] Soft-restart found no *_edges.csv in {out_dir}.")
 
-    # Write manifest
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2, default=np_encoder)
 
-    # Optionally build the paper figures once all CSVs are in place
     if getattr(args, "auto_figures", False):
         try:
             base_out = os.path.dirname(out_dir)
@@ -464,9 +423,34 @@ def main():
             generate_paper_figures(out_root=base_out, run_name=run_name, bins=args.bins)
         except Exception as e:
             print(f"[run_experiments] Paper figure generation failed: {e}")
-    print(f"[done] Wrote outputs to {out_dir}")
-    
 
+    # Orchestrate benchmarking analysis
+    # Orchestrate benchmarking analysis
+    if getattr(args, "run_benchmark", False):
+        try:
+            import benchmark_n_tracking
+            import benchmark_plots
+            
+            bench_csv = os.path.join(out_dir, "benchmark_runtime_scaling.csv")
+            bench_pdf = os.path.join(out_dir, "runtime_scaling_loglog_neurips.pdf")
+            
+            print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling -> {bench_csv}")
+            benchmark_n_tracking.run_benchmark(
+                output_csv=bench_csv,
+                max_workers=args.jobs,
+                min_n=args.bench_min_n,
+                max_n=args.bench_max_n,
+                num_graphs=args.bench_graphs,
+                seed=args.bench_seed
+            )
+            
+            if not args.skip_plots:
+                print(f"[benchmark] Rendering runtime scaling plot -> {bench_pdf}")
+                benchmark_plots.generate_runtime_plot(csv_path=bench_csv, out_pdf=bench_pdf)
+        except Exception as e:
+            print(f"[benchmark] Runtime benchmark failed: {e}")
+
+    print(f"[done] Wrote outputs to {out_dir}")
 
 if __name__ == "__main__":
     main()
