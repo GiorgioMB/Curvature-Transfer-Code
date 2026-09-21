@@ -1,72 +1,69 @@
 # Curvature Transfer: Comparing Edgewise Graph Curvatures and Analytic Envelopes
-In this repo we implement the experiments described in our [paper](https://arxiv.org/abs/2603.13535). 
-The aim is to produce *histograms of edgewise curvature* and compare them against the analytic envelopes and transfer inequalities derived in it.
 
-Concretely, for each graph instance we compute per-edge:
-- **Lazy OR curvature** $\mathfrak c_{\rm OR}$
-- **Balanced Forman curvature** $\mathfrak c_{\rm BF}$
-- **Non-lazy OR** $\mathfrak c_{\rm OR-0}$ (neighbors only; used for sign sharpening)
-- **Triangle count** $\triangle(i,j)$
-- **4-cycle coverage** $\Xi_{ij}$ and its structural limits
-- **Envelope terms**: $\Theta_{\rm Const}$, $\Theta_{\rm Slope}$, and the **lazy transport envelope**
-- **Transfer bounds**: $\varphi_{\rm BF\to OR}$, $\psi_{\rm BF\to OR}$, $\varphi_{\rm OR\to BF}$, $\psi_{\rm OR\to BF}$
+This repository contains the official implementation of the experiments described in our paper, [Curvature Transfer](https://arxiv.org/abs/2603.13535), and is designed to generate the materials used in it.
 
-We then produce distributional artifacts:
-- Histograms of $\mathfrak c_{\rm OR}$ and $\mathfrak c_{\rm BF}$
-- Histogram of the *slack* to the monotone coverage envelope: `Theta_alpha(triangle) - c_OR`
-- Histogram of the *slack* to the lazy transport envelope: `cOR_upper - c_OR`
-- Summary CSVs and a JSON manifest with metrics including means, std, quantiles, and fraction of edges within analytic bands
+## Computed Metrics & Artifacts
 
-## Graph families (aligned with the paragraph)
+For each graph instance, the engine evaluates the following local structural and geometric properties per edge $(i,j)$:
 
-### (a) Random graph models
+* **Curvatures:** Lazy Ollivier-Ricci, Balanced Forman, and Non-lazy OR
+* **Structural Counts:** Triangle count $\triangle(i,j)$ and 4-cycle coverage $\Xi_{ij}$ (alongside its theoretical structural limits).
+* **Analytic Envelopes:** Linear envelope parameters ($\Theta_{\mathrm{Const}}$, $\Theta_{\mathrm{Slope}}$) and the exact lazy transport envelope.
+* **Transfer Bounds:** Rigorous lower and upper bounds translating between metrics ($\varphi_{\mathrm{BF}\to\mathrm{OR}}$, $\psi_{\mathrm{BF}\to\mathrm{OR}}$, $\varphi_{\mathrm{OR}\to\mathrm{BF}}$, $\psi_{\mathrm{OR}\to\mathrm{BF}}$).
 
-- **Erdős–Rényi** (n,p)
-- **Watts–Strogatz** small-world model (n, k, beta)
-- **Barabási–Albert** preferential attachment (n, m)
-- **Random geometric** in the unit square with radius `r`
-- **Random d-regular** graphs (n, d)
-- **Hyperbolic random graphs** (n, R, alpha, T)
-- **2-block SBM (equal communities)** (n, p_in, p_out)
+The execution pipeline automatically generates:
 
+* Comparative histograms of $\mathfrak{c}$<sub>OR</sub> and $\mathfrak{c}$<sub>BF</sub>.
+* Distributions of the envelope slacks: `Theta_alpha(triangle) - c_OR` and `cOR_upper - c_OR`.
+* Comprehensive JSON manifests and CSV logs detailing execution metrics, standard deviations, quantiles, and the strict fraction of edges captured within the analytic transfer bands.
+* Runtime scaling benchmarks (CSV logs and log-log PDF plots) isolating the asymptotic execution time of Exact Optimal Transport against the proposed Combinatorial Bounds.
 
-### (b) Canonical combinatorial families
+## Supported Graph Families
 
-- Cycles `C_n`
-- 2D Grids `Grid(m, n)`
-- Toroidal grids `C_m x C_n` (wraparound)
-- `d`-ary trees of height `h` (finite)
-- Complete graphs `K_n`
+### Random Graph Models
 
-### (c) Real networks often used in the curvature literature (TODO FOR NOW)
-Place edge list CSVs under `experiments/data/` to include these in a run:
+* **Erdős–Rényi** $(n, p)$
+* **Watts–Strogatz** small-world model $(n, k, \beta)$
+* **Barabási–Albert** preferential attachment $(n, m)$
+* **Random Geometric** (unit square with radius $r$)
+* **Random $d$-Regular** $(n, d)$
+* **Hyperbolic Random Graphs** $(n, R, \alpha, T)$
+* **2-Block Stochastic Block Model** (equal communities with $p_{\mathrm{in}}, p_{\mathrm{out}}$)
 
-- Karate Club (`karate.csv`, from Zachary 1977)
-- Jazz collaboration network (`jazz.csv`, from Glaiser--Danon 2003)
-- Western US power grid (`power_grid.csv` from Watts--Strogatz 1998)
-- Yeast transcription network (`yeast.csv` from Milo et al. 2002)
-- arXiv hep-ph citation network (`arxiv.csv` from Gehrke et al. 2003)
+### Canonical Combinatorial Families
 
-**Format:** CSV with two integer columns `u,v` (0-indexed) and no header.
-If a file is missing, it is simply skipped.
+* **Cycles** $C_n$
+* **2D Grids** $m \times n$
+* **Toroidal Grids** $C_m \times C_n$ (wraparound)
+* **$d$-ary Trees** (finite, height $h$)
+* **Complete Graphs** $K_n$
 
+### Real-World Networks
 
-## Usage
-Install requirements and run a preset suite (options: paper, small, tiny).
-The code runs in python3.11
+* **Zachary's Karate Club** (`karate.csv`)
+* **Jazz Musicians** (`jazz.csv`)
+* **US Power Grid** (`power_grid.csv`)
+* **Yeast Transcription** (`yeast.csv`)
+* **arXiv hep-ph Citations** (`arxiv.csv`)
+
+## Installation & Usage
+
+The codebase requires **Python 3.11**.
 
 ```bash
-# only if you require cpu
+# Install dependencies (CPU)
 source installation
 
-# only if you require gpu 
+# Install dependencies (GPU)
 source installation-gpu
 
-# then run a preset suite
+# Run the standard paper reproduction suite
 python experiments/run_experiments.py --preset paper
+
 ```
 
-Custom run example:
+**Custom Execution Example:**
+You can manually choose combinations of graph families, scales, and parallelization using the CLI flags.
 
 ```bash
 python experiments/run_experiments.py \
@@ -83,37 +80,18 @@ python experiments/run_experiments.py \
   --tree 3 6 \
   --complete 60 \
   --include-real
+
 ```
 
-Outputs (CSVs, JSON, PNGs) are written under `experiments/out/<run_name>/`.
+Outputs (CSVs, JSON, and PNGs) will be generated under `experiments/out/<run_name>/`.
 
-## Development
+## Validation & Testing Suite
 
-Profiling
+The repository includes a comprehensive `pytest` suite; to execute it run:
 
-To measure performance in order to optimize the code, we used the Python's **cProfile** to count function call time and count. Notably, there is a fixed cost in compilation time to running the _njit_ compilation step.
-```python 
-python -m cProfile experiments/run_experiments.py --preset small > experiments/out/profiler_results.txt 
-```
-
-In order to easily profile the cpu threads in an aggregate manner, we used the rust program **py-spy**, which plots the results in an intuitive graphical format. 
-```python 
-py-spy record --subprocesses -o out/profile.svg --rate 25 -- python experiments/run_experiments.py --preset small
-```
-
-## Notes and Tests
-- The test suite verifies, per edge of a graph:
-  - **Two-sided transfer inequalities** between Balanced Forman (BF) and Ollivier–Ricci (OR) curvature
-  - **Lazy-to-non-lazy comparison** and the **lazy transport envelope** upper bound for $c_{\rm OR}$
-  - **Property-based tests** assert shape invariants, universal bounds ($c_{\rm OR}, c_{\rm OR-0} \le 1$), degree-1 BF rule, $\Theta$-envelope consistency, and that the bounds contain the exact curvatures
-
-  - **Monotone coverage envelope**: the affine bound $\Theta_\alpha(\triangle)=Const_\alpha+Slope_\alpha\triangle$ with strictly positive slope and $\mathfrak c_{\rm OR}(i,j)\le \Theta_\alpha(\triangle(i,j))$
-  - **Structural 4-cycle coverage bounds** used by the BF curvature: $\Xi_{ij}\le \varrho_i+\varrho_j-2-2\,\triangle(i,j)$
-  and $\Xi_{ij}\le sho_{\max}(i,j)=\varpi_{\max}(i,j)\,\max\{\varrho_i,\varrho_j\}$
-  - A small **coverage monotonicity sanity check** contrasting an interior edge of a path vs. an edge of a 4-cycle
-  (same degrees and triangle count but different coverage), showing the lazy transport envelope is larger when coverage is larger.
-How to run the tests:
 ```bash
-pytest -q                
+pytest -q
+
 ```
-If `torch` is not installed, the entire suite will be skipped with a clear message.
+
+*(Note: PyTorch is required. If `torch` is not installed, the suite is safely skipped.)*
