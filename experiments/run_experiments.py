@@ -13,13 +13,14 @@ Features
   per-edge transfer bounds and envelopes.
 - Saves per-edge tables, summary statistics, and histograms for each run.
 - Orchestrates exact OT vs. combinatorial bounds runtime benchmarking.
+- Orchestrates GNN rewiring experiments across BORF and SDRF variants.
 - Can generate all paper figures in one go (see --auto-figures).
 
 Usage (command line)
 --------------------
 $ python run_experiments.py --preset tiny
 $ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
-$ python run_experiments.py --preset paper --run-benchmark
+$ python run_experiments.py --preset paper --only-gnn
 """
 import os
 import argparse
@@ -86,9 +87,7 @@ def add_family_args(parser: argparse.ArgumentParser):
 
     # Parallelism controls
     parser.add_argument("--jobs", type=int, default=None,
-                        help="Number of parallel jobs for both HRG generation and curvature computation. "
-                             "Follows scikit-learn conventions: None (auto), 1 (sequential), -1 (all CPUs), "
-                             ">1 (exact number), <-1 (all but |jobs|-1 CPUs)")
+                        help="Number of parallel jobs for both HRG generation and curvature computation.")
     parser.add_argument("--block-size", type=int, default=None,
                         help="Tile size for HRG; smaller -> more tasks. If omitted, chosen adaptively.")
 
@@ -108,6 +107,17 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--bench-max-n", type=int, default=20000, help="Maximum number of nodes for the runtime benchmark.")
     parser.add_argument("--bench-graphs", type=int, default=100, help="Total number of graph instances evaluated in the benchmark.")
     parser.add_argument("--bench-seed", type=int, default=42, help="Random seed for the benchmark generation.")
+
+    # GNN Experiment controls
+    parser.add_argument("--run-gnn", action="store_true", help="Execute the GNN topology rewiring experiments.")
+    parser.add_argument("--only-gnn", action="store_true", help="Skip graph generation and OT benchmarks, run ONLY GNN experiments.")
+    parser.add_argument("--gnn-datasets", nargs="+", type=str, default=None, help="Datasets to evaluate (e.g., ZINC minesweeper)")
+    parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN"], help="Architectures to evaluate")
+    parser.add_argument("--gnn-trials", type=int, default=None, help="Number of Optuna trials for GNNs")
+    parser.add_argument("--gnn-epochs", type=int, default=None, help="Number of epochs to train GNNs")
+    parser.add_argument("--gnn-cv", type=int, default=None, help="Number of CV splits for GNNs")
+    parser.add_argument("--gnn-reps", type=int, default=None, help="Number of repetitions for GNN evaluations")
+    parser.add_argument("--gnn-optim", type=str, default="Adam", help="Optimizer for GNNs")
 
     # Misc
     parser.add_argument("--seed", type=int, default=0)
@@ -141,6 +151,14 @@ def handle_presets(args, seed: int):
         args.grid = args.grid or [[10, 12]]
         args.tree = args.tree or [[3, 5]]
         args.complete = args.complete or [[40]]
+        
+        args.gnn_datasets = args.gnn_datasets or ["minesweeper"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_reps = args.gnn_reps or 2
+        args.gnn_cv = args.gnn_cv or 3
+        args.gnn_trials = args.gnn_trials or 5
+        args.gnn_epochs = args.gnn_epochs or 50
+
     elif args.preset == "small":
         args.run_benchmark = True
         args.bench_max_n = 3000
@@ -153,6 +171,14 @@ def handle_presets(args, seed: int):
         args.grid = args.grid or [[20, 20]]
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
+        
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_reps = args.gnn_reps or 10
+        args.gnn_cv = args.gnn_cv or 5
+        args.gnn_trials = args.gnn_trials or 10
+        args.gnn_epochs = args.gnn_epochs or 100
+
     elif args.preset == "medium":
         args.run_benchmark = True
         args.bench_min_n = 50
@@ -171,6 +197,14 @@ def handle_presets(args, seed: int):
         args.tree  = args.tree  or [[4, 6]]
         args.complete = args.complete or [[120]]
         args.skip_plots = True
+        
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_reps = args.gnn_reps or 20
+        args.gnn_cv = args.gnn_cv or 5
+        args.gnn_trials = args.gnn_trials or 30
+        args.gnn_epochs = args.gnn_epochs or 200
+
     elif args.preset == "paper":
         args.run_benchmark = True
         args.bench_min_n = 50
@@ -190,7 +224,14 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[120]]
         args.include_real = True
         args.skip_plots = True
-    
+        
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_reps = args.gnn_reps or 50
+        args.gnn_cv = args.gnn_cv or 5
+        args.gnn_trials = args.gnn_trials or 100
+        args.gnn_epochs = args.gnn_epochs or 500
+
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
     out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
@@ -254,203 +295,237 @@ def main():
     out_dir = os.path.join(os.path.dirname(__file__), "out", run_name)
     ensure_dir(out_dir)
 
-    prev_summary = {}
-    man_path = os.path.join(out_dir, "manifest.json")
-    if getattr(args, "soft_restart", False):
-        if os.path.exists(man_path):
-            try:
-                _prev = json.load(open(man_path, "r"))
-                for r in _prev.get("runs", []):
-                    t = r.get("tag")
-                    if t:
-                        prev_summary[t] = r.get("summary")
-            except Exception:
-                prev_summary = {}
-                print(f"[warn] Could not load prior manifest from {man_path}")
-        else:
-            print(f"[info] No manifest found at {man_path}; rebuilding from existing CSVs.")
-
-    def _csv_base(tag: str) -> str:
-        return tag.replace(".", "_")
-
-    def _csv_path_for(tag: str) -> str:
-        return os.path.join(out_dir, f"{_csv_base(tag)}_edges.csv")
-
-    def _infer_nm_from_csv(path_csv: str) -> Tuple[int, int]:
-        import csv as _csv
-        m = 0
-        max_id = -1
-        with open(path_csv, "r", newline="") as fh:
-            rd = _csv.reader(fh)
-            _ = next(rd, None)
-            for row in rd:
-                if not row or len(row) < 2:
-                    continue
+    # =========================================================================
+    # Phase 1: Curvature Computation & OT Benchmarks
+    # =========================================================================
+    if not args.only_gnn:
+        prev_summary = {}
+        man_path = os.path.join(out_dir, "manifest.json")
+        if getattr(args, "soft_restart", False):
+            if os.path.exists(man_path):
                 try:
-                    u = int(float(row[0])); v = int(float(row[1]))
+                    _prev = json.load(open(man_path, "r"))
+                    for r in _prev.get("runs", []):
+                        t = r.get("tag")
+                        if t:
+                            prev_summary[t] = r.get("summary")
                 except Exception:
-                    continue
-                m += 1
-                if u > max_id: max_id = u
-                if v > max_id: max_id = v
-        n = (max_id + 1) if m > 0 else 0
-        return n, m
+                    prev_summary = {}
+                    print(f"[warn] Could not load prior manifest from {man_path}")
+            else:
+                print(f"[info] No manifest found at {man_path}; rebuilding from existing CSVs.")
 
-    to_compute = []
-    skipped = []
+        def _csv_base(tag: str) -> str:
+            return tag.replace(".", "_")
 
-    def plan_run(tag: str, gen_callable):
-        csv_path = _csv_path_for(tag)
-        if getattr(args, "soft_restart", False) and os.path.exists(csv_path):
-            print(f"[skip] {tag}: found existing CSV -> {os.path.relpath(csv_path, out_dir)}")
-            skipped.append((tag, csv_path))
-        else:
-            to_compute.append((tag, gen_callable))
+        def _csv_path_for(tag: str) -> str:
+            return os.path.join(out_dir, f"{_csv_base(tag)}_edges.csv")
 
-    # Construct execution plan over graph families
-    if args.er:
-        for n, p in args.er:
-            tag = "er_n{}_p{}".format(int(n), float(p))
-            plan_run(tag, lambda n=int(n), p=float(p): models.erdos_renyi(int(n), float(p), seed=seed))
-    if args.ws:
-        for n, k, beta in args.ws:
-            tag = "ws_n{}_k{}_b{}".format(int(n), int(k), float(beta))
-            plan_run(tag, lambda n=int(n), k=int(k), beta=float(beta): models.watts_strogatz(int(n), int(k), float(beta), seed=seed))
-    if args.ba:
-        for n, m in args.ba:
-            tag = "ba_n{}_m{}".format(int(n), int(m))
-            plan_run(tag, lambda n=int(n), m=int(m): models.barabasi_albert(int(n), int(m), seed=seed))
-    if args.rg:
-        for n, r in args.rg:
-            tag = "rg_n{}_r{}".format(int(n), float(r))
-            plan_run(tag, lambda n=int(n), r=float(r): models.random_geometric(int(n), float(r), seed=seed))
-    if args.rreg:
-        for n, d in args.rreg:
-            tag = "rreg_n{}_d{}".format(int(n), int(d))
-            plan_run(tag, lambda n=int(n), d=int(d): models.d_regular_graph(int(n), int(d), seed=seed))
-    if args.sbm2:
-        for n, p_in, p_out in args.sbm2:
-            n = int(n); p_in = float(p_in); p_out = float(p_out)
-            a = n // 2; b = n - a
-            tag = "sbm2_n{}_pin{}_pout{}".format(n, p_in, p_out)
-            plan_run(tag, lambda a=a, b=b, p_in=p_in, p_out=p_out: models.make_sbm_graph([a, b], float(p_in), float(p_out), seed=seed))
-    if hasattr(args, "hrg") and args.hrg:
-        for n, R, alpha, T in args.hrg:
-            tag = "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T))
-            plan_run(tag, lambda n=int(n), R=float(R), alpha=float(alpha), T=float(T):
-                     models.make_hyperbolic_random_graph(
-                         int(n), float(R), alpha=float(alpha), T=float(T),
-                         seed=seed, n_jobs=args.jobs, block_size=args.block_size))
+        def _infer_nm_from_csv(path_csv: str) -> Tuple[int, int]:
+            import csv as _csv
+            m = 0
+            max_id = -1
+            with open(path_csv, "r", newline="") as fh:
+                rd = _csv.reader(fh)
+                _ = next(rd, None)
+                for row in rd:
+                    if not row or len(row) < 2:
+                        continue
+                    try:
+                        u = int(float(row[0])); v = int(float(row[1]))
+                    except Exception:
+                        continue
+                    m += 1
+                    if u > max_id: max_id = u
+                    if v > max_id: max_id = v
+            n = (max_id + 1) if m > 0 else 0
+            return n, m
 
-    if args.cycle:
-        for (n,) in args.cycle:
-            tag = "cycle_n{}".format(int(n))
-            plan_run(tag, lambda n=int(n): models.cycle_graph(int(n)))
-    if args.grid:
-        for m, n in args.grid:
-            tag = "grid_{}x{}".format(int(m), int(n))
-            plan_run(tag, lambda m=int(m), n=int(n): models.grid_graph(int(m), int(n)))
-    if args.torus:
-        for m, n in args.torus:
-            tag = "torus_{}x{}".format(int(m), int(n))
-            plan_run(tag, lambda m=int(m), n=int(n): models.torus_graph(int(m), int(n)))
-    if args.tree:
-        for d, h in args.tree:
-            tag = "tree_d{}_h{}".format(int(d), int(h))
-            plan_run(tag, lambda d=int(d), h=int(h): models.dary_tree(int(d), int(h)))
-    if args.complete:
-        for (n,) in args.complete:
-            tag = "complete_n{}".format(int(n))
-            plan_run(tag, lambda n=int(n): models.complete_graph(int(n)))
+        to_compute = []
+        skipped = []
 
-    if args.include_real:
-        for name, n, edges in load_real_graphs(os.path.join(os.path.dirname(__file__), "data")):
-            tag = f"real_{name}"
-            plan_run(tag, lambda n=n, edges=edges: (n, edges))
+        def plan_run(tag: str, gen_callable):
+            csv_path = _csv_path_for(tag)
+            if getattr(args, "soft_restart", False) and os.path.exists(csv_path):
+                print(f"[skip] {tag}: found existing CSV -> {os.path.relpath(csv_path, out_dir)}")
+                skipped.append((tag, csv_path))
+            else:
+                to_compute.append((tag, gen_callable))
 
-    manifest = {"runs": [], "notes": "Distributional histograms and envelope/transfer coverage"}
+        # Construct execution plan over graph families
+        if args.er:
+            for n, p in args.er:
+                tag = "er_n{}_p{}".format(int(n), float(p))
+                plan_run(tag, lambda n=int(n), p=float(p): models.erdos_renyi(int(n), float(p), seed=seed))
+        if args.ws:
+            for n, k, beta in args.ws:
+                tag = "ws_n{}_k{}_b{}".format(int(n), int(k), float(beta))
+                plan_run(tag, lambda n=int(n), k=int(k), beta=float(beta): models.watts_strogatz(int(n), int(k), float(beta), seed=seed))
+        if args.ba:
+            for n, m in args.ba:
+                tag = "ba_n{}_m{}".format(int(n), int(m))
+                plan_run(tag, lambda n=int(n), m=int(m): models.barabasi_albert(int(n), int(m), seed=seed))
+        if args.rg:
+            for n, r in args.rg:
+                tag = "rg_n{}_r{}".format(int(n), float(r))
+                plan_run(tag, lambda n=int(n), r=float(r): models.random_geometric(int(n), float(r), seed=seed))
+        if args.rreg:
+            for n, d in args.rreg:
+                tag = "rreg_n{}_d{}".format(int(n), int(d))
+                plan_run(tag, lambda n=int(n), d=int(d): models.d_regular_graph(int(n), int(d), seed=seed))
+        if args.sbm2:
+            for n, p_in, p_out in args.sbm2:
+                n = int(n); p_in = float(p_in); p_out = float(p_out)
+                a = n // 2; b = n - a
+                tag = "sbm2_n{}_pin{}_pout{}".format(n, p_in, p_out)
+                plan_run(tag, lambda a=a, b=b, p_in=p_in, p_out=p_out: models.make_sbm_graph([a, b], float(p_in), float(p_out), seed=seed))
+        if hasattr(args, "hrg") and args.hrg:
+            for n, R, alpha, T in args.hrg:
+                tag = "hrg_n{}_R{}_a{}_T{}".format(int(n), float(R), float(alpha), float(T))
+                plan_run(tag, lambda n=int(n), R=float(R), alpha=float(alpha), T=float(T):
+                         models.make_hyperbolic_random_graph(
+                             int(n), float(R), alpha=float(alpha), T=float(T),
+                             seed=seed, n_jobs=args.jobs, block_size=args.block_size))
 
-    for tag, gen in to_compute:
-        now_iso_string = datetime.now().strftime("%Y-%m-%d--%H:%M:%S%z")
-        
-        n, edges = gen()
-        print(f"{now_iso_string} [run] {tag}: n={n}, m={len(edges)}", end="")
-        
-        time_start = time.time()
-        curv = compute_curvatures(n, edges, n_jobs=args.jobs)
-        time_end = time.time()
-        total_seconds = int(time_end - time_start)
-        h, rem = divmod(total_seconds, 3600)
-        m, s = divmod(rem, 60)
-        print(f", t:{h:02d}:{m:02d}:{s:02d}s")
-        
-        base_name = tag.replace(".", "_")
-        if not args.skip_csv:
-            write_edge_table(os.path.join(out_dir, f"{base_name}_edges.csv"), curv)
+        if args.cycle:
+            for (n,) in args.cycle:
+                tag = "cycle_n{}".format(int(n))
+                plan_run(tag, lambda n=int(n): models.cycle_graph(int(n)))
+        if args.grid:
+            for m, n in args.grid:
+                tag = "grid_{}x{}".format(int(m), int(n))
+                plan_run(tag, lambda m=int(m), n=int(n): models.grid_graph(int(m), int(n)))
+        if args.torus:
+            for m, n in args.torus:
+                tag = "torus_{}x{}".format(int(m), int(n))
+                plan_run(tag, lambda m=int(m), n=int(n): models.torus_graph(int(m), int(n)))
+        if args.tree:
+            for d, h in args.tree:
+                tag = "tree_d{}_h{}".format(int(d), int(h))
+                plan_run(tag, lambda d=int(d), h=int(h): models.dary_tree(int(d), int(h)))
+        if args.complete:
+            for (n,) in args.complete:
+                tag = "complete_n{}".format(int(n))
+                plan_run(tag, lambda n=int(n): models.complete_graph(int(n)))
+
+        if args.include_real:
+            for name, n, edges in load_real_graphs(os.path.join(os.path.dirname(__file__), "data")):
+                tag = f"real_{name}"
+                plan_run(tag, lambda n=n, edges=edges: (n, edges))
+
+        manifest = {"runs": [], "notes": "Distributional histograms and envelope/transfer coverage"}
+
+        for tag, gen in to_compute:
+            now_iso_string = datetime.now().strftime("%Y-%m-%d--%H:%M:%S%z")
             
-        summary = summarize_run(curv)
-        manifest["runs"].append({"tag": tag, "n": n, "m": len(edges), "summary": summary})
-        
-        if not args.skip_plots:
-            _plot_hist(curv.base["c_OR"], f"{tag}   c_OR", os.path.join(out_dir, f"{base_name}__hist_cOR.png"), bins=args.bins)
-            _plot_hist(curv.base["c_BF"], f"{tag}   c_BF", os.path.join(out_dir, f"{base_name}__hist_cBF.png"), bins=args.bins)
-            _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag}   slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
-            _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag}   slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
+            n, edges = gen()
+            print(f"{now_iso_string} [run] {tag}: n={n}, m={len(edges)}", end="")
             
-    for tag, csv_path in skipped:
-        n, m = _infer_nm_from_csv(csv_path)
-        manifest["runs"].append({"tag": tag, "n": n, "m": m, "summary": prev_summary.get(tag)})
-
-    if getattr(args, "soft_restart", False):
-        seen_bases = { (r.get("tag","")).replace(".", "_") for r in manifest["runs"] }
-        for path in glob.glob(os.path.join(out_dir, "*_edges.csv")):
-             base = os.path.basename(path)[:-len("_edges.csv")]
-             if base in seen_bases:
-                 continue
-             n, m = _infer_nm_from_csv(path)
-             manifest["runs"].append({"tag": base, "n": n, "m": m, "summary": prev_summary.get(base)})
-        if not manifest["runs"]:
-            print(f"[info] Soft-restart found no *_edges.csv in {out_dir}.")
-
-    with open(os.path.join(out_dir, "manifest.json"), "w") as f:
-        json.dump(manifest, f, indent=2, default=np_encoder)
-
-    if getattr(args, "auto_figures", False):
-        try:
-            base_out = os.path.dirname(out_dir)
-            run_name = os.path.basename(out_dir)
-            print(f"[run_experiments] Generating paper figures for run '{run_name}'")
-            generate_paper_figures(out_root=base_out, run_name=run_name, bins=args.bins)
-        except Exception as e:
-            print(f"[run_experiments] Paper figure generation failed: {e}")
-
-    # Orchestrate benchmarking analysis
-    # Orchestrate benchmarking analysis
-    if getattr(args, "run_benchmark", False):
-        try:
-            import benchmark_n_tracking
-            import benchmark_plots
+            time_start = time.time()
+            curv = compute_curvatures(n, edges, n_jobs=args.jobs)
+            time_end = time.time()
+            total_seconds = int(time_end - time_start)
+            h, rem = divmod(total_seconds, 3600)
+            m, s = divmod(rem, 60)
+            print(f", t:{h:02d}:{m:02d}:{s:02d}s")
             
-            bench_csv = os.path.join(out_dir, "benchmark_runtime_scaling.csv")
-            bench_pdf = os.path.join(out_dir, "runtime_scaling_loglog_neurips.pdf")
-            
-            print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling -> {bench_csv}")
-            benchmark_n_tracking.run_benchmark(
-                output_csv=bench_csv,
-                max_workers=args.jobs,
-                min_n=args.bench_min_n,
-                max_n=args.bench_max_n,
-                num_graphs=args.bench_graphs,
-                seed=args.bench_seed
-            )
+            base_name = tag.replace(".", "_")
+            if not args.skip_csv:
+                write_edge_table(os.path.join(out_dir, f"{base_name}_edges.csv"), curv)
+                
+            summary = summarize_run(curv)
+            manifest["runs"].append({"tag": tag, "n": n, "m": len(edges), "summary": summary})
             
             if not args.skip_plots:
-                print(f"[benchmark] Rendering runtime scaling plot -> {bench_pdf}")
-                benchmark_plots.generate_runtime_plot(csv_path=bench_csv, out_pdf=bench_pdf)
-        except Exception as e:
-            print(f"[benchmark] Runtime benchmark failed: {e}")
+                _plot_hist(curv.base["c_OR"], f"{tag}   c_OR", os.path.join(out_dir, f"{base_name}__hist_cOR.png"), bins=args.bins)
+                _plot_hist(curv.base["c_BF"], f"{tag}   c_BF", os.path.join(out_dir, f"{base_name}__hist_cBF.png"), bins=args.bins)
+                _plot_hist(curv.theta_at_t - curv.base["c_OR"], f"{tag}   slack Theta(tri) - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_theta.png"), bins=args.bins)
+                _plot_hist(curv.env_upper - curv.base["c_OR"], f"{tag}   slack envelope - c_OR", os.path.join(out_dir, f"{base_name}__hist_slack_env.png"), bins=args.bins)
+                
+        for tag, csv_path in skipped:
+            n, m = _infer_nm_from_csv(csv_path)
+            manifest["runs"].append({"tag": tag, "n": n, "m": m, "summary": prev_summary.get(tag)})
 
-    print(f"[done] Wrote outputs to {out_dir}")
+        if getattr(args, "soft_restart", False):
+            seen_bases = { (r.get("tag","")).replace(".", "_") for r in manifest["runs"] }
+            for path in glob.glob(os.path.join(out_dir, "*_edges.csv")):
+                 base = os.path.basename(path)[:-len("_edges.csv")]
+                 if base in seen_bases:
+                     continue
+                 n, m = _infer_nm_from_csv(path)
+                 manifest["runs"].append({"tag": base, "n": n, "m": m, "summary": prev_summary.get(base)})
+            if not manifest["runs"]:
+                print(f"[info] Soft-restart found no *_edges.csv in {out_dir}.")
+
+        with open(os.path.join(out_dir, "manifest.json"), "w") as f:
+            json.dump(manifest, f, indent=2, default=np_encoder)
+
+        if getattr(args, "auto_figures", False):
+            try:
+                base_out = os.path.dirname(out_dir)
+                run_name = os.path.basename(out_dir)
+                print(f"[run_experiments] Generating paper figures for run '{run_name}'")
+                generate_paper_figures(out_root=base_out, run_name=run_name, bins=args.bins)
+            except Exception as e:
+                print(f"[run_experiments] Paper figure generation failed: {e}")
+
+        # Orchestrate benchmarking analysis
+        if getattr(args, "run_benchmark", False):
+            try:
+                import benchmark_n_tracking
+                import benchmark_plots
+                
+                bench_csv = os.path.join(out_dir, "benchmark_runtime_scaling.csv")
+                bench_pdf = os.path.join(out_dir, "runtime_scaling_loglog_neurips.pdf")
+                
+                print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling -> {bench_csv}")
+                benchmark_n_tracking.run_benchmark(
+                    output_csv=bench_csv,
+                    max_workers=args.jobs,
+                    min_n=args.bench_min_n,
+                    max_n=args.bench_max_n,
+                    num_graphs=args.bench_graphs,
+                    seed=args.bench_seed
+                )
+                
+                if not args.skip_plots:
+                    print(f"[benchmark] Rendering runtime scaling plot -> {bench_pdf}")
+                    benchmark_plots.generate_runtime_plot(csv_path=bench_csv, out_pdf=bench_pdf)
+            except Exception as e:
+                print(f"[benchmark] Runtime benchmark failed: {e}")
+
+    # =========================================================================
+    # Phase 2: GNN Topology Rewiring
+    # =========================================================================
+    if getattr(args, "run_gnn", False) or getattr(args, "only_gnn", False):
+        try:
+            import gnn_experiments
+            datasets = args.gnn_datasets or ["minesweeper"]
+            archs = args.gnn_archs or ["GCN", "GIN"]
+            trials = args.gnn_trials or 10
+            epochs = args.gnn_epochs or 100
+            cv_split = args.gnn_cv or 5
+            reps = args.gnn_reps or 3
+            optim = args.gnn_optim or "Adam"
+            
+            print(f"\n{'='*50}\n[gnn_experiments] Starting GNN Evaluations\n{'='*50}")
+            for ds in datasets:
+                for arch in archs:
+                    gnn_experiments.execute_trials(
+                        dataset_name=ds,
+                        seed=args.seed,
+                        n_trials=trials,
+                        epochs=epochs,
+                        optimizer_name=optim,
+                        cv_split=cv_split,
+                        arch_name=arch,
+                        n_reps=reps,
+                        out_dir=out_dir
+                    )
+        except Exception as e:
+            print(f"[gnn_experiments] GNN evaluation failed: {e}")
+
+    print(f"\n[done] Outputs directed to {out_dir}")
 
 if __name__ == "__main__":
     main()
