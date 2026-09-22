@@ -105,6 +105,9 @@ def compute_metric(y_true, y_pred, metric_name):
 # Objective Execution
 # -----------------------------
 def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epochs, optim_name):
+    model_params = model_params.copy()
+    lr = model_params.pop("lr", 0.01)
+    
     kf = KFold(n_splits=cv_split, shuffle=True)
     scores = []
     
@@ -119,7 +122,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
             test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
             
             model = GNN(**model_params).to(device)
-            optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=model_params.get("lr", 0.01))
+            optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
             criterion = torch.nn.L1Loss() if metric_name == "mae" else torch.nn.BCEWithLogitsLoss()
             
             for _ in range(epochs):
@@ -148,7 +151,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
         indices = np.arange(data.num_nodes)
         for train_idx, test_idx in kf.split(indices):
             model = GNN(**model_params).to(device)
-            optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=model_params.get("lr", 0.01))
+            optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
             criterion = torch.nn.BCEWithLogitsLoss()
             
             train_mask = torch.zeros(data.num_nodes, dtype=torch.bool, device=device)
