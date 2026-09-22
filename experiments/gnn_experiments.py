@@ -4,6 +4,7 @@ import argparse
 import random
 import copy
 import numpy as np
+import json
 
 import torch
 import torch.nn.functional as F
@@ -173,13 +174,29 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
                 
     return np.mean(scores)
 
-def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps):
+def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir):
     set_seed(seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    checkpoint_file = os.path.join(out_dir, "gnn_results.json")
+    results = {}
+    if os.path.exists(checkpoint_file):
+        with open(checkpoint_file, 'r') as f:
+            try:
+                results = json.load(f)
+            except json.JSONDecodeError:
+                pass
+                
+    run_key = f"{dataset_name}_{arch_name}"
+    if run_key in results and "Base" in results[run_key]:
+        if len(results[run_key]["Base"].get("scores", [])) >= n_reps:
+            print(f"\n[soft-restart] Skipping {dataset_name} | Arch: {arch_name} (Already completed in {checkpoint_file}).")
+            return
+            
     print(f"\nEvaluating Base Dataset: {dataset_name} | Arch: {arch_name}")
     raw_dataset, task, metric_name, in_c, out_c = get_dataset(dataset_name)
     
+    # 1. Execute Optuna strictly ONCE on the Base Dataset
     print(f"\nRunning {n_trials} Optuna trials on Base Dataset to find optimal hyperparameters...")
     
     def objective(trial):
@@ -204,7 +221,7 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
     best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
     print(f"Optimal Hyperparameters: {best_params}")
 
-  
+    # 2. Build Structural Topologies
     pipelines = {
         "Base": None,
         "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=3, n_jobs=-1),
@@ -246,11 +263,23 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
             print(f"{pipe_name:15s} | {metric_name.upper()}: {score:.4f}")
 
     print(f"\n{'='*50}\nFINAL AGGREGATE SCORES ({n_reps} Repetitions)\n{'='*50}")
+    
+    run_results = {}
     for pipe_name in pipelines.keys():
-        avg = np.mean(final_scores[pipe_name])
-        std = np.std(final_scores[pipe_name])
+        avg = float(np.mean(final_scores[pipe_name]))
+        std = float(np.std(final_scores[pipe_name]))
+        run_results[pipe_name] = {
+            "scores": final_scores[pipe_name],
+            "avg": avg,
+            "std": std,
+            "rewire_time": time_log[pipe_name]
+        }
         print(f"{pipe_name:15s} | Avg {metric_name.upper()}: {avg:.4f} ± {std:.4f} | Rewire Time: {time_log[pipe_name]:.2f}s")
 
+    # Update global checkpoint
+    results[run_key] = run_results
+    with open(checkpoint_file, 'w') as f:
+        json.dump(results, f, indent=4)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GNN Topology Rewiring Benchmarks")
@@ -262,10 +291,11 @@ if __name__ == "__main__":
     parser.add_argument("--cv-split", type=int, default=5, help="Number of K-Fold splits")
     parser.add_argument("--arch", type=str, default="GCN", choices=["GCN", "GIN"])
     parser.add_argument("--reps", type=int, default=3, help="Number of evaluation repetitions per topology")
+    parser.add_argument("--out-dir", type=str, default="out", help="Directory to save gnn_results.json")
     
     args = parser.parse_args()
     
     execute_trials(
         args.dataset, args.seed, args.trials, args.epochs, 
-        args.optimizer, args.cv_split, args.arch, args.reps
+        args.optimizer, args.cv_split, args.arch, args.reps, args.out_dir
     )
