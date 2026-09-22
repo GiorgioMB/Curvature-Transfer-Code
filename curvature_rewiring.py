@@ -82,13 +82,8 @@ def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> 
     raise ValueError(f"Unsupported metric identifier: '{metric}'. "
                      "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
 
-
 class SDRFRewiring(BaseTransform):
-    """
-    Stochastic Discrete Ricci Flow (SDRF) 
-    (Optimized for CurvatureEngine)
-    """
-    def __init__(self, metric="c_OR_lower_from_c_BF", max_iters=10, 
+    def __init__(self, metric="bounds", max_iters=10, 
                  max_candidates=3, remove_edges=True, n_jobs=None):
         self.metric = metric
         self.max_iters = max_iters
@@ -109,21 +104,25 @@ class SDRFRewiring(BaseTransform):
                 
             edge_index = _fast_pyg_edge_index(current_edges, device)
             eng = pc.CurvatureEngine(Data(num_nodes=num_nodes, edge_index=edge_index), n_jobs=self.n_jobs)
-            
-            # Fast target evaluation
-            vals = _evaluate_metric_all(eng, self.metric, n_jobs=self.n_jobs)
             edges_list = list(eng.edges)
             
-            min_idx, max_idx = np.argmin(vals), np.argmax(vals)
-            e_min, e_max = tuple(edges_list[min_idx]), tuple(edges_list[max_idx])
+            # Asymmetric objective resolution
+            if self.metric == "bounds":
+                vals_add = _evaluate_metric_all(eng, "c_OR_upper_from_c_BF", n_jobs=self.n_jobs)
+                vals_rem = _evaluate_metric_all(eng, "c_OR_lower_from_c_BF", n_jobs=self.n_jobs)
+                min_idx = np.argmin(vals_add)
+                max_idx = np.argmax(vals_rem)
+                eval_metric = "c_OR_upper_from_c_BF"
+            else:
+                vals = _evaluate_metric_all(eng, self.metric, n_jobs=self.n_jobs)
+                min_idx, max_idx = np.argmin(vals), np.argmax(vals)
+                eval_metric = self.metric
             
+            e_min, e_max = tuple(edges_list[min_idx]), tuple(edges_list[max_idx])
             u, v = e_min
             Nu, Nv = eng.neighbors[u], eng.neighbors[v]
             
-            # Find candidate edges closing triangles or 4-cycles around e_min
             candidates = set()
-            
-            # Triangle candidates: connect u to N(v) or v to N(u)
             for y in Nv:
                 if y != u and y not in Nu:
                     candidates.add(tuple(sorted((u, y))))
@@ -131,7 +130,6 @@ class SDRFRewiring(BaseTransform):
                 if x != v and x not in Nv:
                     candidates.add(tuple(sorted((v, x))))
                     
-            # 4-cycle candidates: connect N(u) to N(v)
             for x in Nu:
                 if x == v: continue
                 for y in Nv:
@@ -140,14 +138,12 @@ class SDRFRewiring(BaseTransform):
                         candidates.add(tuple(sorted((x, y))))
             
             candidates = list(candidates)
-            
             if not candidates:
-                # Fallback: find all non-edges safely
                 non_edges = [(a, b) for a in range(num_nodes) for b in range(a + 1, num_nodes) if b not in eng.neighbors[a]]
                 if non_edges:
                     candidates = [random.choice(non_edges)]
                 else:
-                    break  # Graph is completely fully connected
+                    break
             
             if len(candidates) > self.max_candidates:
                 candidates = random.sample(candidates, self.max_candidates)
@@ -155,16 +151,13 @@ class SDRFRewiring(BaseTransform):
             best_candidate = None
             best_improvement = -float('inf')
             
-            # Evaluate candidates isolated to e_min's local index
             for cand in candidates:
                 cand_edges = current_edges | {cand}
                 cand_idx = _fast_pyg_edge_index(cand_edges, device)
                 cand_eng = pc.CurvatureEngine(Data(num_nodes=num_nodes, edge_index=cand_idx), n_jobs=1)
-                
                 try:
-                    # Binary search equivalent list lookup (eng.edges is strictly sorted u < v)
                     new_idx = cand_eng.edges.index(e_min)
-                    score = _evaluate_metric_single(cand_eng, self.metric, new_idx)
+                    score = _evaluate_metric_single(cand_eng, eval_metric, new_idx)
                 except ValueError:
                     score = -float('inf')
                     
@@ -176,7 +169,6 @@ class SDRFRewiring(BaseTransform):
                 current_edges.add(best_candidate)
                 
             if self.remove_edges and len(current_edges) > 1:
-                # Discard only if we do not break strict connectivity assumptions
                 if eng.deg[e_max[0]] > 1 and eng.deg[e_max[1]] > 1:
                     current_edges.discard(e_max)
                     
@@ -185,11 +177,7 @@ class SDRFRewiring(BaseTransform):
 
 
 class BORFRewiring(BaseTransform):
-    """
-    Batched Ollivier-Ricci Flow (BORF) 
-    (Optimized for CurvatureEngine)
-    """
-    def __init__(self, metric="c_OR", max_iters=3, batch_add=3, batch_remove=3, n_jobs=None):
+    def __init__(self, metric="bounds", max_iters=3, batch_add=3, batch_remove=3, n_jobs=None):
         self.metric = metric
         self.max_iters = max_iters
         self.batch_add = batch_add
@@ -209,27 +197,30 @@ class BORFRewiring(BaseTransform):
                 
             edge_index = _fast_pyg_edge_index(current_edges, device)
             eng = pc.CurvatureEngine(Data(num_nodes=num_nodes, edge_index=edge_index), n_jobs=self.n_jobs)
-            
-            vals = _evaluate_metric_all(eng, self.metric, n_jobs=self.n_jobs)
             edges_list = eng.edges
             
-            sorted_indices = np.argsort(vals)
+            # Asymmetric objective resolution
+            if self.metric == "bounds":
+                vals_add = _evaluate_metric_all(eng, "c_OR_upper_from_c_BF", n_jobs=self.n_jobs)
+                vals_rem = _evaluate_metric_all(eng, "c_OR_lower_from_c_BF", n_jobs=self.n_jobs)
+                lowest_indices = np.argsort(vals_add)[:self.batch_add * 3]
+                highest_indices = np.argsort(vals_rem)[::-1]
+            else:
+                vals = _evaluate_metric_all(eng, self.metric, n_jobs=self.n_jobs)
+                sorted_indices = np.argsort(vals)
+                lowest_indices = sorted_indices[:self.batch_add * 3]
+                highest_indices = sorted_indices[::-1]
             
-            # Edge Additions (Heuristic common neighbor maximization)
             add_candidates = set()
-            lowest_indices = sorted_indices[:self.batch_add * 3]  
-            
             for idx in lowest_indices:
                 if len(add_candidates) >= self.batch_add:
                     break
-                    
                 u, v = edges_list[idx]
                 Nu, Nv = eng.neighbors[u], eng.neighbors[v]
                 
                 best_cand = None
                 best_overlap = -1
                 
-                # Triangle candidates
                 for y in Nv:
                     if y != u and y not in Nu:
                         overlap = len(eng.neighbors[u] & eng.neighbors[y])
@@ -241,7 +232,6 @@ class BORFRewiring(BaseTransform):
                         if overlap > best_overlap:
                             best_overlap, best_cand = overlap, tuple(sorted((v, x)))
                             
-                # 4-cycle candidates
                 for x in Nu:
                     if x == v: continue
                     for y in Nv:
@@ -256,15 +246,11 @@ class BORFRewiring(BaseTransform):
             
             current_edges.update(add_candidates)
             
-            # Edge Removals
-            if self.batch_remove > 0:
-                highest_indices = sorted_indices[::-1]
+            if self.remove_edges > 0:
                 removed_count = 0
-                
                 for idx in highest_indices:
                     if removed_count >= self.batch_remove:
                         break
-                        
                     u, v = edges_list[idx]
                     if eng.deg[u] > 1 and eng.deg[v] > 1:
                         e_max = tuple(sorted((u, v)))
