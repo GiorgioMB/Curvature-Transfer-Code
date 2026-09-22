@@ -91,7 +91,7 @@ class SDRFRewiring(BaseTransform):
         self.remove_edges = remove_edges
         self.n_jobs = n_jobs
 
-    def __call__(self, data: Data) -> Data:
+    def forward(self, data: Data) -> Data:
         device = data.edge_index.device
         num_nodes = data.num_nodes
         
@@ -184,7 +184,7 @@ class BORFRewiring(BaseTransform):
         self.batch_remove = batch_remove
         self.n_jobs = n_jobs
 
-    def __call__(self, data: Data) -> Data:
+    def forward(self, data: Data) -> Data:
         device = data.edge_index.device
         num_nodes = data.num_nodes
         
