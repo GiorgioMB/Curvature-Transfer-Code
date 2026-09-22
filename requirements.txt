@@ -22,7 +22,7 @@ multidict==6.7.0
 networkx==3.3
 numba==0.62.1
 numexpr==2.13.1
-numpy==2.3.3
+numpy==2.2.0
 packaging==25.0
 pandas==2.3.3
 pillow==11.3.0
