@@ -1,3 +1,20 @@
+"""
+Curvature-based Graph Rewiring Transforms
+
+This module provides PyTorch Geometric compatible implementations of Stochastic 
+Discrete Ricci Flow (SDRF) and Batched Ollivier-Ricci Flow (BORF). These 
+implementations have been rewritten and heavily optimized from their original 
+sources to integrate directly with our CurvatureEngine, allowing the algorithms 
+to be driven by exact Ollivier-Ricci curvature, Balanced Forman curvature, or 
+their theoretical transfer bounds.
+
+References:
+- SDRF: Topping, J., Di Giovanni, F., Chamberlain, B. P., Dong, X., & Bronstein, 
+  M. M. (2021). Understanding over-squashing and bottlenecks on graphs via 
+  network topology and curvature. arXiv preprint arXiv:2111.14522.
+- BORF: Nguyen, K., Nguyen, D., & Ho, N. (2022). Revisiting Over-smoothing and 
+  Over-squashing Using Ollivier-Ricci Curvature. arXiv preprint arXiv:2211.15779.
+"""
 import os
 import torch
 import numpy as np
