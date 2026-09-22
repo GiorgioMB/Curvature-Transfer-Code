@@ -85,6 +85,15 @@ python experiments/run_experiments.py \
 
 Outputs (CSVs, JSON, and PNGs) will be generated under `experiments/out/<run_name>/`.
 
+
+⚠️ **WARNING: Checkpoint File Management (`gnn_results.json`)**
+
+The GNN experimental pipeline (`gnn_experiments.py`) utilizes a checkpointing mechanism to facilitate soft-restarts: upon completing the repetitions for a specific dataset and architecture, the aggregate scores and hyperparameters are serialized to `gnn_results.json` in the target output directory (e.g., `out/<run-name>/gnn_results.json`).
+
+If you subsequently modify the codebase (such as altering the GNN architecture, adjusting the Optuna search space, changing the number of epochs/trials, or updating the SDRF/BORF rewiring mechanics) the script will *bypass execution* for any dataset/architecture pair already logged in the checkpoint file.
+
+**To force a complete re-evaluation of previously processed configurations, you must manually delete or rename the `gnn_results.json` file prior to execution.**
+
 ## Validation & Testing Suite
 
 The repository includes a comprehensive `pytest` suite; to execute it run:
