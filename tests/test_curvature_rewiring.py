@@ -137,3 +137,123 @@ def test_sdrf_empty_graph(torch_mod):
     new_data = transform(_clone_data(data))
     
     assert new_data.edge_index.shape[1] == 0, "Should handle empty edge sets gracefully"
+
+def test_sdrf_path3_forms_triangle(make_path3):
+    """
+    On a P3 graph (0-1-2), the lowest curvature edges are the only edges.
+    SDRF should predictably find the missing edge (0,2) to form a triangle.
+    """
+    data = make_path3()
+    original_edges = data.edge_index.shape[1] // 2
+    
+    transform = rewiring.SDRFRewiring(
+        metric="c_BF", 
+        max_iters=1, 
+        max_candidates=3, 
+        remove_edges=False, 
+        n_jobs=1
+    )
+    
+    new_data = transform(_clone_data(data))
+    new_edges = new_data.edge_index.shape[1] // 2
+    
+    assert new_data.num_nodes == 3
+    assert original_edges == 2
+    assert new_edges == 3, "SDRF must close the P3 into a Triangle (K3)"
+
+
+def test_borf_path3_forms_triangle(make_path3):
+    """BORF on P3 should also deterministically find the only missing edge (0,2)."""
+    data = make_path3()
+    
+    transform = rewiring.BORFRewiring(
+        metric="c_OR_lower_from_c_BF", 
+        max_iters=1, 
+        batch_add=1, 
+        batch_remove=0, 
+        n_jobs=1
+    )
+    
+    new_data = transform(_clone_data(data))
+    new_edges = new_data.edge_index.shape[1] // 2
+    
+    assert new_edges == 3, "BORF must close the P3 into a Triangle (K3)"
+
+
+def test_borf_star4_protects_leaves(make_star4):
+    """
+    On a Star graph, all peripheral nodes are leaves (degree 1). 
+    BORF should add edges between leaves (forming triangles) but must NEVER 
+    remove the structural hub edges, even if we request aggressive removal.
+    """
+    data = make_star4()
+    original_edges = data.edge_index.shape[1] // 2
+    
+    transform = rewiring.BORFRewiring(
+        metric="c_OR", 
+        max_iters=1, 
+        batch_add=1, 
+        batch_remove=10, # Request aggressive removal
+        n_jobs=1
+    )
+    
+    new_data = transform(_clone_data(data))
+    new_edges = new_data.edge_index.shape[1] // 2
+    
+    # It should add 1 edge between leaves, but 0 edges should be removed 
+    # because the degree constraint (deg > 1) protects the leaves.
+    assert new_edges == original_edges + 1, "BORF removed an edge it wasn't supposed to, or failed to add one"
+
+
+def test_sdrf_fully_connected_terminates(make_triangle):
+    """
+    SDRF should gracefully terminate and do nothing if the graph is fully connected 
+    and no further candidate edges can be generated.
+    """
+    data = make_triangle()
+    original_edges = data.edge_index.shape[1] // 2
+    
+    transform = rewiring.SDRFRewiring(
+        metric="c_BF", 
+        max_iters=5, 
+        remove_edges=False, 
+        n_jobs=1
+    )
+    
+    new_data = transform(_clone_data(data))
+    new_edges = new_data.edge_index.shape[1] // 2
+    
+    assert new_edges == original_edges, "SDRF should not modify a fully connected graph when removal is False"
+
+
+def test_sdrf_protects_bridges(torch_mod, tg_data):
+    """
+    Custom graph: Triangle with a tail (Kite/Paw graph).
+    Edges: (0,1), (1,2), (2,0) [Triangle] and (0,3) [Tail].
+    Ensures highest curvature edges inside the triangle might be removed, 
+    but the bridge (0,3) is strictly protected.
+    """
+    ei = torch_mod.tensor([
+        [0, 1, 1, 2, 2, 0, 0, 3],
+        [1, 0, 2, 1, 0, 2, 3, 0]
+    ], dtype=torch_mod.long)
+    data = tg_data.Data(num_nodes=4, edge_index=ei)
+    
+    transform = rewiring.SDRFRewiring(
+        metric="c_BF", 
+        max_iters=1, 
+        max_candidates=0, # Disable additions to isolate removal logic
+        remove_edges=True,
+        n_jobs=1
+    )
+    
+    new_data = transform(_clone_data(data))
+    
+    # Extract the undirected edges present after transformation
+    edges = set()
+    for i in range(new_data.edge_index.shape[1]):
+        u = new_data.edge_index[0, i].item()
+        v = new_data.edge_index[1, i].item()
+        edges.add(tuple(sorted((u, v))))
+        
+    assert tuple(sorted((0, 3))) in edges, "The bridge to the leaf (0,3) was illegally removed"
