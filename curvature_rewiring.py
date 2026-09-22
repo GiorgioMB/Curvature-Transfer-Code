@@ -26,21 +26,36 @@ from torch_geometric.transforms import BaseTransform
 
 import pyg_curvature as pc
 
-
 def _fast_pyg_edge_index(edges: set, device: torch.device) -> torch.Tensor:
+    """Optimized conversion from an edge set to a PyG-compatible directed edge_index."""
     if not edges:
         return torch.empty((2, 0), dtype=torch.long, device=device)
     
-    # Vectorized conversion
+    # Vectorized conversion rather than Python loops
     edges_arr = np.array(list(edges), dtype=np.int64)
     rows = np.concatenate([edges_arr[:, 0], edges_arr[:, 1]])
     cols = np.concatenate([edges_arr[:, 1], edges_arr[:, 0]])
     
-    edge_index = torch.from_numpy(np.stack([rows, cols])).to(device)
+    # Sort for canonical PyG format using numpy (torch.lexsort is unavailable in older PT)
+    order = np.lexsort((cols, rows))
     
-    # Sort for canonical PyG format
-    order = torch.lexsort((edge_index[1], edge_index[0]))
-    return edge_index[:, order]
+    edge_index = torch.from_numpy(np.stack([rows[order], cols[order]])).to(device)
+    return edge_index
+
+
+def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> float:
+    """Evaluates a metric for a single edge."""
+    if metric == "c_OR_lower_from_c_BF":
+        # varphi_BF_to_OR correctly broadcasts 0-dim scalars via _as_edgewise
+        return float(eng.varphi_BF_to_OR(eng.c_BF_edge(eidx))[eidx])
+    if metric == "c_OR_upper_from_c_BF":
+        return float(eng.psi_BF_to_OR(eng.c_BF_edge(eidx))[eidx])
+        
+    if metric == "c_BF": return eng.c_BF_edge(eidx)
+    if metric == "c_OR": return eng.c_OR_edge(eidx)
+    
+    raise ValueError(f"Unsupported metric identifier: '{metric}'. "
+                     "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
   
 def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) -> np.ndarray:
     """Evaluates the requested metric for all edges."""
@@ -66,18 +81,6 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
         workers = os.cpu_count() if n_jobs in (None, -1) else n_jobs
         with ThreadPoolExecutor(max_workers=workers) as ex:
             return np.array(list(ex.map(_eval_func, range(M))), dtype=float)
-
-def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> float:
-    """Evaluates a metric for a single edge."""
-    if metric in ("c_OR_lower_from_c_BF", "c_OR_upper_from_c_BF"):
-        bf_val = np.array([eng.c_BF_edge(eidx)], dtype=float)
-        return float(eng.bounds_from_BF(bf_val)[metric][0])
-        
-    if metric == "c_BF": return eng.c_BF_edge(eidx)
-    if metric == "c_OR": return eng.c_OR_edge(eidx)
-    
-    raise ValueError(f"Unsupported metric identifier: '{metric}'. "
-                     "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
 
 class SDRFRewiring(BaseTransform):
     """
