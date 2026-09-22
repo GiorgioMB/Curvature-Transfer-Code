@@ -15,6 +15,7 @@ References:
 - BORF: Nguyen, K., Nguyen, D., & Ho, N. (2022). Revisiting Over-smoothing and 
   Over-squashing Using Ollivier-Ricci Curvature. arXiv preprint arXiv:2211.15779.
 """
+
 import os
 import torch
 import numpy as np
@@ -23,11 +24,10 @@ from concurrent.futures import ThreadPoolExecutor
 from torch_geometric.data import Data
 from torch_geometric.transforms import BaseTransform
 
-
 import pyg_curvature as pc
 
 def _fast_pyg_edge_index(edges: set, device: torch.device) -> torch.Tensor:
-    """Optimized conversion from an edge set to a PyG-compatible directed edge_index."""
+    """Otimized conversion from an edge set to a PyG-compatible directed edge_index."""
     if not edges:
         return torch.empty((2, 0), dtype=torch.long, device=device)
     
@@ -42,31 +42,18 @@ def _fast_pyg_edge_index(edges: set, device: torch.device) -> torch.Tensor:
     edge_index = torch.from_numpy(np.stack([rows[order], cols[order]])).to(device)
     return edge_index
 
-
-def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> float:
-    """Evaluates a metric for a single edge."""
-    if metric == "c_OR_lower_from_c_BF":
-        # varphi_BF_to_OR correctly broadcasts 0-dim scalars via _as_edgewise
-        return float(eng.varphi_BF_to_OR(eng.c_BF_edge(eidx))[eidx])
-    if metric == "c_OR_upper_from_c_BF":
-        return float(eng.psi_BF_to_OR(eng.c_BF_edge(eidx))[eidx])
-        
-    if metric == "c_BF": return eng.c_BF_edge(eidx)
-    if metric == "c_OR": return eng.c_OR_edge(eidx)
-    
-    raise ValueError(f"Unsupported metric identifier: '{metric}'. "
-                     "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
-  
 def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) -> np.ndarray:
     """Evaluates the requested metric for all edges."""
     M = len(eng.edges)
     if M == 0:
         return np.array([], dtype=float)
 
-    # Resolve specific transfer bounds
-    if metric in ("c_OR_lower_from_c_BF", "c_OR_upper_from_c_BF"):
+    if metric == "c_OR_lower_from_c_BF":
         bf_vals = _evaluate_metric_all(eng, "c_BF", n_jobs)
-        return eng.bounds_from_BF(bf_vals)[metric]
+        return eng.varphi_BF_to_OR(bf_vals, sharp=False)
+    if metric == "c_OR_upper_from_c_BF":
+        bf_vals = _evaluate_metric_all(eng, "c_BF", n_jobs)
+        return eng.psi_BF_to_OR(bf_vals)
 
     # Target isolated functions based on metric
     def _eval_func(i: int) -> float:
@@ -81,6 +68,21 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
         workers = os.cpu_count() if n_jobs in (None, -1) else n_jobs
         with ThreadPoolExecutor(max_workers=workers) as ex:
             return np.array(list(ex.map(_eval_func, range(M))), dtype=float)
+
+def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> float:
+    """Evaluates a metric for a single edge."""
+    if metric == "c_OR_lower_from_c_BF":
+        return float(eng.varphi_BF_to_OR(eng.c_BF_edge(eidx), sharp=False)[eidx])
+    if metric == "c_OR_upper_from_c_BF":
+        return float(eng.psi_BF_to_OR(eng.c_BF_edge(eidx))[eidx])
+        
+    if metric == "c_BF": return eng.c_BF_edge(eidx)
+    if metric == "c_OR": return eng.c_OR_edge(eidx)
+    
+    raise ValueError(f"Unsupported metric identifier: '{metric}'. "
+                     "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
+
+
 class SDRFRewiring(BaseTransform):
     """
     Stochastic Discrete Ricci Flow (SDRF) 
@@ -160,6 +162,7 @@ class SDRFRewiring(BaseTransform):
                 cand_eng = pc.CurvatureEngine(Data(num_nodes=num_nodes, edge_index=cand_idx), n_jobs=1)
                 
                 try:
+                    # Binary search equivalent list lookup (eng.edges is strictly sorted u < v)
                     new_idx = cand_eng.edges.index(e_min)
                     score = _evaluate_metric_single(cand_eng, self.metric, new_idx)
                 except ValueError:
@@ -212,7 +215,7 @@ class BORFRewiring(BaseTransform):
             
             sorted_indices = np.argsort(vals)
             
-            # Edge Additions
+            # Edge Additions (Heuristic common neighbor maximization)
             add_candidates = set()
             lowest_indices = sorted_indices[:self.batch_add * 3]  
             
