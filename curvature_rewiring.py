@@ -246,7 +246,7 @@ class BORFRewiring(BaseTransform):
             
             current_edges.update(add_candidates)
             
-            if self.remove_edges > 0:
+            if self.batch_remove > 0:
                 removed_count = 0
                 for idx in highest_indices:
                     if removed_count >= self.batch_remove:
