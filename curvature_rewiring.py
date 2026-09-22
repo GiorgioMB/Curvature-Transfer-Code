@@ -81,11 +81,10 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
         workers = os.cpu_count() if n_jobs in (None, -1) else n_jobs
         with ThreadPoolExecutor(max_workers=workers) as ex:
             return np.array(list(ex.map(_eval_func, range(M))), dtype=float)
-
 class SDRFRewiring(BaseTransform):
     """
     Stochastic Discrete Ricci Flow (SDRF) 
-    (Optimized for CurvatureEngine Bounds)
+    (Optimized for CurvatureEngine)
     """
     def __init__(self, metric="c_OR_lower_from_c_BF", max_iters=10, 
                  max_candidates=3, remove_edges=True, n_jobs=None):
@@ -119,22 +118,35 @@ class SDRFRewiring(BaseTransform):
             u, v = e_min
             Nu, Nv = eng.neighbors[u], eng.neighbors[v]
             
-            # Find candidate edges closing 4-cycles
-            candidates = []
+            # Find candidate edges closing triangles or 4-cycles around e_min
+            candidates = set()
+            
+            # Triangle candidates: connect u to N(v) or v to N(u)
+            for y in Nv:
+                if y != u and y not in Nu:
+                    candidates.add(tuple(sorted((u, y))))
+            for x in Nu:
+                if x != v and x not in Nv:
+                    candidates.add(tuple(sorted((v, x))))
+                    
+            # 4-cycle candidates: connect N(u) to N(v)
             for x in Nu:
                 if x == v: continue
                 for y in Nv:
                     if y == u or y == x: continue
                     if y not in eng.neighbors[x]:
-                        candidates.append(tuple(sorted((x, y))))
+                        candidates.add(tuple(sorted((x, y))))
+            
+            candidates = list(candidates)
             
             if not candidates:
-                x, y = random.sample(range(num_nodes), 2)
-                if x != y and y not in eng.neighbors[x]:
-                    candidates.append(tuple(sorted((x, y))))
+                # Fallback: find all non-edges safely
+                non_edges = [(a, b) for a in range(num_nodes) for b in range(a + 1, num_nodes) if b not in eng.neighbors[a]]
+                if non_edges:
+                    candidates = [random.choice(non_edges)]
                 else:
-                    continue
-
+                    break  # Graph is completely fully connected
+            
             if len(candidates) > self.max_candidates:
                 candidates = random.sample(candidates, self.max_candidates)
             
@@ -172,7 +184,7 @@ class SDRFRewiring(BaseTransform):
 class BORFRewiring(BaseTransform):
     """
     Batched Ollivier-Ricci Flow (BORF) 
-    (Optimized for CurvatureEngine Bounds)
+    (Optimized for CurvatureEngine)
     """
     def __init__(self, metric="c_OR", max_iters=3, batch_add=3, batch_remove=3, n_jobs=None):
         self.metric = metric
@@ -214,6 +226,19 @@ class BORFRewiring(BaseTransform):
                 best_cand = None
                 best_overlap = -1
                 
+                # Triangle candidates
+                for y in Nv:
+                    if y != u and y not in Nu:
+                        overlap = len(eng.neighbors[u] & eng.neighbors[y])
+                        if overlap > best_overlap:
+                            best_overlap, best_cand = overlap, tuple(sorted((u, y)))
+                for x in Nu:
+                    if x != v and x not in Nv:
+                        overlap = len(eng.neighbors[v] & eng.neighbors[x])
+                        if overlap > best_overlap:
+                            best_overlap, best_cand = overlap, tuple(sorted((v, x)))
+                            
+                # 4-cycle candidates
                 for x in Nu:
                     if x == v: continue
                     for y in Nv:
@@ -221,8 +246,7 @@ class BORFRewiring(BaseTransform):
                         if y not in eng.neighbors[x]:
                             overlap = len(eng.neighbors[x] & eng.neighbors[y])
                             if overlap > best_overlap:
-                                best_overlap = overlap
-                                best_cand = tuple(sorted((x, y)))
+                                best_overlap, best_cand = overlap, tuple(sorted((x, y)))
                 
                 if best_cand and best_cand not in current_edges:
                     add_candidates.add(best_cand)
