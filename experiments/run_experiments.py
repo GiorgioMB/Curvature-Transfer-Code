@@ -133,6 +133,7 @@ def add_family_args(parser: argparse.ArgumentParser):
         help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists."
     )
 
+
 def handle_presets(args, seed: int):
     """Fill in default arguments for --preset suites if not already set."""
     if args.preset is None:
@@ -150,7 +151,7 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[40]]
         
         args.gnn_datasets = args.gnn_datasets or ["minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 2
         args.gnn_cv = args.gnn_cv or 3
         args.gnn_trials = args.gnn_trials or 5
@@ -178,22 +179,23 @@ def handle_presets(args, seed: int):
     elif args.preset == "medium":
         args.bench_max_n = 10000
         args.bench_graphs = 50
-        args.hrg = args.hrg or [[500, 5.0, 1.0, 0.0], [500, 5.0, 1.0, 0.5]]
-        args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
-        args.ws  = args.ws  or [[800, 10, 0.05], [800, 10, 0.2], [1600, 10, 0.05], [1600, 10, 0.2]]
-        args.ba  = args.ba  or [[800, 2], [800, 5], [1600, 2], [1600, 5]]
-        args.rg  = args.rg  or [[800, 0.056419], [1600, 0.039894]]
-        args.rreg = args.rreg or [[1000, 8], [2000, 8]]
+        args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
+        args.er  = args.er  or [[800, 0.0100125]]
+        args.ws  = args.ws  or [[800, 10, 0.05], [800, 10, 0.2]]
+        args.ba  = args.ba  or [[800, 2], [800, 5]]
+        args.rg  = args.rg  or [[800, 0.056419]]
+        args.rreg = args.rreg or [[1000, 8]]
         args.sbm2 = args.sbm2 or [[1000, 0.012018, 0.004006], [1000, 0.004002, 0.012006]]
-        args.cycle = args.cycle or [[600]]
-        args.grid  = args.grid  or [[40, 40]]
-        args.torus = args.torus or [[32, 32], [40, 40]]
-        args.tree  = args.tree  or [[4, 6]]
-        args.complete = args.complete or [[120]]
+        
+        args.cycle = args.cycle or [[400]]
+        args.grid  = args.grid  or [[30, 30]]
+        args.torus = args.torus or [[32, 32]]
+        args.tree  = args.tree  or [[4, 5]] 
+        args.complete = args.complete or [[90]]
         args.skip_plots = True
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 30
@@ -218,7 +220,7 @@ def handle_presets(args, seed: int):
         args.skip_plots = True
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 50
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 100
