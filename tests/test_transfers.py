@@ -95,3 +95,30 @@ def test_base_immutability_by_OR_BF_bounds(engine):
 
     engine.bounds_from_OR(base["c_OR"])
     assert compare_dict_ndarrays(engine.compute_all(), base_original)
+
+
+def test_single_edge_transfer_methods(engine):
+    """Test that single-edge methods exactly match the vectorized array outputs."""
+    base = engine.compute_all(n_jobs=1)
+    M = len(base["edges"])
+    
+    # Run the full vectorized methods
+    vec_lower_sharp = engine.varphi_BF_to_OR(base["c_BF"], sharp=True)
+    vec_lower_flat  = engine.varphi_BF_to_OR(base["c_BF"], sharp=False)
+    vec_upper       = engine.psi_BF_to_OR(base["c_BF"])
+    
+    # Run the granular edge-by-edge methods
+    single_lower_sharp = np.array([
+        engine.varphi_BF_to_OR_edge(i, base["c_BF"][i], sharp=True) for i in range(M)
+    ])
+    single_lower_flat = np.array([
+        engine.varphi_BF_to_OR_edge(i, base["c_BF"][i], sharp=False) for i in range(M)
+    ])
+    single_upper = np.array([
+        engine.psi_BF_to_OR_edge(i, base["c_BF"][i]) for i in range(M)
+    ])
+    
+    # Assert equivalence
+    assert np.allclose(vec_lower_sharp, single_lower_sharp, equal_nan=True), "Single edge sharp lower bound deviated from vectorized"
+    assert np.allclose(vec_lower_flat, single_lower_flat, equal_nan=True), "Single edge flat lower bound deviated from vectorized"
+    assert np.allclose(vec_upper, single_upper, equal_nan=True), "Single edge upper bound deviated from vectorized"
