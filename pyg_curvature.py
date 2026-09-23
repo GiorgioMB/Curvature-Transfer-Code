@@ -1266,180 +1266,138 @@ class CurvatureEngine:
         if t is None:
             t = float(loc.tri)
         return Const + Slope * t, Const, Slope
+          
+    # ---------- Theorem: BF -> OR lower transfer modulus ----------
 
-    # ---------- Theorem: BF -> OR Lower transfer modulus ----------
+    def varphi_BF_to_OR_edge(self, eidx: int, zeta_e: float, sharp: bool = True, cOR0_e: Optional[float] = None) -> float:
+        loc = self._local_for_edge(eidx)
+        di, dj = float(loc.deg_i), float(loc.deg_j)
+        Xi, sho_max = float(loc.Xi), float(loc.sho_max)
+        dmin = min(di, dj)
+        dmax = max(di, dj)
 
-    def varphi_BF_to_OR(
-        self, 
-        zeta, 
-        sharp = True
-        ) -> np.ndarray:
-        """
-        Lower bound on lazy OR given a threshold on BF (edgewise).
+        if dmin <= 0 or dmax <= 0:
+            return float("-inf")
+            
+        S = 2.0 / di + 2.0 / dj - 2.0
+        T = 2.0 / dmax + 1.0 / dmin
+        K = self._K(di, dj)
+        C4 = float(self._C4_edge(Xi, sho_max))
+
+        Zscr = max(0.0, (zeta_e - S - C4) / T)
+        Zbar_max = Zscr / dmax
+        Zbar_min = Zscr / dmin
+        leftover = max(0.0, zeta_e - S - T * (dmin - 1.0))
+        S_floor = 0.5 * max(C4, leftover)
         
-        Parameters
-        - zeta: scalar or length-M vector of BF values (or thresholds)
-        - sharp: if True, adapt to sign information for a slightly tighter bound
+        phi0 = ( -max(0.0, K - Zbar_max - S_floor)
+                 -max(0.0, K - Zbar_min - S_floor)
+                 + Zbar_max )
+
+        ai, aj = self._alpha(di), self._alpha(dj)
+        a_min = min(ai, aj)
+        a_max = max(ai, aj)
+        Delta = abs(ai - aj)
         
-        Returns
-        - Array of length M with lower bounds on c_OR per undirected edge.
-        """
+        if sharp and cOR0_e is not None:
+            a_star = a_min if cOR0_e >= 0.0 else a_max
+        elif sharp:
+            cOR0_e = self.c_OR0_edge(eidx)
+            a_star = a_min if cOR0_e >= 0.0 else a_max
+        else:
+            a_star = a_min
+            
+        return float((1.0 - a_star) * phi0 - Delta)
+      
+    # ---------- Theorem: BF -> OR upper transfer modulus ----------
+
+    def psi_BF_to_OR_edge(self, eidx: int, zeta_e: float) -> float:
+        loc = self._local_for_edge(eidx)
+        i_deg, j_deg = loc.deg_i, loc.deg_j
+        tri = loc.tri
+
+        S = self._S(i_deg, j_deg)
+        T = self._T(i_deg, j_deg)
+        b = max(0.0, zeta_e - S)
+
+        Sigma = self._Sigma_alpha(i_deg, j_deg)
+        wi = self._w_alpha(i_deg); wj = self._w_alpha(j_deg)
+        w_wedge = min(wi, wj)
+
+        rho_max = float(max(i_deg, j_deg))
+        sho_max_star = rho_max * (rho_max - 1.0)
+        eta_alpha = sho_max_star / Sigma if Sigma > 0 else 0.0
+
+        def A_u(t: float, deg_u: int, w_u: float) -> float:
+            return (deg_u - 1.0 - t) * w_u
+        def A_min(t: float) -> float:
+            return min(A_u(t, i_deg, wi), A_u(t, j_deg, wj))
+        def B_alpha(t: float) -> float:
+            return eta_alpha * (b - T * t)
+        def C_alpha(t: float) -> float:
+            return min(t * abs(wi - wj), A_u(t, i_deg, wi) + A_u(t, j_deg, wj))
+        def D_alpha(t: float) -> float:
+            return ( (i_deg + j_deg - 2.0) - 2.0 * t ) / Sigma
+
+        zi, zj = self._z_i_j(i_deg, j_deg)
+        ri, bri, rj, brj = self._r_terms(i_deg, j_deg)
+        
+        def Psi(t: float) -> float:
+            return (-1.0 + 2.0*(zi+zj) + (ri+bri+rj+brj) + 2.0*t*w_wedge
+                     + max(0.0, min(A_min(t), B_alpha(t), D_alpha(t))) + C_alpha(t))
+
+        t_max = min(i_deg, j_deg) - 1.0
+        if T > 0:
+            t_max = min(t_max, b / T)
+
+        cand = [0.0]
+        denom_i, denom_j = (eta_alpha * T - wi), (eta_alpha * T - wj)
+        if abs(denom_i) > 1e-15: cand.append((eta_alpha * b - wi * (i_deg - 1.0)) / denom_i)
+        if abs(denom_j) > 1e-15: cand.append((eta_alpha * b - wj * (j_deg - 1.0)) / denom_j)
+        if abs(wi - wj) > 1e-15: cand.append((wj * (j_deg - 1.0) - wi * (i_deg - 1.0)) / (wj - wi))
+        
+        denom = wi + wj + abs(wi - wj)
+        if denom > 1e-15: cand.append((wi * (i_deg - 1.0) + wj * (j_deg - 1.0)) / denom)
+        
+        cand.append(t_max)
+        denom_iD, denom_jD = (2.0 / Sigma - wi), (2.0 / Sigma - wj)
+        if abs(denom_iD) > 1e-15: cand.append(( (i_deg + j_deg - 2.0)/Sigma - wi * (i_deg - 1.0) ) / denom_iD)
+        if abs(denom_jD) > 1e-15: cand.append(( (i_deg + j_deg - 2.0)/Sigma - wj * (j_deg - 1.0) ) / denom_jD)
+        
+        denom_BD = (2.0 - sho_max_star * T)
+        if abs(denom_BD) > 1e-15: cand.append(( (i_deg + j_deg - 2.0) - sho_max_star * b ) / denom_BD)
+            
+        best = -math.inf
+        for t in cand:
+            if not np.isfinite(t): continue
+            best = max(best, Psi(max(0.0, min(t_max, t))))
+
+        return float(best)
+
+    # ---------- Vectorized Endpoints ----------
+
+    def varphi_BF_to_OR(self, zeta, sharp=True) -> np.ndarray:
         zetas = self._as_edgewise(zeta, "zeta")
         M = len(self.edges)
         out = np.zeros(M, dtype=float)
-        cOR0_all = None
-        if sharp:
-            cOR0_all = self._get_c_OR0_all(force_recompute=False)
+        cOR0_all = self._get_c_OR0_all(force_recompute=False) if sharp else None
 
         for eidx in range(M):
-            loc = self._local_for_edge(eidx)
-            di = float(loc.deg_i)
-            dj = float(loc.deg_j)
-            Xi = float(loc.Xi)
-            sho_max = float(loc.sho_max)
-            dmin = di if di <= dj else dj
-            dmax = dj if di <= dj else di
-
-            if dmin <= 0 or dmax <= 0:
-                out[eidx] = float("-inf")
-                continue
-            S = 2.0 / di + 2.0 / dj - 2.0
-            T = 2.0 / dmax + 1.0 / dmin
-            K = self._K(di, dj)
-            C4 = float(self._C4_edge(Xi, sho_max))
-
-            Zscr = max(0.0, (float(zetas[eidx]) - S - C4) / T)
-            Zbar_max = Zscr / dmax
-            Zbar_min = Zscr / dmin
-            zeta_e = float(zetas[eidx])
-            leftover = max(0.0, zeta_e - S - T * (dmin - 1.0))
-            S_floor = 0.5 * max(C4, leftover)
-            phi0 = ( -max(0.0, K - Zbar_max - S_floor)
-                     -max(0.0, K - Zbar_min - S_floor)
-                     + Zbar_max )
-
-            
-            ai = self._alpha(di)
-            aj = self._alpha(dj)
-            a_min = ai if ai <= aj else aj
-            a_max = aj if ai <= aj else ai
-            Delta = abs(ai - aj)
-            if sharp and cOR0_all is not None:
-                cOR0 = float(cOR0_all[eidx])
-                a_star = a_min if cOR0 >= 0.0 else a_max
-            else:
-                a_star = a_min
-            out[eidx] = (1.0 - a_star) * phi0 - Delta
-
+            cOR0_e = float(cOR0_all[eidx]) if sharp else None
+            out[eidx] = self.varphi_BF_to_OR_edge(eidx, float(zetas[eidx]), sharp=sharp, cOR0_e=cOR0_e)
         return out
 
-    # ---------- Theorem: BF -> OR Upper transfer modulus (psi via Psi_alpha) ----------
-
-    def psi_BF_to_OR(
-        self, 
-        zeta
-        ) -> np.ndarray:
-        """
-        Upper bound on lazy OR given a threshold on BF (edgewise).
-        
-        Parameters
-        - zeta: scalar or vector of BF values per edge (directed or undirected)
-        
-        Returns
-        - Array of length M with upper bounds on c_OR per undirected edge.
-        """
+    def psi_BF_to_OR(self, zeta) -> np.ndarray:
         arr = np.asarray(zeta, dtype=float)
         if arr.ndim == 0:
             zetas = self._as_edgewise(float(arr), "zeta")
         else:
-            zetas = self._values_to_undirected(
-                np.ravel(arr), edge_index=self._original_edge_index, agg="mean"
-            )
-        out = []
-        for eidx in range(len(self.edges)):
-            zeta_e = float(zetas[eidx])
-            loc = self._local_for_edge(eidx)
-            i_deg, j_deg = loc.deg_i, loc.deg_j
-            tri = loc.tri
-
-            S = self._S(i_deg, j_deg)
-            T = self._T(i_deg, j_deg)
-            b = max(0.0, zeta_e - S)
-
-            Sigma = self._Sigma_alpha(i_deg, j_deg)
-            wi = self._w_alpha(i_deg); wj = self._w_alpha(j_deg)
-            w_wedge = min(wi, wj)
-
-            # eta_alpha upper bounds how much of b can be attributed to 4-cycles
-            rho_max = float(max(i_deg, j_deg))
-            sho_max_star = rho_max * (rho_max - 1.0)
-            eta_alpha = sho_max_star / Sigma if Sigma > 0 else 0.0
-
-            def A_u(t: float, deg_u: int, w_u: float) -> float:
-                return (deg_u - 1.0 - t) * w_u
-
-            def A_min(t: float) -> float:
-                return min(A_u(t, i_deg, wi), A_u(t, j_deg, wj))
-
-            def B_alpha(t: float) -> float:
-                return eta_alpha * (b - T * t)
-
-            def C_alpha(t: float) -> float:
-                return min(t * abs(wi - wj), A_u(t, i_deg, wi) + A_u(t, j_deg, wj))
+            zetas = self._values_to_undirected(np.ravel(arr), edge_index=self._original_edge_index, agg="mean")
             
-            def D_alpha(t: float) -> float:
-                return ( (i_deg + j_deg - 2.0) - 2.0 * t ) / Sigma
-
-            zi, zj = self._z_i_j(i_deg, j_deg)
-            ri, bri, rj, brj = self._r_terms(i_deg, j_deg)
-            def Psi(t: float) -> float:
-                return (-1.0 + 2.0*(zi+zj) + (ri+bri+rj+brj) + 2.0*t*w_wedge
-                         + max(0.0, min(A_min(t), B_alpha(t), D_alpha(t))) + C_alpha(t))
-
-            # t is effectively the number of triangles but can be relaxed
-            t_max = min(i_deg, j_deg) - 1.0
-            if T > 0:
-                t_max = min(t_max, b / T)
-
-            # Candidate critical points where piecewise expressions change
-            cand = [0.0]
-            denom_i = (eta_alpha * T - wi)
-            denom_j = (eta_alpha * T - wj)
-            if abs(denom_i) > 1e-15:
-                ti = (eta_alpha * b - wi * (i_deg - 1.0)) / denom_i
-                cand.append(ti)
-            if abs(denom_j) > 1e-15:
-                tj = (eta_alpha * b - wj * (j_deg - 1.0)) / denom_j
-                cand.append(tj)
-            if abs(wi - wj) > 1e-15:
-                t_swap = (wj * (j_deg - 1.0) - wi * (i_deg - 1.0)) / (wj - wi)
-                cand.append(t_swap)
-            denom = wi + wj + abs(wi - wj)
-            if denom > 1e-15:
-                t_scap = (wi * (i_deg - 1.0) + wj * (j_deg - 1.0)) / denom
-                cand.append(t_scap)
-            cand.append(t_max)
-            denom_iD = (2.0 / Sigma - wi)
-            if abs(denom_iD) > 1e-15:
-                tiD = ( (i_deg + j_deg - 2.0)/Sigma - wi * (i_deg - 1.0) ) / denom_iD
-                cand.append(tiD)
-            denom_jD = (2.0 / Sigma - wj)
-            if abs(denom_jD) > 1e-15:
-                tjD = ( (i_deg + j_deg - 2.0)/Sigma - wj * (j_deg - 1.0) ) / denom_jD
-                cand.append(tjD)
-            denom_BD = (2.0 - sho_max_star * T)
-            if abs(denom_BD) > 1e-15:
-                tBD = ( (i_deg + j_deg - 2.0) - sho_max_star * b ) / denom_BD
-                cand.append(tBD)
-            best = -math.inf
-            for t in cand:
-                if not np.isfinite(t):
-                    continue
-                t_clamped = max(0.0, min(t_max, t))
-                best = max(best, Psi(t_clamped))
-
-            out.append(best)
-        return np.array(out, dtype=float)
+        out = np.zeros(len(self.edges), dtype=float)
+        for eidx in range(len(self.edges)):
+            out[eidx] = self.psi_BF_to_OR_edge(eidx, float(zetas[eidx]))
+        return out
 
     # ---------- Theorem: OR -> BF lower transfer modulus ----------
 
