@@ -1,8 +1,8 @@
 if command -v uv >/dev/null; then
-  VENV="uv venv --python 3.11 .venv"
+  VENV="uv venv .venv"
   PIP="uv pip"
 else
-  VENV="python3.11 -m venv .venv"
+  VENV="python3 -m venv .venv"
   PIP="pip"
 fi
 
@@ -19,7 +19,7 @@ print(torch.__version__.split('+')[0])
 PY
 )
 
-$PIP install -U torch_geometric torch-scatter torch-sparse torch-cluster torch-spline-conv \
+$PIP install --no-build-isolation -U torch_geometric torch-scatter torch-sparse torch-cluster torch-spline-conv \
   -f https://data.pyg.org/whl/torch-$TORCH+cpu.html
 
 $PIP install -U numba
