@@ -8,6 +8,7 @@ import random
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 from torch_geometric.datasets import HeterophilousGraphDataset
 
 from curvature_rewiring import SDRFRewiring
@@ -30,7 +31,6 @@ def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, a
     print(f"[ablation] Base Graph: |V| = {num_nodes}, |E| = {data.edge_index.shape[1] // 2}")
     print(f"[ablation] Building log-space grid up to n={max_n_limit}, iters={max_iters_limit}")
     
-    # Construct log-spaced grids bounds
     n_vals = np.unique(np.logspace(0, np.log10(max(1, max_n_limit)), num=ablation_points, dtype=int))
     iters_vals = np.unique(np.logspace(0, np.log10(max(1, max_iters_limit)), num=ablation_points, dtype=int))
     
@@ -40,19 +40,16 @@ def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, a
     time_matrix = np.zeros((len(iters_vals), len(n_vals)))
     completed_runs = set()
     
-    # Load state if checkpoint exists
     if os.path.isfile(out_file):
         print(f"[ablation] Discovered existing checkpoint. Soft-restarting from {out_file}...")
         with open(out_file, "r") as f:
             results = json.load(f)
             
-        # Reconstruct the time matrix and identify completed grid points
         for run in results.get("runs", []):
             run_n = run["max_candidates"]
             run_iters = run["max_iters"]
             completed_runs.add((run_n, run_iters))
             
-            # Map the historical run back to current matrix indices
             i_idx = np.where(iters_vals == run_iters)[0]
             j_idx = np.where(n_vals == run_n)[0]
             if i_idx.size > 0 and j_idx.size > 0:
@@ -91,7 +88,6 @@ def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, a
                 "time_seconds": float(elapsed)
             })
 
-            # Checkpoint partial progress immediately
             with open(out_file, "w") as f:
                 json.dump(results, f, indent=4)
 
@@ -114,9 +110,16 @@ def _generate_ablation_plots(n_vals, iters_vals, time_matrix, out_dir):
         "ps.fonttype": 42
     })
     
-    # Heatmap: Execution Time (T) across Domain (n x I)
+    # Heatmap: Absolute Execution Time (T) across Domain (n x I)
     fig_heat, ax_heat = plt.subplots(figsize=(7, 5))
-    im = ax_heat.pcolormesh(n_vals, iters_vals, time_matrix, shading='nearest', cmap='inferno')
+    
+    vmin = max(time_matrix.min(), 1e-6)
+    vmax = time_matrix.max()
+    
+    im = ax_heat.pcolormesh(
+        n_vals, iters_vals, time_matrix, 
+        shading='nearest', cmap='inferno', norm=LogNorm(vmin=vmin, vmax=vmax)
+    )
     
     ax_heat.set_xscale('log')
     ax_heat.set_yscale('log')
@@ -125,47 +128,58 @@ def _generate_ablation_plots(n_vals, iters_vals, time_matrix, out_dir):
     ax_heat.set_title('SDRF Runtime Map (Seconds)', pad=15)
     
     cbar = fig_heat.colorbar(im, ax=ax_heat)
-    cbar.set_label('Execution Time (s)')
+    cbar.set_label('Absolute Execution Time (s) [Log Scale]')
     
     fig_heat.tight_layout()
     fig_heat.savefig(os.path.join(out_dir, "sdrf_ablation_heatmap.pdf"), format='pdf', bbox_inches='tight')
     fig_heat.savefig(os.path.join(out_dir, "sdrf_ablation_heatmap.png"), format='png', dpi=300, bbox_inches='tight')
     plt.close(fig_heat)
     
-    # Conditional expectation 1: Time = f(n) | max_iters
-    fig_n, ax_n = plt.subplots(figsize=(6, 4.5))
-    for i, iters in enumerate(iters_vals):
-        ax_n.plot(n_vals, time_matrix[i, :], marker='s', markersize=5, label=f'iters={iters}')
-        
+    # Conditional expectations: Relative Overhead (Normalized)
+    fig_cond, (ax_n, ax_iter) = plt.subplots(1, 2, figsize=(12, 4.5))
+    
+    # Scaling vs n, conditioned on max_iters. 
+    # Normalize each row by its execution time at the lowest n.
+    eps = 1e-9
+    norm_matrix_n = time_matrix / np.maximum(time_matrix[:, 0:1], eps)
+    
+    t_median_n = np.median(norm_matrix_n, axis=0)
+    t_min_n = np.min(norm_matrix_n, axis=0)
+    t_max_n = np.max(norm_matrix_n, axis=0)
+    
+    ax_n.plot(n_vals, t_median_n, marker='s', markersize=5, color='C0', label='Median Overhead Growth')
+    ax_n.fill_between(n_vals, t_min_n, t_max_n, color='C0', alpha=0.2, label='Min-Max Deviation Bounds')
+    
     ax_n.set_xscale('log')
     ax_n.set_yscale('log')
     ax_n.set_xlabel(r'Max Candidates ($n$)')
-    ax_n.set_ylabel(r'Execution Time (s)')
-    ax_n.set_title(r'Time Scaling vs. Candidates conditioned on $I_{max}$', pad=15)
+    ax_n.set_ylabel(r'Relative Time ($T_n / T_{n_0}$)')
+    ax_n.set_title(r'Overhead Scaling vs. $n$', pad=15)
     ax_n.grid(True, which="major", linestyle="-", alpha=0.3, color='gray')
-    ax_n.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax_n.legend(loc='upper left')
     
-    fig_n.tight_layout()
-    fig_n.savefig(os.path.join(out_dir, "sdrf_ablation_time_vs_n.pdf"), format='pdf', bbox_inches='tight')
-    fig_n.savefig(os.path.join(out_dir, "sdrf_ablation_time_vs_n.png"), format='png', dpi=300, bbox_inches='tight')
-    plt.close(fig_n)
-
-    # Conditional expectation 2: Time = f(max_iters) | n
-    fig_iter, ax_iter = plt.subplots(figsize=(6, 4.5))
-    for j, n in enumerate(n_vals):
-        ax_iter.plot(iters_vals, time_matrix[:, j], marker='o', markersize=5, label=f'n={n}')
-        
+    # Scaling vs max_iters, conditioned on n.
+    # Normalize each column by its execution time at the lowest max_iters.
+    norm_matrix_iter = time_matrix / np.maximum(time_matrix[0:1, :], eps)
+    
+    t_median_iter = np.median(norm_matrix_iter, axis=1)
+    t_min_iter = np.min(norm_matrix_iter, axis=1)
+    t_max_iter = np.max(norm_matrix_iter, axis=1)
+    
+    ax_iter.plot(iters_vals, t_median_iter, marker='o', markersize=5, color='C1', label='Median Overhead Growth')
+    ax_iter.fill_between(iters_vals, t_min_iter, t_max_iter, color='C1', alpha=0.2, label='Min-Max Deviation Bounds')
+    
     ax_iter.set_xscale('log')
     ax_iter.set_yscale('log')
     ax_iter.set_xlabel(r'Max Iterations')
-    ax_iter.set_ylabel(r'Execution Time (s)')
-    ax_iter.set_title(r'Time Scaling vs. Iterations conditioned on $n$', pad=15)
+    ax_iter.set_ylabel(r'Relative Time ($T_I / T_{I_0}$)')
+    ax_iter.set_title(r'Overhead Scaling vs. Iterations', pad=15)
     ax_iter.grid(True, which="major", linestyle="-", alpha=0.3, color='gray')
-    ax_iter.legend(bbox_to_anchor=(1.05, 1), loc='upper left', ncol=2)
+    ax_iter.legend(loc='upper left')
     
-    fig_iter.tight_layout()
-    fig_iter.savefig(os.path.join(out_dir, "sdrf_ablation_time_vs_iters.pdf"), format='pdf', bbox_inches='tight')
-    fig_iter.savefig(os.path.join(out_dir, "sdrf_ablation_time_vs_iters.png"), format='png', dpi=300, bbox_inches='tight')
-    plt.close(fig_iter)
+    fig_cond.tight_layout()
+    fig_cond.savefig(os.path.join(out_dir, "sdrf_ablation_relative_scaling.pdf"), format='pdf', bbox_inches='tight')
+    fig_cond.savefig(os.path.join(out_dir, "sdrf_ablation_relative_scaling.png"), format='png', dpi=300, bbox_inches='tight')
+    plt.close(fig_cond)
     
-    print("[ablation] Rendered parameter space heatmap and conditional scaling projections.")
+    print("[ablation] Rendered parameter space heatmap and relative conditional scaling projections.")
