@@ -72,15 +72,14 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
 def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> float:
     """Evaluates a metric for a single edge."""
     if metric == "c_OR_lower_from_c_BF":
-        return float(eng.varphi_BF_to_OR(eng.c_BF_edge(eidx), sharp=False)[eidx])
+        return float(eng.varphi_BF_to_OR_edge(eidx, eng.c_BF_edge(eidx), sharp=False))
     if metric == "c_OR_upper_from_c_BF":
-        return float(eng.psi_BF_to_OR(eng.c_BF_edge(eidx))[eidx])
+        return float(eng.psi_BF_to_OR_edge(eidx, eng.c_BF_edge(eidx)))
         
     if metric == "c_BF": return eng.c_BF_edge(eidx)
     if metric == "c_OR": return eng.c_OR_edge(eidx)
     
-    raise ValueError(f"Unsupported metric identifier: '{metric}'. "
-                     "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
+    raise ValueError(f"Unsupported metric identifier: '{metric}'")
 
 class SDRFRewiring(BaseTransform):
     def __init__(self, metric="bounds", max_iters=10, 
