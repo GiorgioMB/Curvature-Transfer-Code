@@ -20,7 +20,7 @@ Usage (command line)
 --------------------
 $ python run_experiments.py --preset tiny
 $ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
-$ python run_experiments.py --preset paper --only-gnn
+$ python run_experiments.py --benchmark --preset paper
 """
 import os
 import argparse
@@ -102,7 +102,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--include-real", action="store_true", help="Include real networks present in experiments/data/*.csv")
 
     # Benchmarking controls
-    parser.add_argument("--run-benchmark", action="store_true", help="Execute the runtime scaling benchmark comparing Exact OT and Combinatorial Bounds.")
+    parser.add_argument("--benchmark", action="store_true", help="Skip everything and run ONLY the runtime scaling benchmark.")
     parser.add_argument("--bench-min-n", type=int, default=50, help="Minimum number of nodes for the runtime benchmark.")
     parser.add_argument("--bench-max-n", type=int, default=20000, help="Maximum number of nodes for the runtime benchmark.")
     parser.add_argument("--bench-graphs", type=int, default=100, help="Total number of graph instances evaluated in the benchmark.")
@@ -135,7 +135,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--soft-restart",
         action="store_true",
-        help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists; rebuild manifest to include all CSVs in the folder and (if --auto-figures) render figures for all of them."
+        help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists."
     )
 
 def handle_presets(args, seed: int):
@@ -144,7 +144,7 @@ def handle_presets(args, seed: int):
         return
 
     if args.preset == "tiny":
-        args.run_benchmark = False
+        args.bench_max_n = 1000
         args.er = args.er or [[150, 0.02]]
         args.ws = args.ws or [[150, 6, 0.1]]
         args.ba = args.ba or [[150, 2]]
@@ -162,8 +162,7 @@ def handle_presets(args, seed: int):
         args.gnn_epochs = args.gnn_epochs or 50
 
     elif args.preset == "small":
-        args.run_benchmark = True
-        args.bench_max_n = 3000
+        args.bench_max_n = 5000
         args.bench_graphs = 20
         args.er = args.er or [[400, 0.02], [400, 0.04]]
         args.ws = args.ws or [[400, 6, 0.1], [400, 8, 0.2]]
@@ -182,9 +181,7 @@ def handle_presets(args, seed: int):
         args.gnn_epochs = args.gnn_epochs or 100
 
     elif args.preset == "medium":
-        args.run_benchmark = True
-        args.bench_min_n = 50
-        args.bench_max_n = 5000
+        args.bench_max_n = 10000
         args.bench_graphs = 50
         args.hrg = args.hrg or [[500, 5.0, 1.0, 0.0], [500, 5.0, 1.0, 0.5]]
         args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
@@ -201,16 +198,14 @@ def handle_presets(args, seed: int):
         args.skip_plots = True
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 30
         args.gnn_epochs = args.gnn_epochs or 200
 
     elif args.preset == "paper":
-        args.run_benchmark = True
-        args.bench_min_n = 50
-        args.bench_max_n = 20000
+        args.bench_max_n = 15000
         args.bench_graphs = 100
         args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
         args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
@@ -228,7 +223,7 @@ def handle_presets(args, seed: int):
         args.skip_plots = True
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
         args.gnn_reps = args.gnn_reps or 50
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 100
@@ -289,12 +284,29 @@ def main():
     seed = int(args.seed)
     handle_presets(args, seed)
 
-    if getattr(args, "preset", None) == "paper" and not getattr(args, "auto_figures", False):
+    if getattr(args, "preset", None) == "paper" and not getattr(args, "auto-figures", False):
         args.auto_figures = True
 
     run_name = args.run_name or ("preset_" + args.preset if args.preset else "custom")
     out_dir = os.path.join(os.path.dirname(__file__), "out", run_name)
     ensure_dir(out_dir)
+
+    def run_benchmark_phase():
+        try:
+            import benchmark_run
+            bench_csv = os.path.join(out_dir, "benchmark_runtime_scaling.csv")
+            print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling -> {bench_csv}")
+            benchmark_run.run_benchmark(
+                output_csv=bench_csv,
+                max_workers=args.jobs,
+                min_n=args.bench_min_n,
+                n_benchmark=args.bench_max_n,
+                num_graphs=args.bench_graphs,
+                seed=args.bench_seed,
+                auto_figures=getattr(args, "auto-figures", False)
+            )
+        except Exception as e:
+            print(f"[benchmark] Runtime benchmark failed: {e}")
 
     def run_ablation_phase():
         try:
@@ -303,12 +315,16 @@ def main():
                 seed=args.seed,
                 out_dir=out_dir,
                 max_iters=args.max_iters_rewiring,
-                auto_figures=getattr(args, "auto_figures", False)
+                auto_figures=getattr(args, "auto-figures", False)
             )
         except Exception as e:
             print(f"[ablation] Execution failed: {e}")
 
-    # Immediately execute and return if ablation-only is set
+    # Immediately execute isolated branches
+    if getattr(args, "benchmark", False):
+        run_benchmark_phase()
+        return
+
     if getattr(args, "ablation_only", False):
         run_ablation_phase()
         return
@@ -316,7 +332,7 @@ def main():
     # =========================================================================
     # Phase 1: Curvature Computation & OT Benchmarks
     # =========================================================================
-    if not args.only_gnn:
+    if not getattr(args, "only_gnn", False):
         prev_summary = {}
         man_path = os.path.join(out_dir, "manifest.json")
         if getattr(args, "soft_restart", False):
@@ -370,7 +386,6 @@ def main():
             else:
                 to_compute.append((tag, gen_callable))
 
-        # Construct execution plan over graph families
         if args.er:
             for n, p in args.er:
                 tag = "er_n{}_p{}".format(int(n), float(p))
@@ -478,7 +493,7 @@ def main():
         with open(os.path.join(out_dir, "manifest.json"), "w") as f:
             json.dump(manifest, f, indent=2, default=np_encoder)
 
-        if getattr(args, "auto_figures", False):
+        if getattr(args, "auto-figures", False):
             try:
                 base_out = os.path.dirname(out_dir)
                 run_name = os.path.basename(out_dir)
@@ -486,31 +501,6 @@ def main():
                 generate_paper_figures(out_root=base_out, run_name=run_name, bins=args.bins)
             except Exception as e:
                 print(f"[run_experiments] Paper figure generation failed: {e}")
-
-        # Orchestrate benchmarking analysis
-        if getattr(args, "run_benchmark", False):
-            try:
-                import benchmark_n_tracking
-                import benchmark_plots
-                
-                bench_csv = os.path.join(out_dir, "benchmark_runtime_scaling.csv")
-                bench_pdf = os.path.join(out_dir, "runtime_scaling_loglog_neurips.pdf")
-                
-                print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling -> {bench_csv}")
-                benchmark_n_tracking.run_benchmark(
-                    output_csv=bench_csv,
-                    max_workers=args.jobs,
-                    min_n=args.bench_min_n,
-                    max_n=args.bench_max_n,
-                    num_graphs=args.bench_graphs,
-                    seed=args.bench_seed
-                )
-                
-                if not args.skip_plots:
-                    print(f"[benchmark] Rendering runtime scaling plot -> {bench_pdf}")
-                    benchmark_plots.generate_runtime_plot(csv_path=bench_csv, out_pdf=bench_pdf)
-            except Exception as e:
-                print(f"[benchmark] Runtime benchmark failed: {e}")
 
     # =========================================================================
     # Phase 2: GNN Topology Rewiring
@@ -543,12 +533,6 @@ def main():
                     )
         except Exception as e:
             print(f"[gnn_experiments] GNN evaluation failed: {e}")
-
-    # =========================================================================
-    # Phase 3: Ablation Study
-    # =========================================================================
-    print(f"\n{'='*50}\n[ablation] Starting SDRF max_candidates Ablation\n{'='*50}")
-    run_ablation_phase()
 
     print(f"\n[done] Outputs directed to {out_dir}")
 
