@@ -111,6 +111,8 @@ def add_family_args(parser: argparse.ArgumentParser):
     # GNN Experiment controls
     parser.add_argument("--run-gnn", action="store_true", help="Execute the GNN topology rewiring experiments.")
     parser.add_argument("--only-gnn", action="store_true", help="Skip graph generation and OT benchmarks, run ONLY GNN experiments.")
+    parser.add_argument("--ablation-only", action="store_true", help="Skip everything and run ONLY the SDRF candidates ablation study on minesweeper.")
+    parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for all rewiring methods")
     parser.add_argument("--gnn-datasets", nargs="+", type=str, default=None, help="Datasets to evaluate (e.g., ZINC minesweeper)")
     parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN"], help="Architectures to evaluate")
     parser.add_argument("--gnn-trials", type=int, default=None, help="Number of Optuna trials for GNNs")
@@ -199,7 +201,7 @@ def handle_presets(args, seed: int):
         args.skip_plots = True
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 30
@@ -226,12 +228,11 @@ def handle_presets(args, seed: int):
         args.skip_plots = True
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
-        args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
+        args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 50
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 100
         args.gnn_epochs = args.gnn_epochs or 500
-
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
     out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
@@ -294,6 +295,22 @@ def main():
     run_name = args.run_name or ("preset_" + args.preset if args.preset else "custom")
     out_dir = os.path.join(os.path.dirname(__file__), "out", run_name)
     ensure_dir(out_dir)
+
+    def run_ablation_phase():
+        try:
+            import sdrf_ablation
+            sdrf_ablation.execute_ablation(
+                seed=args.seed,
+                out_dir=out_dir,
+                max_iters=args.max_iters_rewiring
+            )
+        except Exception as e:
+            print(f"[ablation] Execution failed: {e}")
+
+    # Immediately execute and return if ablation-only is set
+    if getattr(args, "ablation_only", False):
+        run_ablation_phase()
+        return
 
     # =========================================================================
     # Phase 1: Curvature Computation & OT Benchmarks
@@ -520,10 +537,17 @@ def main():
                         cv_split=cv_split,
                         arch_name=arch,
                         n_reps=reps,
-                        out_dir=out_dir
+                        out_dir=out_dir,
+                        max_iters_rewiring=args.max_iters_rewiring
                     )
         except Exception as e:
             print(f"[gnn_experiments] GNN evaluation failed: {e}")
+
+    # =========================================================================
+    # Phase 3: Ablation Study
+    # =========================================================================
+    print(f"\n{'='*50}\n[ablation] Starting SDRF max_candidates Ablation\n{'='*50}")
+    run_ablation_phase()
 
     print(f"\n[done] Outputs directed to {out_dir}")
 
