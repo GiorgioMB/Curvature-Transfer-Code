@@ -302,7 +302,8 @@ def main():
             sdrf_ablation.execute_ablation(
                 seed=args.seed,
                 out_dir=out_dir,
-                max_iters=args.max_iters_rewiring
+                max_iters=args.max_iters_rewiring,
+                auto_figures=getattr(args, "auto_figures", False)
             )
         except Exception as e:
             print(f"[ablation] Execution failed: {e}")
