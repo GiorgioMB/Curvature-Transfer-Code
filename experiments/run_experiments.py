@@ -158,6 +158,7 @@ def handle_presets(args, seed: int):
         args.gnn_cv = args.gnn_cv or 3
         args.gnn_trials = args.gnn_trials or 5
         args.gnn_epochs = args.gnn_epochs or 50
+        args.max_iters_rewiring = args.max_iters_rewiring or 5
 
         
 
@@ -184,6 +185,7 @@ def handle_presets(args, seed: int):
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 10
         args.gnn_epochs = args.gnn_epochs or 100
+        args.max_iters_rewiring = args.max_iters_rewiring or 10
 
     elif args.preset == "medium":
         args.bench_max_n = 10000
@@ -214,6 +216,7 @@ def handle_presets(args, seed: int):
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 30
         args.gnn_epochs = args.gnn_epochs or 200
+        args.max_iters_rewiring = args.max_iters_rewiring or 30
 
     elif args.preset == "paper":
         args.bench_max_n = 15000
@@ -240,10 +243,11 @@ def handle_presets(args, seed: int):
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
-        args.gnn_reps = args.gnn_reps or 50
+        args.gnn_reps = args.gnn_reps or 100
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 100
         args.gnn_epochs = args.gnn_epochs or 500
+        args.max_iters_rewiring = args.max_iters_rewiring or 60
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
     out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
