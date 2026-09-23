@@ -124,6 +124,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--skip-plots", action="store_true")
     parser.add_argument(
         "--auto-figures",
+        dest="auto-figures",
         action="store_true",
         help="Generate paper figures after the runs (on by default for --preset paper)"
     )
@@ -286,7 +287,7 @@ def main():
     handle_presets(args, seed)
 
     if getattr(args, "preset", None) == "paper" and not getattr(args, "auto-figures", False):
-        args.auto_figures = True
+        setattr(args, "auto-figures", True)
 
     run_name = args.run_name or ("preset_" + args.preset if args.preset else "custom")
     out_dir = os.path.join(os.path.dirname(__file__), "out", run_name)
