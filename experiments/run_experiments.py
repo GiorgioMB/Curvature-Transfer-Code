@@ -16,7 +16,7 @@ Features
 
 Usage (command line)
 --------------------
-$ python run_experiments.py --preset tiny --benchmark --auto-figures
+$ python run_experiments.py --preset tiny --only-benchmark --auto-figures
 $ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
 $ python run_experiments.py --preset paper --only-gnn
 """
@@ -97,21 +97,23 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--include-real", action="store_true", help="Include real networks present in experiments/data/*.csv")
 
     # Benchmarking controls
-    parser.add_argument("--benchmark", action="store_true", help="Skip everything and run ONLY the runtime scaling benchmark.")
+    parser.add_argument("--only-benchmark", action="store_true", help="Skip everything and run ONLY the runtime scaling benchmark.")
+    parser.add_argument("--no-benchmark", action="store_true", help="Skip the runtime benchmark phase during standard runs.")
     parser.add_argument("--bench-min-n", type=int, default=50, help="Minimum number of nodes for the runtime benchmark.")
     parser.add_argument("--bench-max-n", type=int, default=20000, help="Maximum number of nodes for the runtime benchmark.")
     parser.add_argument("--bench-graphs", type=int, default=100, help="Total number of graph instances evaluated in the benchmark.")
     parser.add_argument("--bench-seed", type=int, default=42, help="Random seed for the benchmark generation.")
 
     # Ablation controls
-    parser.add_argument("--ablation-only", action="store_true", help="Skip everything and run ONLY the SDRF ablation study on minesweeper.")
+    parser.add_argument("--only-ablation", action="store_true", help="Skip everything and run ONLY the SDRF ablation study on minesweeper.")
+    parser.add_argument("--no-ablation", action="store_true", help="Skip the SDRF ablation phase during standard runs.")
     parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for GNN rewiring")
     parser.add_argument("--max-iters-ablation", type=int, default=None, help="Maximum iterations for SDRF ablation grid")
     parser.add_argument("--max-n-ablation", type=int, default=None, help="Maximum candidates (n) for SDRF ablation grid")
     parser.add_argument("--ablation-points", type=int, default=None, help="Number of points in the logspace grids for SDRF ablation")
     
     # GNN Experiment controls
-    parser.add_argument("--run-gnn", action="store_true", help="Execute the GNN topology rewiring experiments.")
+    parser.add_argument("--run-gnn", action="store_true", default=True, help="Execute the GNN topology rewiring experiments.")
     parser.add_argument("--only-gnn", action="store_true", help="Skip graph generation and OT benchmarks, run ONLY GNN experiments.")
     parser.add_argument("--gnn-datasets", nargs="+", type=str, default=None, help="Datasets to evaluate (e.g., ZINC minesweeper)")
     parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN"], help="Architectures to evaluate")
@@ -335,7 +337,7 @@ def main():
     def run_ablation_phase():
         try:
             import sdrf_ablation
-            auto_figures = getattr(args, "auto-figures", getattr(args, "auto_figures", False))
+            auto_figures = getattr(args, "auto-figures", getattr(args, "auto-figures", False))
             sdrf_ablation.execute_ablation(
                 seed=args.seed,
                 out_dir=out_dir,
@@ -348,12 +350,12 @@ def main():
         except Exception as e:
             print(f"[ablation] Execution failed: {e}")
     
-    # Immediately execute isolated branches
-    if getattr(args, "benchmark", False):
+    # Execute isolated branches
+    if getattr(args, "only_benchmark", False):
         run_benchmark_phase()
         return
 
-    if getattr(args, "ablation_only", False):
+    if getattr(args, "only_ablation", False):
         run_ablation_phase()
         return
 
@@ -526,7 +528,11 @@ def main():
                 generate_paper_figures(out_root=base_out, run_name=run_name, bins=args.bins)
             except Exception as e:
                 print(f"[run_experiments] Paper figure generation failed: {e}")
-
+        if not getattr(args, "no_benchmark", False):
+            run_benchmark_phase()
+                
+        if not getattr(args, "no_ablation", False):
+            run_ablation_phase()
 
     if getattr(args, "run_gnn", False) or getattr(args, "only_gnn", False):
         try:
