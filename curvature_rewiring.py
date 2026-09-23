@@ -23,6 +23,9 @@ import random
 from concurrent.futures import ThreadPoolExecutor
 from torch_geometric.data import Data
 from torch_geometric.transforms import BaseTransform
+import scipy.sparse as sp
+from scipy.sparse.linalg import eigsh
+from scipy.sparse.csgraph import connected_components
 
 import pyg_curvature as pc
 
@@ -80,6 +83,141 @@ def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> 
     if metric == "c_OR": return eng.c_OR_edge(eidx)
     
     raise ValueError(f"Unsupported metric identifier: '{metric}'")
+
+class FoSRRewiring(BaseTransform):
+    """
+    First-Order Spectral Rewiring (FoSR).
+    
+    Iteratively computes the Fiedler vector to maximize algebraic connectivity.
+    Includes safeguards for disconnected components, eigenvalue sorting, 
+    numerical stability in Lanczos iterations, and edge attribute preservation.
+    """
+    def __init__(self, max_iters=10, remove_edges=True):
+        super().__init__()
+        self.max_iters = max_iters
+        self.remove_edges = remove_edges
+
+    def forward(self, data: Data) -> Data:
+        device = data.edge_index.device
+        num_nodes = data.num_nodes
+
+        # Map original directional edges to their indices for attribute tracking
+        edge_map = {}
+        for i in range(data.edge_index.size(1)):
+            u, v = data.edge_index[0, i].item(), data.edge_index[1, i].item()
+            edge_map[(u, v)] = i
+
+        # Operate on an undirected set of unique edge tuples
+        edges = set(tuple(sorted((u, v))) for u, v in edge_map.keys())
+
+        for _ in range(self.max_iters):
+            if not edges: 
+                break
+                
+            # Build Adjacency and Laplacian
+            rows = [e[0] for e in edges] + [e[1] for e in edges]
+            cols = [e[1] for e in edges] + [e[0] for e in edges]
+            data_vals = [1.0] * len(rows)
+            
+            A = sp.coo_matrix((data_vals, (rows, cols)), shape=(num_nodes, num_nodes))
+            deg = np.array(A.sum(axis=1)).flatten()
+            L = sp.diags(deg) - A
+            
+            try:
+                # Shift-invert mode (sigma) avoids Lanczos breakdown around the zero eigenvalue
+                evals, evecs = eigsh(L.astype(float), k=2, which='SA', sigma=-1e-5)
+            except Exception:
+                break
+                
+            # Ensure strict sorting of eigenvalues
+            idx = np.argsort(evals)
+            fiedler = evecs[:, idx[1]]
+            sorted_nodes = np.argsort(fiedler)
+            
+            # Add Edge: Maximize Fiedler difference
+            added_edge = None
+            for i in range(num_nodes):
+                if added_edge: break
+                for j in range(num_nodes - 1, i, -1):
+                    u, v = sorted_nodes[i], sorted_nodes[j]
+                    cand = tuple(sorted((u, v)))
+                    if cand not in edges:
+                        edges.add(cand)
+                        added_edge = cand
+                        break
+            
+            # Terminate if the graph is fully connected and no edges can be added
+            if not added_edge:
+                break
+            
+            # Remove Edge: Minimize Fiedler difference
+            if self.remove_edges and len(edges) > 1:
+                # Update degrees temporarily to reflect the newly added edge
+                deg_current = deg.copy()
+                deg_current[added_edge[0]] += 1
+                deg_current[added_edge[1]] += 1
+                
+                removal_candidates = []
+                for u, v in edges:
+                    if (u, v) == added_edge:
+                        continue
+                    if deg_current[u] > 1 and deg_current[v] > 1:
+                        diff = abs(fiedler[u] - fiedler[v])
+                        removal_candidates.append((diff, (u, v)))
+                
+                # Sort candidates by minimum Fiedler difference
+                removal_candidates.sort(key=lambda x: x[0])
+                
+                # Iterate candidates and execute the first one that does not disconnect the graph
+                for _, cand_edge in removal_candidates:
+                    test_edges = edges - {cand_edge}
+                    tr = [e[0] for e in test_edges] + [e[1] for e in test_edges]
+                    tc = [e[1] for e in test_edges] + [e[0] for e in test_edges]
+                    test_A = sp.coo_matrix(([1.0]*len(tr), (tr, tc)), shape=(num_nodes, num_nodes))
+                    
+                    n_comp, _ = connected_components(test_A, directed=False)
+                    if n_comp == 1:
+                        edges.remove(cand_edge)
+                        break
+
+        # Reconstruct bidirectional PyG edge_index and align attributes
+        new_edge_index = []
+        has_edge_attr = getattr(data, 'edge_attr', None) is not None
+        has_edge_weight = getattr(data, 'edge_weight', None) is not None
+        
+        new_edge_attr = [] if has_edge_attr else None
+        new_edge_weight = [] if has_edge_weight else None
+
+        for u, v in edges:
+            for source, target in [(u, v), (v, u)]:
+                new_edge_index.append([source, target])
+                
+                if has_edge_attr or has_edge_weight:
+                    orig_idx = edge_map.get((source, target))
+                    if orig_idx is not None:
+                        # Edge existed previously, carry over original attributes
+                        if has_edge_attr: 
+                            new_edge_attr.append(data.edge_attr[orig_idx])
+                        if has_edge_weight: 
+                            new_edge_weight.append(data.edge_weight[orig_idx])
+                    else:
+                        # New edge, initialize zero vector / unit weight
+                        if has_edge_attr:
+                            new_edge_attr.append(torch.zeros_like(data.edge_attr[0]))
+                        if has_edge_weight:
+                            new_edge_weight.append(torch.ones_like(data.edge_weight[0]))
+
+        if new_edge_index:
+            data.edge_index = torch.tensor(new_edge_index, dtype=torch.long, device=device).t().contiguous()
+        else:
+            data.edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
+
+        if has_edge_attr:
+            data.edge_attr = torch.stack(new_edge_attr).to(device)
+        if has_edge_weight:
+            data.edge_weight = torch.stack(new_edge_weight).to(device)
+
+        return data
 
 class SDRFRewiring(BaseTransform):
     def __init__(self, metric="bounds", max_iters=10, 
