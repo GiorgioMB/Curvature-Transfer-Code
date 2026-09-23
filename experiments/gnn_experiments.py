@@ -5,16 +5,20 @@ import random
 import copy
 import numpy as np
 import json
+import scipy.sparse as sp
+from scipy.sparse.csgraph import shortest_path
+from scipy.sparse.linalg import eigsh
 
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINConv, global_add_pool, global_mean_pool
+from torch_geometric.nn import GCNConv, GINConv, GATConv, global_add_pool, global_mean_pool
 from torch_geometric.datasets import ZINC, LRGBDataset, HeterophilousGraphDataset
+from torch_geometric.utils import to_scipy_sparse_matrix
 from sklearn.model_selection import KFold
 from sklearn.metrics import average_precision_score, mean_absolute_error, roc_auc_score
 import optuna
 
-from curvature_rewiring import SDRFRewiring, BORFRewiring
+from curvature_rewiring import SDRFRewiring, BORFRewiring, FoSRRewiring
 
 def set_seed(seed):
     random.seed(seed)
@@ -22,6 +26,37 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+def compute_topological_metrics(data_list):
+    if not isinstance(data_list, list):
+        data_list = [data_list]
+
+    diams, avg_sps, fiedlers = [], [], []
+    for data in data_list:
+        A = to_scipy_sparse_matrix(data.edge_index, num_nodes=data.num_nodes).tocsr()
+
+        # Shortest paths and Diameter
+        dist_matrix = shortest_path(csgraph=A, directed=False, unweighted=True)
+        upper_tri = dist_matrix[np.triu_indices_from(dist_matrix, k=1)]
+        valid_dists = upper_tri[np.isfinite(upper_tri)]
+
+        if len(valid_dists) > 0:
+            diams.append(np.max(valid_dists))
+            avg_sps.append(np.mean(valid_dists))
+        else:
+            diams.append(0.0)
+            avg_sps.append(0.0)
+
+        # Algebraic Connectivity (Fiedler value)
+        deg = np.array(A.sum(axis=1)).flatten()
+        L = sp.diags(deg) - A
+        try:
+            evals = eigsh(L.astype(float), k=2, which='SA', return_eigenvectors=False)
+            fiedlers.append(evals[1])
+        except Exception:
+            fiedlers.append(0.0)
+
+    return np.mean(diams), np.mean(avg_sps), np.mean(fiedlers)
 
 # -----------------------------
 # Architectures
@@ -32,12 +67,13 @@ class GNN(torch.nn.Module):
         self.task = task
         self.dropout = dropout
         self.layers = torch.nn.ModuleList()
-        
+
         if arch == "GCN":
             self.layers.append(GCNConv(in_channels, hidden_channels))
             for _ in range(num_layers - 2):
                 self.layers.append(GCNConv(hidden_channels, hidden_channels))
             self.layers.append(GCNConv(hidden_channels, hidden_channels if task == "graph" else out_channels))
+
         elif arch == "GIN":
             self.layers.append(GINConv(torch.nn.Sequential(
                 torch.nn.Linear(in_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels)
@@ -49,7 +85,19 @@ class GNN(torch.nn.Module):
             self.layers.append(GINConv(torch.nn.Sequential(
                 torch.nn.Linear(hidden_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels if task == "graph" else out_channels)
             )))
-            
+
+        elif arch == "GAT":
+            heads = 4
+            head_dim = hidden_channels // heads
+            self.layers.append(GATConv(in_channels, head_dim, heads=heads, concat=True))
+            for _ in range(num_layers - 2):
+                self.layers.append(GATConv(hidden_channels, head_dim, heads=heads, concat=True))
+
+            if task == "graph":
+                self.layers.append(GATConv(hidden_channels, hidden_channels, heads=1, concat=False))
+            else:
+                self.layers.append(GATConv(hidden_channels, out_channels, heads=1, concat=False))
+
         if task == "graph":
             self.pool = global_mean_pool
             self.lin = torch.nn.Linear(hidden_channels, out_channels)
@@ -60,7 +108,7 @@ class GNN(torch.nn.Module):
             if i < len(self.layers) - 1 or self.task == "graph":
                 x = F.relu(x)
                 x = F.dropout(x, p=self.dropout, training=self.training)
-        
+
         if self.task == "graph":
             if batch is None:
                 batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
@@ -107,24 +155,24 @@ def compute_metric(y_true, y_pred, metric_name):
 def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epochs, optim_name):
     model_params = model_params.copy()
     lr = model_params.pop("lr", 0.01)
-    
+
     kf = KFold(n_splits=cv_split, shuffle=True)
     scores = []
-    
+
     if task == "graph":
         data_list = dataset
         for train_idx, test_idx in kf.split(data_list):
             train_data = [data_list[i].to(device) for i in train_idx]
             test_data = [data_list[i].to(device) for i in test_idx]
-            
+
             from torch_geometric.loader import DataLoader
             train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
             test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
-            
+
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
             criterion = torch.nn.L1Loss() if metric_name == "mae" else torch.nn.BCEWithLogitsLoss()
-            
+
             for _ in range(epochs):
                 model.train()
                 for batch in train_loader:
@@ -134,7 +182,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
                     loss = criterion(out, y)
                     loss.backward()
                     optimizer.step()
-            
+
             model.eval()
             y_true, y_pred = [], []
             with torch.no_grad():
@@ -142,10 +190,10 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
                     out = model(batch.x.float(), batch.edge_index, batch.batch)
                     y_true.append(batch.y.view(out.shape))
                     y_pred.append(out)
-            
+
             score = compute_metric(torch.cat(y_true), torch.cat(y_pred), metric_name)
             scores.append(score)
-            
+
     elif task == "node":
         data = dataset.to(device)
         indices = np.arange(data.num_nodes)
@@ -153,12 +201,12 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
             criterion = torch.nn.BCEWithLogitsLoss()
-            
+
             train_mask = torch.zeros(data.num_nodes, dtype=torch.bool, device=device)
             test_mask = torch.zeros(data.num_nodes, dtype=torch.bool, device=device)
             train_mask[train_idx] = True
             test_mask[test_idx] = True
-            
+
             for _ in range(epochs):
                 model.train()
                 optimizer.zero_grad()
@@ -167,20 +215,20 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
                 loss = criterion(out[train_mask], y[train_mask])
                 loss.backward()
                 optimizer.step()
-            
+
             model.eval()
             with torch.no_grad():
                 out = model(data.x.float(), data.edge_index)
                 y = data.y.view(-1, 1).float()
                 score = compute_metric(y[test_mask], out[test_mask], metric_name)
                 scores.append(score)
-                
+
     return np.mean(scores)
 
-def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir):
+def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring):
     set_seed(seed)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     checkpoint_file = os.path.join(out_dir, "gnn_results.json")
     results = {}
     if os.path.exists(checkpoint_file):
@@ -189,19 +237,19 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
                 results = json.load(f)
             except json.JSONDecodeError:
                 pass
-                
+
     run_key = f"{dataset_name}_{arch_name}"
     if run_key in results and "Base" in results[run_key]:
         if len(results[run_key]["Base"].get("scores", [])) >= n_reps:
             print(f"\n[soft-restart] Skipping {dataset_name} | Arch: {arch_name} (Already completed in {checkpoint_file}).")
             return
-            
+
     print(f"\nEvaluating Base Dataset: {dataset_name} | Arch: {arch_name}")
     raw_dataset, task, metric_name, in_c, out_c = get_dataset(dataset_name)
-    
-    # 1. Execute Optuna strictly ONCE on the Base Dataset
+
+    # Run Optuna
     print(f"\nRunning {n_trials} Optuna trials on Base Dataset to find optimal hyperparameters...")
-    
+
     def objective(trial):
         params = {
             "in_channels": in_c,
@@ -219,45 +267,52 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
     study = optuna.create_study(direction=direction)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study.optimize(objective, n_trials=n_trials)
-    
+
     best_params = study.best_params
     best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
     print(f"Optimal Hyperparameters: {best_params}")
 
-    # 2. Build Structural Topologies
+    # Build Topologies
     pipelines = {
         "Base": None,
-        "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=3, n_jobs=-1),
-        "SDRF (OR)": SDRFRewiring(metric="c_OR", max_iters=5, n_jobs=-1),
-        "BORF (Bounds)": BORFRewiring(metric="bounds", max_iters=3, n_jobs=-1),
-        "SDRF (Bounds)": SDRFRewiring(metric="bounds", max_iters=5, n_jobs=-1),
+        "FoSR": FoSRRewiring(max_iters=max_iters_rewiring),
+        "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=-1),
+        "SDRF (OR)": SDRFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=-1),
+        "BORF (Bounds)": BORFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=-1),
+        "SDRF (Bounds)": SDRFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=-1),
     }
-    
+
     cache_data = {}
     time_log = {}
-    
+    topology_log = {}
+
     for pipe_name, transform in pipelines.items():
         if transform is None:
             cache_data[pipe_name] = raw_dataset
             time_log[pipe_name] = 0.0
-            continue
-            
-        print(f"Applying {pipe_name} Rewiring...")
-        t0 = time.perf_counter()
-        
-        if task == "node":
-            cache_data[pipe_name] = transform(copy.deepcopy(raw_dataset))
         else:
-            cache_data[pipe_name] = [transform(copy.deepcopy(g)) for g in raw_dataset]
-            
-        t1 = time.perf_counter()
-        time_log[pipe_name] = t1 - t0
-        print(f"[{pipe_name}] Edge Topologies Updated | Exec Time: {t1 - t0:.2f}s")
+            print(f"Applying {pipe_name} Rewiring...")
+            t0 = time.perf_counter()
 
-    # 3. Final Candidate Testing (N Repetitions on Best Model)
+            if task == "node":
+                cache_data[pipe_name] = transform(copy.deepcopy(raw_dataset))
+            else:
+                cache_data[pipe_name] = [transform(copy.deepcopy(g)) for g in raw_dataset]
+
+            t1 = time.perf_counter()
+            time_log[pipe_name] = t1 - t0
+
+        # Calculate topological metrics
+        diam, avg_sp, fiedler = compute_topological_metrics(cache_data[pipe_name])
+        topology_log[pipe_name] = {"Diameter": diam, "Avg_SP": avg_sp, "Fiedler": fiedler}
+
+        print(f"[{pipe_name}] Exec Time: {time_log[pipe_name]:.2f}s | "
+              f"Diam: {diam:.2f}, Avg SP: {avg_sp:.2f}, Fiedler: {fiedler:.4f}")
+
+    # Final Candidate Testing (N Repetitions on Best Model)
     print("\nStarting Empirical Evaluation...")
     final_scores = {p: [] for p in pipelines.keys()}
-    
+
     for rep in range(n_reps):
         print(f"\n--- Repetition {rep + 1}/{n_reps} ---")
         for pipe_name, target_dataset in cache_data.items():
@@ -266,7 +321,7 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
             print(f"{pipe_name:15s} | {metric_name.upper()}: {score:.4f}")
 
     print(f"\n{'='*50}\nFINAL AGGREGATE SCORES ({n_reps} Repetitions)\n{'='*50}")
-    
+
     run_results = {}
     for pipe_name in pipelines.keys():
         avg = float(np.mean(final_scores[pipe_name]))
@@ -275,7 +330,8 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
             "scores": final_scores[pipe_name],
             "avg": avg,
             "std": std,
-            "rewire_time": time_log[pipe_name]
+            "rewire_time": time_log[pipe_name],
+            "topology": topology_log[pipe_name]
         }
         print(f"{pipe_name:15s} | Avg {metric_name.upper()}: {avg:.4f} ± {std:.4f} | Rewire Time: {time_log[pipe_name]:.2f}s")
 
@@ -292,13 +348,15 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--optimizer", type=str, default="Adam")
     parser.add_argument("--cv-split", type=int, default=5, help="Number of K-Fold splits")
-    parser.add_argument("--arch", type=str, default="GCN", choices=["GCN", "GIN"])
+    parser.add_argument("--arch", type=str, default="GCN", choices=["GCN", "GIN", "GAT"])
     parser.add_argument("--reps", type=int, default=3, help="Number of evaluation repetitions per topology")
     parser.add_argument("--out-dir", type=str, default="out", help="Directory to save gnn_results.json")
-    
+    parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for all rewiring methods")
+
     args = parser.parse_args()
-    
+
     execute_trials(
         args.dataset, args.seed, args.trials, args.epochs, 
-        args.optimizer, args.cv_split, args.arch, args.reps, args.out_dir
+        args.optimizer, args.cv_split, args.arch, args.reps, args.out_dir, 
+        args.max_iters_rewiring
     )
