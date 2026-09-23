@@ -1,106 +1,77 @@
 # Curvature Transfer: Comparing Edgewise Graph Curvatures and Analytic Envelopes
 
-This repository contains the official implementation of the experiments described in our paper, [Curvature Transfer](https://arxiv.org/abs/2603.13535), and is designed to generate the materials used in it.
+This repository contains the official implementation of the experiments described in our paper, [Curvature Transfer](https://arxiv.org/abs/2603.13535). The codebase provides a pipeline for evaluating empirical runtime bounds and benchmarking curvature-driven graph neural network (GNN) rewiring.
 
-## Computed Metrics & Artifacts
+## Architecture and Core Modules
 
-For each graph instance, the engine evaluates the following local structural and geometric properties per edge $(i,j)$:
+* **Curvature Engine (`pyg_curvature.py`):** Computes exact Lazy and Non-lazy Ollivier-Ricci curvatures, Balanced Forman curvature, analytic envelopes, and transfer bounds between the two.
 
-* **Curvatures:** Lazy Ollivier-Ricci, Balanced Forman, and Non-lazy OR
-* **Structural Counts:** Triangle count $\triangle(i,j)$ and 4-cycle coverage $\Xi_{ij}$ (alongside its theoretical structural limits).
-* **Analytic Envelopes:** Linear envelope parameters ($\Theta_{\mathrm{Const}}$, $\Theta_{\mathrm{Slope}}$) and the exact lazy transport envelope.
-* **Transfer Bounds:** Rigorous lower and upper bounds translating between metrics ($\varphi_{\mathrm{BF}\to\mathrm{OR}}$, $\psi_{\mathrm{BF}\to\mathrm{OR}}$, $\varphi_{\mathrm{OR}\to\mathrm{BF}}$, $\psi_{\mathrm{OR}\to\mathrm{BF}}$).
+* **Topology Rewiring (`curvature_rewiring.py`):** Implements dynamic edge addition and deletion layers for PyTorch Geometric adapted to our `CurvatureEngine`. Features curvature-guided Stochastic Discrete Ricci Flow (SDRF) and Batched Ollivier-Ricci Flow (BORF). Includes also First-Order Spectral Rewiring (FoSR), which iteratively maximizes algebraic connectivity via the Fiedler vector and serves as the primary non-curvature editing baseline for comparative ablation against the curvature-driven methods.
 
-The execution pipeline automatically generates:
 
-* Comparative histograms of $\mathfrak{c}$<sub>OR</sub> and $\mathfrak{c}$<sub>BF</sub>.
-* Distributions of the envelope slacks: `Theta_alpha(triangle) - c_OR` and `cOR_upper - c_OR`.
-* Comprehensive JSON manifests and CSV logs detailing execution metrics, standard deviations, quantiles, and the strict fraction of edges captured within the analytic transfer bands.
-* Runtime scaling benchmarks (CSV logs and log-log PDF plots) isolating the asymptotic execution time of Exact Optimal Transport against the proposed Combinatorial Bounds.
+* **GNN Evaluation Pipeline (`gnn_experiments.py`):** Standardized framework executing GCN, GIN, and GAT architectures on datasets including ZINC, Peptides-func/struct, and minesweeper. Uses Optuna for hyperparameter optimization and $K$-Fold cross-validation.
 
-## Supported Graph Families
 
-### Random Graph Models
 
-* **Erdős–Rényi** $(n, p)$
-* **Watts–Strogatz** small-world model $(n, k, \beta)$
-* **Barabási–Albert** preferential attachment $(n, m)$
-* **Random Geometric** (unit square with radius $r$)
-* **Random $d$-Regular** $(n, d)$
-* **Hyperbolic Random Graphs** $(n, R, \alpha, T)$
-* **2-Block Stochastic Block Model** (equal communities with $p_{\mathrm{in}}, p_{\mathrm{out}}$)
+## Execution Presets
 
-### Canonical Combinatorial Families
+The `run_experiments.py` orchestrator supports predefined scaling suites tailored to different execution hardware and computational constraints. Use `--preset <name>` to load these configurations.
 
-* **Cycles** $C_n$
-* **2D Grids** $m \times n$
-* **Toroidal Grids** $C_m \times C_n$ (wraparound)
-* **$d$-ary Trees** (finite, height $h$)
-* **Complete Graphs** $K_n$
+* **`tiny`:** A rapid diagnostic suite designed to verify compilation and execution pathways without runtime errors.
 
-### Real-World Networks
 
-* **Zachary's Karate Club** (`karate.csv`)
-* **Jazz Musicians** (`jazz.csv`)
-* **US Power Grid** (`power_grid.csv`)
-* **Yeast Transcription** (`yeast.csv`)
-* **arXiv hep-ph Citations** (`arxiv.csv`)
+* **`small`:** Intended for local workstation evaluation.
 
-## Installation & Usage
 
-The codebase requires **Python 3.11**.
+* **`medium`:** Evaluates moderate-to-large topologies; omits per-run exploratory plotting and halves the parameters in the GNN pipeline.
+
+
+* **`paper`:** The complete empirical reproduction suite yielding all artifacts for publication. Evaluates large-scale models, real-world networks, and automatically renders all comparative metric figures. GNNs undergo 100 Optuna optimization trials, 500 training epochs, and 50 independent empirical repetitions to ensure statistical significance.
+
+
+
+## Custom Evaluation and Command-Line Interface
+
+Individual structural families, scale parameters, and compute parallelization parameters can be specified explicitly, overriding the preset baselines.
 
 ```bash
-# Install dependencies (CPU)
-source installation
-
-# Install dependencies (GPU)
-source installation-gpu
-
-# Run the standard paper reproduction suite
-python experiments/run_experiments.py --preset paper
-
-```
-
-**Custom Execution Example:**
-You can manually choose combinations of graph families, scales, and parallelization using the CLI flags.
-
-```bash
+# Execute specific topologies with maximum multiprocessing
 python experiments/run_experiments.py \
   --seed 42 \
-  --er 300 0.02 \
-  --ws 300 6 0.15 \
-  --ba 300 2 \
-  --rg 300 0.09 \
-  --rreg 300 8 \
-  --sbm2 300 0.012 0.004 \
-  --cycle 200 \
-  --grid 20 20 \
-  --torus 20 20 \
-  --tree 3 6 \
-  --complete 60 \
-  --include-real
+  --jobs -1 \
+  --er 800 0.01 \
+  --hrg 800 5.0 1.0 0.5 \
+  --sbm2 1000 0.012 0.004 \
+  --cycle 400 \
+  --include-real \
+  --auto-figures
 
 ```
 
-Outputs (CSVs, JSON, and PNGs) will be generated under `experiments/out/<run_name>/`.
+Outputs, including CSV data matrices, JSON metric summaries, and PDF/PNG artifact plots, are directed to `experiments/out/<run_name>/`. The rendering engine (`make_paper_figures.py`) applies unified styling conventions to map the mathematical relationships between $\mathfrak{c}_{\mathrm{BF}}$, $\mathfrak{c}_{\mathrm{OR}}$, and derived theoretical limits across these subdirectories.
+
+## Checkpointing and Soft Restarts
+
+The evaluation pipelines feature fault-tolerant checkpoints.
+
+1. **Topological Properties:** Using the `--soft-restart` flag in `run_experiments.py` bypasses edge curvature calculations for any configuration whose `$TAG_edges.csv` already exists in the target output directory.
 
 
-⚠️ **WARNING: Checkpoint File Management (`gnn_results.json`)**
+2. **GNN Optimization:** GNN performance scores, standard deviations, and optimal architecture parameters are serialized to `gnn_results.json` upon completion of a dataset/architecture pair. The pipeline natively skips re-evaluation of logged configuration pairs. **Note:** If executing codebase modifications (e.g., altering GNN depth, modifying FoSR or SDRF topological limits, or shifting Optuna search domains), you must manually delete or rename `gnn_results.json` to force a complete computational re-evaluation.
 
-The GNN experimental pipeline (`gnn_experiments.py`) utilizes a checkpointing mechanism to facilitate soft-restarts: upon completing the repetitions for a specific dataset and architecture, the aggregate scores and hyperparameters are serialized to `gnn_results.json` in the target output directory (e.g., `out/<run-name>/gnn_results.json`).
 
-If you subsequently modify the codebase (such as altering the GNN architecture, adjusting the Optuna search space, changing the number of epochs/trials, or updating the SDRF/BORF rewiring mechanics) the script will *bypass execution* for any dataset/architecture pair already logged in the checkpoint file.
 
-**To force a complete re-evaluation of previously processed configurations, you must manually delete or rename the `gnn_results.json` file prior to execution.**
+## Additional Diagnostics
 
-## Validation & Testing Suite
+* **Runtime Scaling Benchmark (`--benchmark`):** Overrides standard execution to generate hardware scaling datasets and log-log visual plots isolating the asymptotic computation cost of Exact Optimal Transport against proposed combinatorial metric bounds across a geometric sequence of graph sizes.
 
-The repository includes a comprehensive `pytest` suite; to execute it run:
+
+* **SDRF Ablation (`--ablation-only`):** Evaluates the computational scaling of Stochastic Discrete Ricci Flow under variable constraints on `max_candidates` and `max_iters`, projecting heatmap and conditional scaling matrices.
+
+## Testing Suite
+
+Lastly, the repository includes a comprehensive `pytest` suite; to execute it run:
 
 ```bash
 pytest -q
-
 ```
-
-*(Note: PyTorch is required. If `torch` is not installed, the suite is safely skipped.)*
