@@ -103,11 +103,16 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--bench-graphs", type=int, default=100, help="Total number of graph instances evaluated in the benchmark.")
     parser.add_argument("--bench-seed", type=int, default=42, help="Random seed for the benchmark generation.")
 
+    # Ablation controls
+    parser.add_argument("--ablation-only", action="store_true", help="Skip everything and run ONLY the SDRF ablation study on minesweeper.")
+    parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for GNN rewiring")
+    parser.add_argument("--max-iters-ablation", type=int, default=None, help="Maximum iterations for SDRF ablation grid")
+    parser.add_argument("--max-n-ablation", type=int, default=None, help="Maximum candidates (n) for SDRF ablation grid")
+    parser.add_argument("--ablation-points", type=int, default=None, help="Number of points in the logspace grids for SDRF ablation")
+    
     # GNN Experiment controls
     parser.add_argument("--run-gnn", action="store_true", help="Execute the GNN topology rewiring experiments.")
     parser.add_argument("--only-gnn", action="store_true", help="Skip graph generation and OT benchmarks, run ONLY GNN experiments.")
-    parser.add_argument("--ablation-only", action="store_true", help="Skip everything and run ONLY the SDRF candidates ablation study on minesweeper.")
-    parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for all rewiring methods")
     parser.add_argument("--gnn-datasets", nargs="+", type=str, default=None, help="Datasets to evaluate (e.g., ZINC minesweeper)")
     parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN"], help="Architectures to evaluate")
     parser.add_argument("--gnn-trials", type=int, default=None, help="Number of Optuna trials for GNNs")
@@ -122,17 +127,8 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--bins", type=int, default=60)
     parser.add_argument("--skip-csv", action="store_true")
     parser.add_argument("--skip-plots", action="store_true")
-    parser.add_argument(
-        "--auto-figures",
-        dest="auto-figures",
-        action="store_true",
-        help="Generate paper figures after the runs (on by default for --preset paper)"
-    )
-    parser.add_argument(
-        "--soft-restart",
-        action="store_true",
-        help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists."
-    )
+    parser.add_argument("--auto-figures", dest="auto-figures", action="store_true", help="Generate paper figures after the runs (always on for --preset paper)")
+    parser.add_argument("--soft-restart", action="store_true", help="Resume in-place: for an existing out/<run-name> folder, skip recomputing any run whose {tag}_edges.csv already exists.")
 
 
 def handle_presets(args, seed: int):
@@ -142,6 +138,11 @@ def handle_presets(args, seed: int):
 
     if args.preset == "tiny":
         args.bench_max_n = 1000
+
+        args.max_iters_ablation = args.max_iters_ablation or 10
+        args.max_n_ablation = args.max_n_ablation or 100
+        args.ablation_points = args.ablation_points or 10
+
         args.er = args.er or [[150, 0.02]]
         args.ws = args.ws or [[150, 6, 0.1]]
         args.ba = args.ba or [[150, 2]]
@@ -158,8 +159,15 @@ def handle_presets(args, seed: int):
         args.gnn_trials = args.gnn_trials or 5
         args.gnn_epochs = args.gnn_epochs or 50
 
+        
+
     elif args.preset == "small":
         args.bench_max_n = 5000
+
+        args.max_n_ablation = args.max_n_ablation or 200
+        args.max_iters_ablation = args.max_iters_ablation or 20
+        args.ablation_points = args.ablation_points or 20
+
         args.bench_graphs = 20
         args.er = args.er or [[400, 0.02], [400, 0.04]]
         args.ws = args.ws or [[400, 6, 0.1], [400, 8, 0.2]]
@@ -179,6 +187,11 @@ def handle_presets(args, seed: int):
 
     elif args.preset == "medium":
         args.bench_max_n = 10000
+
+        args.max_n_ablation = args.max_n_ablation or 400
+        args.max_iters_ablation = args.max_iters_ablation or 30
+        args.ablation_points = args.ablation_points or 30
+
         args.bench_graphs = 50
         args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
         args.er  = args.er  or [[800, 0.0100125]]
@@ -204,6 +217,11 @@ def handle_presets(args, seed: int):
 
     elif args.preset == "paper":
         args.bench_max_n = 15000
+
+        args.max_n_ablation = args.max_n_ablation or 800
+        args.max_iters_ablation = args.max_iters_ablation or 40
+        args.ablation_points = args.ablation_points or 50
+
         args.bench_graphs = 100
         args.hrg = args.hrg or [[800, 5.0, 1.0, 0.0], [800, 5.0, 1.0, 0.5]]
         args.er  = args.er  or [[800, 0.0100125], [1600, 0.0050031]]
@@ -313,15 +331,19 @@ def main():
     def run_ablation_phase():
         try:
             import sdrf_ablation
+            auto_figures = getattr(args, "auto-figures", getattr(args, "auto_figures", False))
             sdrf_ablation.execute_ablation(
                 seed=args.seed,
                 out_dir=out_dir,
-                max_iters=args.max_iters_rewiring,
-                auto_figures=getattr(args, "auto-figures", False)
+                preset=args.preset,
+                max_iters_limit=args.max_iters_ablation,
+                max_n_limit=args.max_n_ablation,
+                ablation_points=args.ablation_points,
+                auto_figures=auto_figures
             )
         except Exception as e:
             print(f"[ablation] Execution failed: {e}")
-
+    
     # Immediately execute isolated branches
     if getattr(args, "benchmark", False):
         run_benchmark_phase()
