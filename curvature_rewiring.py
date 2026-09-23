@@ -12,7 +12,7 @@ References:
 - SDRF: Topping, J., Di Giovanni, F., Chamberlain, B. P., Dong, X., & Bronstein, M. M. (2021). Understanding over-squashing and bottlenecks on graphs via network topology and curvature. arXiv preprint arXiv:2111.14522.
 - BORF: Nguyen, K., Nguyen, D., & Ho, N. (2022). Revisiting Over-smoothing and Over-squashing Using Ollivier-Ricci Curvature. arXiv preprint arXiv:2211.15779.
 """
-
+from collections import deque
 import os
 import torch
 import numpy as np
@@ -94,44 +94,64 @@ class FoSRRewiring(BaseTransform):
         self.max_iters = max_iters
         self.remove_edges = remove_edges
 
+    def _is_bridge(self, A_csr, u, v, num_nodes):
+        """
+        Targeted BFS to determine if (u, v) is a bridge. 
+        Returns True if no alternative path exists between u and v.
+        """
+        visited = np.zeros(num_nodes, dtype=bool)
+        visited[u] = True
+        queue = deque([u])
+        
+        while queue:
+            curr = queue.popleft()
+            # Fast CSR neighbor extraction
+            neighbors = A_csr.indices[A_csr.indptr[curr]:A_csr.indptr[curr+1]]
+            for nxt in neighbors:
+                # Mask out the candidate edge (u, v)
+                if (curr == u and nxt == v) or (curr == v and nxt == u):
+                    continue
+                if nxt == v:
+                    return False  # Alternative path exists; not a bridge
+                if not visited[nxt]:
+                    visited[nxt] = True
+                    queue.append(nxt)
+        return True
+
     def forward(self, data: Data) -> Data:
         device = data.edge_index.device
         num_nodes = data.num_nodes
 
-        # Map original directional edges to their indices for attribute tracking
         edge_map = {}
         for i in range(data.edge_index.size(1)):
             u, v = data.edge_index[0, i].item(), data.edge_index[1, i].item()
             edge_map[(u, v)] = i
 
-        # Operate on an undirected set of unique edge tuples
         edges = set(tuple(sorted((u, v))) for u, v in edge_map.keys())
 
         for _ in range(self.max_iters):
             if not edges: 
                 break
                 
-            # Build Adjacency and Laplacian
-            rows = [e[0] for e in edges] + [e[1] for e in edges]
-            cols = [e[1] for e in edges] + [e[0] for e in edges]
-            data_vals = [1.0] * len(rows)
+            # Vectorized Adjacency and Laplacian construction
+            edges_arr = np.array(list(edges), dtype=np.int32)
+            rows = np.concatenate([edges_arr[:, 0], edges_arr[:, 1]])
+            cols = np.concatenate([edges_arr[:, 1], edges_arr[:, 0]])
+            data_vals = np.ones(len(rows), dtype=np.float64)
             
-            A = sp.coo_matrix((data_vals, (rows, cols)), shape=(num_nodes, num_nodes))
+            A = sp.csr_matrix((data_vals, (rows, cols)), shape=(num_nodes, num_nodes))
             deg = np.array(A.sum(axis=1)).flatten()
             L = sp.diags(deg) - A
             
             try:
-                # Shift-invert mode (sigma) avoids Lanczos breakdown around the zero eigenvalue
-                evals, evecs = eigsh(L.astype(float), k=2, which='SA', sigma=-1e-5)
+                evals, evecs = eigsh(L, k=2, which='SA', sigma=-1e-5)
             except Exception:
                 break
                 
-            # Ensure strict sorting of eigenvalues
             idx = np.argsort(evals)
             fiedler = evecs[:, idx[1]]
             sorted_nodes = np.argsort(fiedler)
             
-            # Add Edge: Maximize Fiedler difference
             added_edge = None
             for i in range(num_nodes):
                 if added_edge: break
@@ -143,16 +163,17 @@ class FoSRRewiring(BaseTransform):
                         added_edge = cand
                         break
             
-            # Terminate if the graph is fully connected and no edges can be added
             if not added_edge:
                 break
             
-            # Remove Edge: Minimize Fiedler difference
             if self.remove_edges and len(edges) > 1:
-                # Update degrees temporarily to reflect the newly added edge
-                deg_current = deg.copy()
-                deg_current[added_edge[0]] += 1
-                deg_current[added_edge[1]] += 1
+                # Rebuild CSR efficiently to include the newly added edge for accurate BFS
+                edges_arr = np.array(list(edges), dtype=np.int32)
+                rows = np.concatenate([edges_arr[:, 0], edges_arr[:, 1]])
+                cols = np.concatenate([edges_arr[:, 1], edges_arr[:, 0]])
+                data_vals = np.ones(len(rows), dtype=np.float64)
+                A_current = sp.csr_matrix((data_vals, (rows, cols)), shape=(num_nodes, num_nodes))
+                deg_current = np.array(A_current.sum(axis=1)).flatten()
                 
                 removal_candidates = []
                 for u, v in edges:
@@ -162,22 +183,13 @@ class FoSRRewiring(BaseTransform):
                         diff = abs(fiedler[u] - fiedler[v])
                         removal_candidates.append((diff, (u, v)))
                 
-                # Sort candidates by minimum Fiedler difference
                 removal_candidates.sort(key=lambda x: x[0])
                 
-                # Iterate candidates and execute the first one that does not disconnect the graph
                 for _, cand_edge in removal_candidates:
-                    test_edges = edges - {cand_edge}
-                    tr = [e[0] for e in test_edges] + [e[1] for e in test_edges]
-                    tc = [e[1] for e in test_edges] + [e[0] for e in test_edges]
-                    test_A = sp.coo_matrix(([1.0]*len(tr), (tr, tc)), shape=(num_nodes, num_nodes))
-                    
-                    n_comp, _ = connected_components(test_A, directed=False)
-                    if n_comp == 1:
+                    if not self._is_bridge(A_current, cand_edge[0], cand_edge[1], num_nodes):
                         edges.remove(cand_edge)
                         break
 
-        # Reconstruct bidirectional PyG edge_index and align attributes
         new_edge_index = []
         has_edge_attr = getattr(data, 'edge_attr', None) is not None
         has_edge_weight = getattr(data, 'edge_weight', None) is not None
@@ -192,13 +204,11 @@ class FoSRRewiring(BaseTransform):
                 if has_edge_attr or has_edge_weight:
                     orig_idx = edge_map.get((source, target))
                     if orig_idx is not None:
-                        # Edge existed previously, carry over original attributes
                         if has_edge_attr: 
                             new_edge_attr.append(data.edge_attr[orig_idx])
                         if has_edge_weight: 
                             new_edge_weight.append(data.edge_weight[orig_idx])
                     else:
-                        # New edge, initialize zero vector / unit weight
                         if has_edge_attr:
                             new_edge_attr.append(torch.zeros_like(data.edge_attr[0]))
                         if has_edge_weight:
@@ -215,7 +225,7 @@ class FoSRRewiring(BaseTransform):
             data.edge_weight = torch.stack(new_edge_weight).to(device)
 
         return data
-
+    
 class SDRFRewiring(BaseTransform):
     def __init__(self, metric="bounds", max_iters=10, 
                  max_candidates=3, remove_edges=True, n_jobs=None):
