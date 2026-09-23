@@ -85,38 +85,12 @@ class FoSRRewiring(BaseTransform):
     """
     First-Order Spectral Rewiring (FoSR).
     
-    Iteratively computes the Fiedler vector to maximize algebraic connectivity.
-    Includes safeguards for disconnected components, eigenvalue sorting, 
-    numerical stability in Lanczos iterations, and edge attribute preservation.
+    Iteratively computes the Fiedler vector to maximize algebraic connectivity 
+    by systematically adding edges.
     """
-    def __init__(self, max_iters=10, remove_edges=True):
+    def __init__(self, max_iters=10):
         super().__init__()
         self.max_iters = max_iters
-        self.remove_edges = remove_edges
-
-    def _is_bridge(self, A_csr, u, v, num_nodes):
-        """
-        Targeted BFS to determine if (u, v) is a bridge. 
-        Returns True if no alternative path exists between u and v.
-        """
-        visited = np.zeros(num_nodes, dtype=bool)
-        visited[u] = True
-        queue = deque([u])
-        
-        while queue:
-            curr = queue.popleft()
-            # Fast CSR neighbor extraction
-            neighbors = A_csr.indices[A_csr.indptr[curr]:A_csr.indptr[curr+1]]
-            for nxt in neighbors:
-                # Mask out the candidate edge (u, v)
-                if (curr == u and nxt == v) or (curr == v and nxt == u):
-                    continue
-                if nxt == v:
-                    return False  # Alternative path exists; not a bridge
-                if not visited[nxt]:
-                    visited[nxt] = True
-                    queue.append(nxt)
-        return True
 
     def forward(self, data: Data) -> Data:
         device = data.edge_index.device
@@ -144,7 +118,7 @@ class FoSRRewiring(BaseTransform):
             L = sp.diags(deg) - A
             
             try:
-                evals, evecs = eigsh(L, k=2, which='SA', sigma=-1e-5)
+                evals, evecs = eigsh(L, k=2, which='SA')
             except Exception:
                 break
                 
@@ -152,6 +126,7 @@ class FoSRRewiring(BaseTransform):
             fiedler = evecs[:, idx[1]]
             sorted_nodes = np.argsort(fiedler)
             
+            # Add Edge: Maximize Fiedler difference
             added_edge = None
             for i in range(num_nodes):
                 if added_edge: break
@@ -165,31 +140,8 @@ class FoSRRewiring(BaseTransform):
             
             if not added_edge:
                 break
-            
-            if self.remove_edges and len(edges) > 1:
-                # Rebuild CSR efficiently to include the newly added edge for accurate BFS
-                edges_arr = np.array(list(edges), dtype=np.int32)
-                rows = np.concatenate([edges_arr[:, 0], edges_arr[:, 1]])
-                cols = np.concatenate([edges_arr[:, 1], edges_arr[:, 0]])
-                data_vals = np.ones(len(rows), dtype=np.float64)
-                A_current = sp.csr_matrix((data_vals, (rows, cols)), shape=(num_nodes, num_nodes))
-                deg_current = np.array(A_current.sum(axis=1)).flatten()
-                
-                removal_candidates = []
-                for u, v in edges:
-                    if (u, v) == added_edge:
-                        continue
-                    if deg_current[u] > 1 and deg_current[v] > 1:
-                        diff = abs(fiedler[u] - fiedler[v])
-                        removal_candidates.append((diff, (u, v)))
-                
-                removal_candidates.sort(key=lambda x: x[0])
-                
-                for _, cand_edge in removal_candidates:
-                    if not self._is_bridge(A_current, cand_edge[0], cand_edge[1], num_nodes):
-                        edges.remove(cand_edge)
-                        break
 
+        # Reconstruct bidirectional PyG edge_index and align attributes
         new_edge_index = []
         has_edge_attr = getattr(data, 'edge_attr', None) is not None
         has_edge_weight = getattr(data, 'edge_weight', None) is not None
@@ -225,7 +177,7 @@ class FoSRRewiring(BaseTransform):
             data.edge_weight = torch.stack(new_edge_weight).to(device)
 
         return data
-    
+
 class SDRFRewiring(BaseTransform):
     def __init__(self, metric="bounds", max_iters=10, 
                  max_candidates=3, remove_edges=True, n_jobs=None):
