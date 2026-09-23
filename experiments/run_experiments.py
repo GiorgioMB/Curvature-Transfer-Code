@@ -7,10 +7,8 @@ for downstream analysis or paper figures.
 
 Features
 --------
-- Supports a wide range of graph models (Erdos--Renyi, Watts--Strogatz, Barabasi--Albert,
-  random geometric, hyperbolic, cycle, grid, tree, complete, and real networks).
-- Computes both Balanced Forman and lazy Ollivier--Ricci curvatures, plus tight
-  per-edge transfer bounds and envelopes.
+- Supports a wide range of graph models.
+- Computes both Balanced Forman and lazy Ollivier--Ricci curvatures, as well as transfer bounds and envelopes.
 - Saves per-edge tables, summary statistics, and histograms for each run.
 - Orchestrates exact OT vs. combinatorial bounds runtime benchmarking.
 - Orchestrates GNN rewiring experiments across BORF and SDRF variants.
@@ -18,11 +16,12 @@ Features
 
 Usage (command line)
 --------------------
-$ python run_experiments.py --preset tiny
+$ python run_experiments.py --preset tiny --benchmark --auto-figures
 $ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
-$ python run_experiments.py --benchmark --preset paper
+$ python run_experiments.py --preset paper --only-gnn
 """
 import os
+import warnings
 import argparse
 from typing import Tuple, List
 import numpy as np
@@ -40,11 +39,9 @@ from make_paper_figures import generate_paper_figures
 from util_curvature import compute_curvatures, write_edge_table, summarize_run
 
 def ensure_dir(path: str) -> None:
-    """Create directory if it does not exist (no error if already present)."""
     os.makedirs(path, exist_ok=True)
 
 def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
-    """Save a histogram of arr to a PNG file with a title."""
     plt.figure()
     plt.hist(arr, bins=bins)
     plt.title(title)
@@ -55,7 +52,6 @@ def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
     plt.close()
 
 def add_preset_args(parser: argparse.ArgumentParser):
-    """Add --preset argument for quick experiment suites."""
     parser.add_argument(
         "--preset",
         type=str,
@@ -65,7 +61,6 @@ def add_preset_args(parser: argparse.ArgumentParser):
     )
 
 def add_family_args(parser: argparse.ArgumentParser):
-    """Add arguments for all supported graph families and experiment controls."""
     # Random graphs
     parser.add_argument("--er", nargs=2, type=float, action="append", metavar=("n","p"),
                         help="Erdos-Renyi G(n,p)")
@@ -277,9 +272,13 @@ def np_encoder(obj):
 
 def main():
     parser = argparse.ArgumentParser(description="Run curvature distribution experiments.")
+    parser.add_argument("--suppress-warning", action="store_true", help="Suppress all Python runtime warnings.")
     add_preset_args(parser)
     add_family_args(parser)
     args = parser.parse_args()
+
+    if args.suppress_warning:
+        warnings.filterwarnings("ignore")
 
     seed = int(args.seed)
     handle_presets(args, seed)
@@ -329,9 +328,6 @@ def main():
         run_ablation_phase()
         return
 
-    # =========================================================================
-    # Phase 1: Curvature Computation & OT Benchmarks
-    # =========================================================================
     if not getattr(args, "only_gnn", False):
         prev_summary = {}
         man_path = os.path.join(out_dir, "manifest.json")
@@ -502,9 +498,7 @@ def main():
             except Exception as e:
                 print(f"[run_experiments] Paper figure generation failed: {e}")
 
-    # =========================================================================
-    # Phase 2: GNN Topology Rewiring
-    # =========================================================================
+
     if getattr(args, "run_gnn", False) or getattr(args, "only_gnn", False):
         try:
             import gnn_experiments
