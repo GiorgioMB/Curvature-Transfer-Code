@@ -190,8 +190,8 @@ def run_benchmark(
             writer.writerow([n, p, M, f"{avg_deg:.2f}", f"{t_ot_total:.4f}", f"{t_bounds_total:.4f}"])
 
     if auto_figures:
-        out_pdf = os.path.join(out_dir, "runtime_scaling_loglog_neurips.pdf")
-        out_png = os.path.join(out_dir, "runtime_scaling_loglog_neurips.png")
+        out_pdf = os.path.join(out_dir, "runtime_scaling_loglog.pdf")
+        out_png = os.path.join(out_dir, "runtime_scaling_loglog.png")
         generate_runtime_plot(output_csv, out_pdf, out_png)
 
     return output_csv
