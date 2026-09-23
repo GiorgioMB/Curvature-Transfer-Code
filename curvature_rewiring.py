@@ -1,19 +1,16 @@
 """
-Curvature-based Graph Rewiring Transforms
+Graph Rewiring Transforms
 
-This module provides PyTorch Geometric compatible implementations of Stochastic 
-Discrete Ricci Flow (SDRF) and Batched Ollivier-Ricci Flow (BORF). These 
-implementations have been rewritten and heavily optimized from their original 
-sources to integrate directly with our CurvatureEngine, allowing the algorithms 
-to be driven by exact Ollivier-Ricci curvature, Balanced Forman curvature, or 
-their theoretical transfer bounds.
+This module provides PyTorch Geometric-compatible implementations of Stochastic Discrete Ricci Flow (SDRF), 
+Batched Ollivier-Ricci Flow (BORF), and First-Order Spectral Rewiring (FoSR). These algorithms mitigate 
+over-squashing and structural bottlenecks in graph neural networks by dynamically modifying topology.
 
+The implementations are heavily optimized to integrate with the CurvatureEngine. SDRF and BORF are driven 
+by curvature, while FoSR operates spectrally.
 References:
-- SDRF: Topping, J., Di Giovanni, F., Chamberlain, B. P., Dong, X., & Bronstein, 
-  M. M. (2021). Understanding over-squashing and bottlenecks on graphs via 
-  network topology and curvature. arXiv preprint arXiv:2111.14522.
-- BORF: Nguyen, K., Nguyen, D., & Ho, N. (2022). Revisiting Over-smoothing and 
-  Over-squashing Using Ollivier-Ricci Curvature. arXiv preprint arXiv:2211.15779.
+- FoSR: Karhadkar, K., Banerjee, P. K., & Montúfar, G. (2022). FoSR: First-order spectral rewiring for addressing oversquashing in GNNs. arXiv preprint arXiv:2210.11790.
+- SDRF: Topping, J., Di Giovanni, F., Chamberlain, B. P., Dong, X., & Bronstein, M. M. (2021). Understanding over-squashing and bottlenecks on graphs via network topology and curvature. arXiv preprint arXiv:2111.14522.
+- BORF: Nguyen, K., Nguyen, D., & Ho, N. (2022). Revisiting Over-smoothing and Over-squashing Using Ollivier-Ricci Curvature. arXiv preprint arXiv:2211.15779.
 """
 
 import os
