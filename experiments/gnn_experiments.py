@@ -302,13 +302,17 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
             best_params, target_dataset, task, metric_name, cv_split, epochs, optimizer_name
         )
 
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_to_rep = {
-                executor.submit(worker_func, seed=seed + rep): rep 
-                for rep in range(n_reps)
-            }
-            for future in as_completed(future_to_rep):
-                scores.append(future.result())
+        if max_workers == 1:
+            for rep in range(n_reps):
+                scores.append(worker_func(seed=seed + rep))
+        else:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                future_to_rep = {
+                    executor.submit(worker_func, seed=seed + rep): rep 
+                    for rep in range(n_reps)
+                }
+                for future in as_completed(future_to_rep):
+                    scores.append(future.result())
 
         avg, std = float(np.mean(scores)), float(np.std(scores))
         
