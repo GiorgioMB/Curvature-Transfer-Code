@@ -9,7 +9,7 @@ fi
 eval "$VENV"
 source .venv/bin/activate
 
-$PIP install -U -r requirements.base.txt
+$PIP install -U -r requirements.txt
 $PIP install -U torch torchvision torchaudio \
   --extra-index-url https://download.pytorch.org/whl/cpu
 
