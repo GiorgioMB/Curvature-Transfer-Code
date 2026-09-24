@@ -89,7 +89,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     )
 
     # Parallelism controls
-    parser.add_argument("--jobs", type=int, default=None,
+    parser.add_argument("--hrg-jobs", type=int, default=None,
                         help="Number of parallel jobs for both HRG generation and curvature computation.")
     parser.add_argument("--block-size", type=int, default=None,
                         help="Tile size for HRG; smaller -> more tasks. If omitted, chosen adaptively.")
@@ -456,7 +456,7 @@ def main():
                 plan_run(tag, lambda n=int(n), R=float(R), alpha=float(alpha), T=float(T):
                          models.make_hyperbolic_random_graph(
                              int(n), float(R), alpha=float(alpha), T=float(T),
-                             seed=seed, n_jobs=args.jobs, block_size=args.block_size))
+                             seed=seed, n_jobs=args.hrg_jobs, block_size=args.block_size))
 
         if args.cycle:
             for (n,) in args.cycle:
