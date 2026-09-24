@@ -8,6 +8,9 @@ import json
 import scipy.sparse as sp
 from scipy.sparse.csgraph import shortest_path
 from scipy.sparse.linalg import eigsh
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -19,6 +22,7 @@ from sklearn.metrics import average_precision_score, mean_absolute_error, roc_au
 import optuna
 
 from curvature_rewiring import SDRFRewiring, BORFRewiring, FoSRRewiring
+
 
 def set_seed(seed):
     random.seed(seed)
@@ -34,8 +38,6 @@ def compute_topological_metrics(data_list):
     diams, avg_sps, fiedlers = [], [], []
     for data in data_list:
         A = to_scipy_sparse_matrix(data.edge_index, num_nodes=data.num_nodes).tocsr()
-
-        # Shortest paths and Diameter
         dist_matrix = shortest_path(csgraph=A, directed=False, unweighted=True)
         upper_tri = dist_matrix[np.triu_indices_from(dist_matrix, k=1)]
         valid_dists = upper_tri[np.isfinite(upper_tri)]
@@ -47,7 +49,6 @@ def compute_topological_metrics(data_list):
             diams.append(0.0)
             avg_sps.append(0.0)
 
-        # Algebraic Connectivity (Fiedler value)
         deg = np.array(A.sum(axis=1)).flatten()
         L = sp.diags(deg) - A
         try:
@@ -58,9 +59,7 @@ def compute_topological_metrics(data_list):
 
     return np.mean(diams), np.mean(avg_sps), np.mean(fiedlers)
 
-# -----------------------------
-# Architectures
-# -----------------------------
+
 class GNN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers, arch="GCN", task="graph", dropout=0.5):
         super().__init__()
@@ -116,9 +115,7 @@ class GNN(torch.nn.Module):
             x = self.lin(x)
         return x
 
-# -----------------------------
-# Evaluation Logistics
-# -----------------------------
+
 def get_dataset(name):
     if name == "ZINC":
         d_train = ZINC(root="data/ZINC", split="train", subset=True)
@@ -149,21 +146,21 @@ def compute_metric(y_true, y_pred, metric_name):
         if len(np.unique(y_true)) == 1: return 0.5
         return roc_auc_score(y_true, y_pred)
 
-# -----------------------------
-# Objective Execution
-# -----------------------------
-def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epochs, optim_name):
+
+def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, optim_name, seed):
+    set_seed(seed)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
     model_params = model_params.copy()
     lr = model_params.pop("lr", 0.01)
 
-    kf = KFold(n_splits=cv_split, shuffle=True)
+    kf = KFold(n_splits=cv_split, shuffle=True, random_state=seed)
     scores = []
 
     if task == "graph":
-        data_list = dataset
-        for train_idx, test_idx in kf.split(data_list):
-            train_data = [data_list[i].to(device) for i in train_idx]
-            test_data = [data_list[i].to(device) for i in test_idx]
+        for train_idx, test_idx in kf.split(dataset):
+            train_data = [dataset[i].to(device) for i in train_idx]
+            test_data = [dataset[i].to(device) for i in test_idx]
 
             from torch_geometric.loader import DataLoader
             train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
@@ -225,10 +222,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, device, epoc
 
     return np.mean(scores)
 
-def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring):
-    set_seed(seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring, max_workers=4):
     checkpoint_file = os.path.join(out_dir, "gnn_results.json")
     results = {}
     if os.path.exists(checkpoint_file):
@@ -239,40 +233,12 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
                 pass
 
     run_key = f"{dataset_name}_{arch_name}"
-    if run_key in results and "Base" in results[run_key]:
-        if len(results[run_key]["Base"].get("scores", [])) >= n_reps:
-            print(f"\n[soft-restart] Skipping {dataset_name} | Arch: {arch_name} (Already completed in {checkpoint_file}).")
-            return
+    if run_key not in results:
+        results[run_key] = {}
 
-    print(f"\nEvaluating Base Dataset: {dataset_name} | Arch: {arch_name}")
+    print(f"\nProcessing Dataset: {dataset_name} | Arch: {arch_name}")
     raw_dataset, task, metric_name, in_c, out_c = get_dataset(dataset_name)
 
-    # Run Optuna
-    print(f"\nRunning {n_trials} Optuna trials on Base Dataset to find optimal hyperparameters...")
-
-    def objective(trial):
-        params = {
-            "in_channels": in_c,
-            "hidden_channels": trial.suggest_categorical("hidden_channels", [32, 64, 128]),
-            "out_channels": out_c,
-            "num_layers": trial.suggest_int("num_layers", 2, 5),
-            "dropout": trial.suggest_float("dropout", 0.0, 0.5),
-            "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
-            "arch": arch_name,
-            "task": task
-        }
-        return run_cv_fold(params, raw_dataset, task, metric_name, cv_split, device, epochs, optimizer_name)
-
-    direction = "minimize" if metric_name == "mae" else "maximize"
-    study = optuna.create_study(direction=direction)
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(objective, n_trials=n_trials)
-
-    best_params = study.best_params
-    best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
-    print(f"Optimal Hyperparameters: {best_params}")
-
-    # Build Topologies
     pipelines = {
         "Base": None,
         "FoSR": FoSRRewiring(max_iters=max_iters_rewiring),
@@ -283,80 +249,103 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
     }
 
     cache_data = {}
-    time_log = {}
-    topology_log = {}
-
+    
     for pipe_name, transform in pipelines.items():
+        if pipe_name in results[run_key] and len(results[run_key][pipe_name].get("scores", [])) >= n_reps:
+            print(f"Skipping {pipe_name} - already evaluated.")
+            continue
+            
+        print(f"\nPreparing topology: {pipe_name}")
         if transform is None:
             cache_data[pipe_name] = raw_dataset
-            time_log[pipe_name] = 0.0
+            rewire_time = 0.0
         else:
-            print(f"Applying {pipe_name} Rewiring...")
             t0 = time.perf_counter()
-
             if task == "node":
                 cache_data[pipe_name] = transform(copy.deepcopy(raw_dataset))
             else:
                 cache_data[pipe_name] = [transform(copy.deepcopy(g)) for g in raw_dataset]
+            rewire_time = time.perf_counter() - t0
 
-            t1 = time.perf_counter()
-            time_log[pipe_name] = t1 - t0
-
-        # Calculate topological metrics
         diam, avg_sp, fiedler = compute_topological_metrics(cache_data[pipe_name])
-        topology_log[pipe_name] = {"Diameter": diam, "Avg_SP": avg_sp, "Fiedler": fiedler}
+        topology_metrics = {"Diameter": float(diam), "Avg_SP": float(avg_sp), "Fiedler": float(fiedler)}
+        
+        print(f"Optuna hyperparameter search for {pipe_name} ({n_trials} trials)...")
+        def objective(trial):
+            params = {
+                "in_channels": in_c,
+                "hidden_channels": trial.suggest_categorical("hidden_channels", [32, 64, 128]),
+                "out_channels": out_c,
+                "num_layers": trial.suggest_int("num_layers", 2, 5),
+                "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+                "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
+                "arch": arch_name,
+                "task": task
+            }
+            return run_cv_fold(params, cache_data[pipe_name], task, metric_name, cv_split, epochs, optimizer_name, seed=seed)
+        
 
-        print(f"[{pipe_name}] Exec Time: {time_log[pipe_name]:.2f}s | "
-              f"Diam: {diam:.2f}, Avg SP: {avg_sp:.2f}, Fiedler: {fiedler:.4f}")
+        direction = "minimize" if metric_name == "mae" else "maximize"
+        study = optuna.create_study(direction=direction)
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study.optimize(objective, n_trials=n_trials)
+        
+        best_params = study.best_params
+        best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
 
-    # Final Candidate Testing (N Repetitions on Best Model)
-    print("\nStarting Empirical Evaluation...")
-    final_scores = {p: [] for p in pipelines.keys()}
+        print(f"Executing {n_reps} parallel repetitions for {pipe_name}...")
+        scores = []
+        target_dataset = cache_data[pipe_name]
+        
+        worker_func = partial(
+            run_cv_fold,
+            best_params, target_dataset, task, metric_name, cv_split, epochs, optimizer_name
+        )
 
-    for rep in range(n_reps):
-        print(f"\n--- Repetition {rep + 1}/{n_reps} ---")
-        for pipe_name, target_dataset in cache_data.items():
-            score = run_cv_fold(best_params, target_dataset, task, metric_name, cv_split, device, epochs, optimizer_name)
-            final_scores[pipe_name].append(score)
-            print(f"{pipe_name:15s} | {metric_name.upper()}: {score:.4f}")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_rep = {
+                executor.submit(worker_func, seed=seed + rep): rep 
+                for rep in range(n_reps)
+            }
+            for future in as_completed(future_to_rep):
+                scores.append(future.result())
 
-    print(f"\n{'='*50}\nFINAL AGGREGATE SCORES ({n_reps} Repetitions)\n{'='*50}")
-
-    run_results = {}
-    for pipe_name in pipelines.keys():
-        avg = float(np.mean(final_scores[pipe_name]))
-        std = float(np.std(final_scores[pipe_name]))
-        run_results[pipe_name] = {
-            "scores": final_scores[pipe_name],
+        avg, std = float(np.mean(scores)), float(np.std(scores))
+        
+        results[run_key][pipe_name] = {
+            "scores": scores,
             "avg": avg,
             "std": std,
-            "rewire_time": time_log[pipe_name],
-            "topology": topology_log[pipe_name]
+            "rewire_time": rewire_time,
+            "topology": topology_metrics,
+            "best_params": best_params
         }
-        print(f"{pipe_name:15s} | Avg {metric_name.upper()}: {avg:.4f} ± {std:.4f} | Rewire Time: {time_log[pipe_name]:.2f}s")
-
-    # Update global checkpoint
-    results[run_key] = run_results
-    with open(checkpoint_file, 'w') as f:
-        json.dump(results, f, indent=4)
+        
+        with open(checkpoint_file, 'w') as f:
+            json.dump(results, f, indent=4)
+            
+        print(f"Completed {pipe_name} | Avg {metric_name.upper()}: {avg:.4f} ± {std:.4f}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GNN Topology Rewiring Benchmarks")
+    mp.set_start_method('spawn', force=True)
+    
+    parser = argparse.ArgumentParser(description="Parallel GNN Topology Rewiring Benchmarks")
     parser.add_argument("--dataset", type=str, required=True, choices=["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"])
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials on Base model")
+    parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials per topology")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--optimizer", type=str, default="Adam")
     parser.add_argument("--cv-split", type=int, default=5, help="Number of K-Fold splits")
     parser.add_argument("--arch", type=str, default="GCN", choices=["GCN", "GIN", "GAT"])
-    parser.add_argument("--reps", type=int, default=3, help="Number of evaluation repetitions per topology")
+    parser.add_argument("--reps", type=int, default=3, help="Number of parallel evaluation repetitions")
     parser.add_argument("--out-dir", type=str, default="out", help="Directory to save gnn_results.json")
     parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for all rewiring methods")
+    parser.add_argument("--workers", type=int, default=4, help="Number of concurrent worker processes")
 
     args = parser.parse_args()
 
     execute_trials(
         args.dataset, args.seed, args.trials, args.epochs, 
-        args.optimizer, args.cv_split, args.arch, args.reps, args.out_dir, 
-        args.max_iters_rewiring
+        args.optimizer, args.cv_split, args.arch, args.reps, 
+        args.out_dir, args.max_iters_rewiring, args.workers
     )
