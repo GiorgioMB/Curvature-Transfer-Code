@@ -51,6 +51,14 @@ def _plot_hist(arr: np.ndarray, title: str, path_png: str, bins: int = 50):
     plt.savefig(path_png, dpi=150)
     plt.close()
 
+def get_allocated_cores():
+    try:
+        # Strictly binds to the SLURM/cgroup allocation on Linux
+        return len(os.sched_getaffinity(0))
+    except AttributeError:
+        # Fallback for Windows/macOS where sched_getaffinity is unavailable
+        return os.cpu_count() or 1
+
 def add_preset_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--preset",
@@ -125,6 +133,8 @@ def add_family_args(parser: argparse.ArgumentParser):
 
     # Misc
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--jobs", type=int, default=get_allocated_cores(),
+                        help="Number of parallel jobs. Defaults to all allocated/available cores.")
     parser.add_argument("--run-name", type=str, default=None, help="Name subfolder under out/")
     parser.add_argument("--bins", type=int, default=60)
     parser.add_argument("--skip-csv", action="store_true")
@@ -345,7 +355,8 @@ def main():
                 max_iters_limit=args.max_iters_ablation,
                 max_n_limit=args.max_n_ablation,
                 ablation_points=args.ablation_points,
-                auto_figures=auto_figures
+                auto_figures=auto_figures,
+                max_workers=args.jobs
             )
         except Exception as e:
             print(f"[ablation] Execution failed: {e}")
@@ -558,7 +569,8 @@ def main():
                         arch_name=arch,
                         n_reps=reps,
                         out_dir=out_dir,
-                        max_iters_rewiring=args.max_iters_rewiring
+                        max_iters_rewiring=args.max_iters_rewiring,
+                        max_workers=args.jobs
                     )
         except Exception as e:
             print(f"[gnn_experiments] GNN evaluation failed: {e}")
