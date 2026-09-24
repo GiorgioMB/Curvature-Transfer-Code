@@ -5,6 +5,8 @@ import json
 import torch
 import numpy as np
 import random
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -20,7 +22,22 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, ablation_points=None, auto_figures=False):
+def _ablation_worker(n, iters, graph_data):
+    """
+    Isolated worker function for grid parallelization.
+    n_jobs=1 is strictly required here to prevent CPU thrashing 
+    when running multiple concurrent workers on the cluster.
+    """
+    rewirer = SDRFRewiring(metric="bounds", max_iters=iters, max_candidates=n, n_jobs=1)
+    graph_copy = copy.deepcopy(graph_data)
+    
+    t0 = time.perf_counter()
+    _ = rewirer(graph_copy)
+    t1 = time.perf_counter()
+    
+    return iters, n, t1 - t0
+
+def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, ablation_points=None, auto_figures=False, max_workers=4):
     set_seed(seed)
     
     print(f"[ablation] Loading 'minesweeper' dataset...")
@@ -43,7 +60,10 @@ def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, a
     if os.path.isfile(out_file):
         print(f"[ablation] Discovered existing checkpoint. Soft-restarting from {out_file}...")
         with open(out_file, "r") as f:
-            results = json.load(f)
+            try:
+                results = json.load(f)
+            except json.JSONDecodeError:
+                results = {}
             
         for run in results.get("runs", []):
             run_n = run["max_candidates"]
@@ -63,33 +83,53 @@ def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, a
             "max_iters_limit": int(max_iters_limit),
             "runs": []
         }
-    
-    for i, iters in enumerate(iters_vals):
-        for j, n in enumerate(n_vals):
-            if (int(n), int(iters)) in completed_runs:
-                print(f"[ablation] Skipping computed state: n = {n:5d} | iters = {iters:4d}")
-                continue
-                
-            print(f"[ablation] Evaluating max_candidates (n) = {n:5d} | max_iters = {iters:4d}")
-            
-            rewirer = SDRFRewiring(metric="bounds", max_iters=int(iters), max_candidates=int(n), n_jobs=-1)
-            graph_copy = copy.deepcopy(data)
-            
-            t0 = time.perf_counter()
-            _ = rewirer(graph_copy)
-            t1 = time.perf_counter()
-            
-            elapsed = t1 - t0
-            time_matrix[i, j] = elapsed
-            
-            results["runs"].append({
-                "max_candidates": int(n),
-                "max_iters": int(iters),
-                "time_seconds": float(elapsed)
-            })
 
-            with open(out_file, "w") as f:
-                json.dump(results, f, indent=4)
+    # Queue missing grid points
+    tasks = []
+    for iters in iters_vals:
+        for n in n_vals:
+            if (int(n), int(iters)) not in completed_runs:
+                tasks.append((int(n), int(iters)))
+
+    if tasks:
+        print(f"[ablation] Dispatching {len(tasks)} evaluations across {max_workers} parallel workers...")
+        
+        # mp start method should be strictly forced in the entry point, but set here as a fallback
+        if mp.get_start_method(allow_none=True) != 'spawn':
+            mp.set_start_method('spawn', force=True)
+            
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {
+                executor.submit(_ablation_worker, n, iters, data): (n, iters)
+                for (n, iters) in tasks
+            }
+            
+            for future in as_completed(future_to_task):
+                try:
+                    iters, n, elapsed = future.result()
+                    
+                    # Update matrix
+                    i_idx = np.where(iters_vals == iters)[0][0]
+                    j_idx = np.where(n_vals == n)[0][0]
+                    time_matrix[i_idx, j_idx] = elapsed
+                    
+                    # Log result
+                    results["runs"].append({
+                        "max_candidates": n,
+                        "max_iters": iters,
+                        "time_seconds": float(elapsed)
+                    })
+                    
+                    # Atomic flush in main thread guarantees json integrity
+                    with open(out_file, "w") as f:
+                        json.dump(results, f, indent=4)
+                        
+                    print(f"[ablation] Completed: n = {n:5d} | iters = {iters:4d} | Time = {elapsed:.4f}s")
+                except Exception as exc:
+                    n, iters = future_to_task[future]
+                    print(f"[ablation] Worker failed for n={n}, iters={iters}: {exc}")
+    else:
+        print("[ablation] Grid fully computed; no new tasks dispatched.")
 
     print(f"\n[ablation] Logged execution parameters and timing metrics to {out_file}")
 
