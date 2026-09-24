@@ -124,7 +124,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--run-gnn", action="store_true", default=True, help="Execute the GNN topology rewiring experiments.")
     parser.add_argument("--only-gnn", action="store_true", help="Skip graph generation and OT benchmarks, run ONLY GNN experiments.")
     parser.add_argument("--gnn-datasets", nargs="+", type=str, default=None, help="Datasets to evaluate (e.g., ZINC minesweeper)")
-    parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN"], help="Architectures to evaluate")
+    parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN", "GAT"], help="Architectures to evaluate")
     parser.add_argument("--gnn-trials", type=int, default=None, help="Number of Optuna trials for GNNs")
     parser.add_argument("--gnn-epochs", type=int, default=None, help="Number of epochs to train GNNs")
     parser.add_argument("--gnn-cv", type=int, default=None, help="Number of CV splits for GNNs")
