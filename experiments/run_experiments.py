@@ -164,7 +164,7 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 5]]
         args.complete = args.complete or [[40]]
         
-        args.gnn_datasets = args.gnn_datasets or ["minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 2
         args.gnn_cv = args.gnn_cv or 3
@@ -191,7 +191,7 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper","Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
         args.gnn_reps = args.gnn_reps or 10
         args.gnn_cv = args.gnn_cv or 5
@@ -222,7 +222,7 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[90]]
         args.skip_plots = True
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9",  "ogbg-molhiv", "minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9",  "ogbg-molhiv", "minesweeper","Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
@@ -253,7 +253,7 @@ def handle_presets(args, seed: int):
         args.include_real = True
         args.skip_plots = True
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 100
         args.gnn_cv = args.gnn_cv or 5
