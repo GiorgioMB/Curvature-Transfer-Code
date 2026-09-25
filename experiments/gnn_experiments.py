@@ -186,6 +186,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
 
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
+            
             if metric_name == "mae":
                 criterion = torch.nn.L1Loss()
             elif metric_name == "acc":
@@ -198,7 +199,12 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
                 for batch in train_loader:
                     optimizer.zero_grad()
                     out = model(batch.x.float(), batch.edge_index, batch.batch)
-                    y = batch.y.view(out.shape).float()
+                    
+                    if metric_name == "acc":
+                        y = batch.y.long().view(-1)
+                    else:
+                        y = batch.y.view(out.shape).float()
+                        
                     loss = criterion(out, y)
                     loss.backward()
                     optimizer.step()
@@ -208,7 +214,10 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
             with torch.no_grad():
                 for batch in test_loader:
                     out = model(batch.x.float(), batch.edge_index, batch.batch)
-                    y_true.append(batch.y.view(out.shape))
+                    if metric_name == "acc":
+                        y_true.append(batch.y.view(-1))
+                    else:
+                        y_true.append(batch.y.view(out.shape))
                     y_pred.append(out)
 
             score = compute_metric(torch.cat(y_true), torch.cat(y_pred), metric_name)
