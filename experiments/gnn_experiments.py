@@ -11,6 +11,7 @@ from scipy.sparse.linalg import eigsh
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
+from tree_neighbors_match import TreeNeighborsMatch
 
 import torch
 import torch.nn.functional as F
@@ -115,27 +116,34 @@ class GNN(torch.nn.Module):
             x = self.lin(x)
         return x
 
-
 def get_dataset(name):
     if name == "ZINC":
         d_train = ZINC(root="data/ZINC", split="train", subset=True)
         d_val = ZINC(root="data/ZINC", split="val", subset=True)
         d_test = ZINC(root="data/ZINC", split="test", subset=True)
         return list(d_train) + list(d_val) + list(d_test), "graph", "mae", 1, 1
+    elif name == "Peptides-func":
+        dataset = LRGBDataset(root="data/LRGB", name="Peptides-func")
+        return list(dataset), "graph", "ap", dataset.num_node_features, 10
+    elif name == "Peptides-struct":
+        dataset = LRGBDataset(root="data/LRGB", name="Peptides-struct")
+        return list(dataset), "graph", "mae", dataset.num_node_features, 11
+    elif name == "minesweeper":
+        dataset = HeterophilousGraphDataset(root="data/Heterophilous", name="minesweeper")
+        return dataset[0], "node", "rocauc", dataset.num_node_features, 1
     elif name == "QM9":
         from torch_geometric.datasets import QM9
         dataset = QM9(root="data/QM9")
         return list(dataset), "graph", "mae", dataset.num_node_features, 19
-    elif name == "minesweeper":
-        dataset = HeterophilousGraphDataset(root="data/Heterophilous", name="minesweeper")
-        return dataset[0], "node", "rocauc", dataset.num_node_features, 1
     elif name == "ogbg-molhiv":
         from ogb.graphproppred import PygGraphPropPredDataset
         dataset = PygGraphPropPredDataset(name="ogbg-molhiv", root="data/OGB")
         return list(dataset), "graph", "rocauc", dataset.num_node_features, 1
     elif name == "Tree-NeighborsMatch":
-        raise NotImplementedError("Insert your custom Tree-NeighborsMatch loader here.")
-        # return list(dataset), "graph", "acc", dataset.num_node_features, dataset.num_classes
+        dataset = TreeNeighborsMatch(root="data/Tree-NeighborsMatch", depth=4, num_graphs=16000)
+        # Using cross-entropy (accuracy) for multi-class prediction where classes = 2^depth
+        num_classes = 2 ** dataset.depth
+        return list(dataset), "graph", "acc", dataset.num_node_features, num_classes
     
     raise ValueError(f"Unknown dataset: {name}")
 
@@ -151,6 +159,10 @@ def compute_metric(y_true, y_pred, metric_name):
     elif metric_name == "rocauc":
         if len(np.unique(y_true)) == 1: return 0.5
         return roc_auc_score(y_true, y_pred)
+    elif metric_name == "acc":
+        from sklearn.metrics import accuracy_score
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        return accuracy_score(y_true, y_pred_classes)
 
 
 def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, optim_name, seed):
@@ -174,7 +186,12 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
 
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
-            criterion = torch.nn.L1Loss() if metric_name == "mae" else torch.nn.BCEWithLogitsLoss()
+            if metric_name == "mae":
+                criterion = torch.nn.L1Loss()
+            elif metric_name == "acc":
+                criterion = torch.nn.CrossEntropyLoss()
+            else:
+                criterion = torch.nn.BCEWithLogitsLoss()
 
             for _ in range(epochs):
                 model.train()
