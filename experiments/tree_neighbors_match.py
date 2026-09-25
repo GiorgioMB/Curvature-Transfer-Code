@@ -15,7 +15,7 @@ class TreeNeighborsMatch(InMemoryDataset):
         self.depth = depth
         self.num_graphs = num_graphs
         super().__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
     @property
     def processed_file_names(self):
