@@ -191,7 +191,7 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
         args.gnn_reps = args.gnn_reps or 10
         args.gnn_cv = args.gnn_cv or 5
@@ -222,7 +222,7 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[90]]
         args.skip_plots = True
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9",  "ogbg-molhiv", "minesweeper"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
@@ -253,7 +253,7 @@ def handle_presets(args, seed: int):
         args.include_real = True
         args.skip_plots = True
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 100
         args.gnn_cv = args.gnn_cv or 5
@@ -493,7 +493,7 @@ def main():
             print(f"{now_iso_string} [run] {tag}: n={n}, m={len(edges)}", end="")
             
             time_start = time.time()
-            curv = compute_curvatures(n, edges, n_jobs=args.jobs)
+            curv = compute_curvatures(n, edges, n_jobs=args.hrg_jobs)
             time_end = time.time()
             total_seconds = int(time_end - time_start)
             h, rem = divmod(total_seconds, 3600)
