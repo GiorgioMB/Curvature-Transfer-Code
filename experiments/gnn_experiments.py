@@ -122,15 +122,21 @@ def get_dataset(name):
         d_val = ZINC(root="data/ZINC", split="val", subset=True)
         d_test = ZINC(root="data/ZINC", split="test", subset=True)
         return list(d_train) + list(d_val) + list(d_test), "graph", "mae", 1, 1
-    elif name == "Peptides-func":
-        dataset = LRGBDataset(root="data/LRGB", name="Peptides-func")
-        return list(dataset), "graph", "ap", dataset.num_node_features, 10
-    elif name == "Peptides-struct":
-        dataset = LRGBDataset(root="data/LRGB", name="Peptides-struct")
-        return list(dataset), "graph", "mae", dataset.num_node_features, 11
+    elif name == "QM9":
+        from torch_geometric.datasets import QM9
+        dataset = QM9(root="data/QM9")
+        return list(dataset), "graph", "mae", dataset.num_node_features, 19
     elif name == "minesweeper":
         dataset = HeterophilousGraphDataset(root="data/Heterophilous", name="minesweeper")
         return dataset[0], "node", "rocauc", dataset.num_node_features, 1
+    elif name == "ogbg-molhiv":
+        from ogb.graphproppred import PygGraphPropPredDataset
+        dataset = PygGraphPropPredDataset(name="ogbg-molhiv", root="data/OGB")
+        return list(dataset), "graph", "rocauc", dataset.num_node_features, 1
+    elif name == "Tree-NeighborsMatch":
+        raise NotImplementedError("Insert your custom Tree-NeighborsMatch loader here.")
+        # return list(dataset), "graph", "acc", dataset.num_node_features, dataset.num_classes
+    
     raise ValueError(f"Unknown dataset: {name}")
 
 def compute_metric(y_true, y_pred, metric_name):
@@ -334,7 +340,7 @@ if __name__ == "__main__":
     mp.set_start_method('spawn', force=True)
     
     parser = argparse.ArgumentParser(description="Parallel GNN Topology Rewiring Benchmarks")
-    parser.add_argument("--dataset", type=str, required=True, choices=["ZINC", "Peptides-func", "Peptides-struct", "minesweeper"])
+    parser.add_argument("--dataset", type=str, required=True, choices=["ZINC", "QM9", "minesweeper", "ogbg-molhiv", "Tree-NeighborsMatch"])    
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials per topology")
     parser.add_argument("--epochs", type=int, default=100)
