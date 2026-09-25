@@ -163,8 +163,8 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
             test_data = [dataset[i].to(device) for i in test_idx]
 
             from torch_geometric.loader import DataLoader
-            train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
+            train_loader = DataLoader(train_data, batch_size=512, shuffle=True)
+            test_loader = DataLoader(test_data, batch_size=512, shuffle=False)
 
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
