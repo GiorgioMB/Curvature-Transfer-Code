@@ -6,7 +6,7 @@ import copy
 import numpy as np
 import json
 import scipy.sparse as sp
-from scipy.sparse.csgraph import shortest_path
+from scipy.sparse.csgraph import shortest_path, connected_components
 from scipy.sparse.linalg import eigsh
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -50,11 +50,21 @@ def compute_topological_metrics(data_list):
             diams.append(0.0)
             avg_sps.append(0.0)
 
-        deg = np.array(A.sum(axis=1)).flatten()
-        L = sp.diags(deg) - A
+        n_components, labels = connected_components(csgraph=A, directed=False, return_labels=True)
+        lcc_mask = labels == np.argmax(np.bincount(labels))
+        A_lcc = A[lcc_mask][:, lcc_mask]
+        
+        deg = np.array(A_lcc.sum(axis=1)).flatten()
+        deg_inv_sqrt = np.divide(1.0, np.sqrt(deg), out=np.zeros_like(deg, dtype=float), where=deg > 0)
+        D_inv_sqrt = sp.diags(deg_inv_sqrt)
+        L_norm = sp.eye(A_lcc.shape[0]) - (D_inv_sqrt @ A_lcc @ D_inv_sqrt)
+
         try:
-            evals = eigsh(L.astype(float), k=2, which='SA', return_eigenvectors=False)
-            fiedlers.append(evals[1])
+            if A_lcc.shape[0] > 2:
+                evals = eigsh(L_norm.astype(float), k=2, which='SA', return_eigenvectors=False)
+                fiedlers.append(evals[1])
+            else:
+                fiedlers.append(2.0 if A_lcc.shape[0] == 2 else 0.0)
         except Exception:
             fiedlers.append(0.0)
 
@@ -276,8 +286,10 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
         "FoSR": FoSRRewiring(max_iters=max_iters_rewiring),
         "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=-1),
         "SDRF (OR)": SDRFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=-1),
+        "SDRF (BF)": SDRFRewiring(metric="c_BF", max_iters=max_iters_rewiring, n_jobs=-1),
         "BORF (Bounds)": BORFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=-1),
         "SDRF (Bounds)": SDRFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=-1),
+        "BORF (JL)": BORFRewiring(metric="jl_bounds", max_iters=max_iters_rewiring, n_jobs=-1),
     }
 
     cache_data = {}
