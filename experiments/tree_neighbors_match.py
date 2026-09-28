@@ -36,6 +36,7 @@ class TreeNeighborsMatch(InMemoryDataset):
                 edges.append([2 * i + 2, i])
             
             edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+            edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
             
             # Permutate labels and counts for the leaves
             labels = list(range(num_leaves))
