@@ -1299,15 +1299,10 @@ class CurvatureEngine:
         a_max = max(ai, aj)
         Delta = abs(ai - aj)
         
-        if sharp and cOR0_e is not None:
-            a_star = a_min if cOR0_e >= 0.0 else a_max
-        elif sharp:
-            cOR0_e = self.c_OR0_edge(eidx)
-            a_star = a_min if cOR0_e >= 0.0 else a_max
-        else:
-            a_star = a_min
+        a_star = a_min if (not sharp or phi0 >= 0.0) else a_max
             
         return float((1.0 - a_star) * phi0 - Delta)
+            
       
     # ---------- Theorem: BF -> OR upper transfer modulus ----------
 
@@ -1383,8 +1378,7 @@ class CurvatureEngine:
         cOR0_all = self._get_c_OR0_all(force_recompute=False) if sharp else None
 
         for eidx in range(M):
-            cOR0_e = float(cOR0_all[eidx]) if sharp else None
-            out[eidx] = self.varphi_BF_to_OR_edge(eidx, float(zetas[eidx]), sharp=sharp, cOR0_e=cOR0_e)
+            out[eidx] = self.varphi_BF_to_OR_edge(eidx, float(zetas[eidx]), sharp=sharp)
         return out
 
     def psi_BF_to_OR(self, zeta) -> np.ndarray:
@@ -1508,7 +1502,7 @@ class CurvatureEngine:
         
         Parameters
         - theta: scalar or vector of OR values per edge
-        - use_sign_sharpening: if True, use c_OR0's sign to choose a better alpha
+        - use_sign_sharpening: Deprecated
         
         Returns
         - Array of length M with upper bounds on c_BF per undirected edge.
@@ -1517,27 +1511,21 @@ class CurvatureEngine:
         M = len(self.edges)
         out = np.zeros(M, dtype=float)
 
-        # Optional improvement: compute c_OR0 once and reuse
-        cOR0_all = None
-        if use_sign_sharpening:
-            cOR0_all = self._get_c_OR0_all(force_recompute=False)
-
         for eidx in range(M):
             theta_e = float(thetas[eidx])
             loc = self._local_for_edge(eidx)
             i_deg, j_deg = loc.deg_i, loc.deg_j
             S = self._S(i_deg, j_deg)
             T = self._T(i_deg, j_deg)
-            K = max(0.0, self._K(i_deg, j_deg))
             ai = self._alpha(i_deg); aj = self._alpha(j_deg)
             Delta = abs(ai - aj)
-            if use_sign_sharpening:
-                cOR0 = float(cOR0_all[eidx])  # from cached vector
-                a_star = min(ai, aj) if cOR0 >= 0.0 else max(ai, aj)
-            else:
-                a_star = min(ai, aj)
+            
+            a_star = min(ai, aj) if (theta_e + Delta) >= 0.0 else max(ai, aj)
+            
+                
             denom = (1.0 - a_star)
             s0 = float('inf') if denom <= 0 else (theta_e + Delta) / denom
+            
             C4 = self._C4_edge(loc.Xi, loc.sho_max)
             s_floor = 0.5 * C4
             u_max = self._u_max_from_s0(i_deg, j_deg, s0, s=s_floor)
@@ -1562,8 +1550,8 @@ class CurvatureEngine:
     def bounds_from_OR(
         self, 
         c_OR: np.ndarray, 
-        use_sign_sharpening: bool = True, 
-        reuse_cOR0: bool = True
+        use_sign_sharpening: bool = True, #Deprecated
+        reuse_cOR0: bool = True #Deprecated
         ) -> Dict[str, np.ndarray]:
         """
         Convenience: given OR, return lower/upper bounds for BF per edge.
@@ -1572,9 +1560,6 @@ class CurvatureEngine:
         keys: "c_OR", "c_BF_lower_from_c_OR", "c_BF_upper_from_c_OR".
         """
         c_OR = self._values_to_undirected(c_OR, edge_index=self._original_edge_index, agg="mean")
-        if reuse_cOR0:
-            # warm the cache so psi_OR_to_BF uses the vectorized path
-            self._get_c_OR0_all(force_recompute=False)
         lower = self.varphi_OR_to_BF(c_OR)
         upper = self.psi_OR_to_BF(c_OR, use_sign_sharpening=use_sign_sharpening)
         return {"c_OR": c_OR, "c_BF_lower_from_c_OR": lower, "c_BF_upper_from_c_OR": upper}
