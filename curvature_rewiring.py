@@ -42,6 +42,26 @@ def _fast_pyg_edge_index(edges: set, device: torch.device) -> torch.Tensor:
     edge_index = torch.from_numpy(np.stack([rows[order], cols[order]])).to(device)
     return edge_index
 
+def _compute_jl_bounds(eng: pc.CurvatureEngine, eidx: int):
+    loc = eng._local_for_edge(eidx)
+    di, dj, t = float(loc.deg_i), float(loc.deg_j), float(loc.tri)
+    if max(di, dj) == 0:
+        return 0.0, 0.0
+        
+    K = 1.0 - 1.0 / di - 1.0 / dj if min(di, dj) > 0 else 0.0
+    zmax = t / max(di, dj)
+    zmin = t / min(di, dj) if min(di, dj) > 0 else 0.0
+    
+    L0 = zmax - max(K - zmax, 0.0) - max(K - zmin, 0.0)
+    
+    ai, aj = 1.0 / (di + 1.0), 1.0 / (dj + 1.0)
+    amin, amax = min(ai, aj), max(ai, aj)
+    beta = amin if L0 >= 0 else amax
+    Llo_JL = (1.0 - beta) * L0 - (amax - amin)
+    
+    return Llo_JL, zmax
+
+
 def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) -> np.ndarray:
     """Evaluates the requested metric for all edges."""
     M = len(eng.edges)
@@ -59,8 +79,10 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
     def _eval_func(i: int) -> float:
         if metric == "c_BF": return eng.c_BF_edge(i)
         if metric == "c_OR": return eng.c_OR_edge(i)
+        if metric == "c_JL_lower": return _compute_jl_bounds(eng, i)[0]
+        if metric == "c_JL_upper": return _compute_jl_bounds(eng, i)[1]
         raise ValueError(f"Unsupported metric identifier: '{metric}'. "
-                         "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF")
+                         "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF, c_JL_lower, c_JL_upper")
 
     if n_jobs == 1:
         return np.array([_eval_func(i) for i in range(M)], dtype=float)
@@ -75,7 +97,10 @@ def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> 
         return float(eng.varphi_BF_to_OR_edge(eidx, eng.c_BF_edge(eidx), sharp=False))
     if metric == "c_OR_upper_from_c_BF":
         return float(eng.psi_BF_to_OR_edge(eidx, eng.c_BF_edge(eidx)))
-        
+    if metric == "c_JL_lower":
+        return _compute_jl_bounds(eng, eidx)[0]
+    if metric == "c_JL_upper":
+        return _compute_jl_bounds(eng, eidx)[1]
     if metric == "c_BF": return eng.c_BF_edge(eidx)
     if metric == "c_OR": return eng.c_OR_edge(eidx)
     
@@ -203,12 +228,14 @@ class SDRFRewiring(BaseTransform):
             edges_list = list(eng.edges)
             
             # Asymmetric objective resolution
-            if self.metric == "bounds":
-                vals_add = _evaluate_metric_all(eng, "c_OR_upper_from_c_BF", n_jobs=self.n_jobs)
-                vals_rem = _evaluate_metric_all(eng, "c_OR_lower_from_c_BF", n_jobs=self.n_jobs)
+            if self.metric in ["bounds", "jl_bounds"]:
+                add_metric = "c_OR_upper_from_c_BF" if self.metric == "bounds" else "c_JL_upper"
+                rem_metric = "c_OR_lower_from_c_BF" if self.metric == "bounds" else "c_JL_lower"
+                vals_add = _evaluate_metric_all(eng, add_metric, n_jobs=self.n_jobs)
+                vals_rem = _evaluate_metric_all(eng, rem_metric, n_jobs=self.n_jobs)
                 min_idx = np.argmin(vals_add)
                 max_idx = np.argmax(vals_rem)
-                eval_metric = "c_OR_upper_from_c_BF"
+                eval_metric = rem_metric
             else:
                 vals = _evaluate_metric_all(eng, self.metric, n_jobs=self.n_jobs)
                 min_idx, max_idx = np.argmin(vals), np.argmax(vals)
@@ -296,9 +323,11 @@ class BORFRewiring(BaseTransform):
             edges_list = eng.edges
             
             # Asymmetric objective resolution
-            if self.metric == "bounds":
-                vals_add = _evaluate_metric_all(eng, "c_OR_upper_from_c_BF", n_jobs=self.n_jobs)
-                vals_rem = _evaluate_metric_all(eng, "c_OR_lower_from_c_BF", n_jobs=self.n_jobs)
+            if self.metric in ["bounds", "jl_bounds"]:
+                add_metric = "c_OR_upper_from_c_BF" if self.metric == "bounds" else "c_JL_upper"
+                rem_metric = "c_OR_lower_from_c_BF" if self.metric == "bounds" else "c_JL_lower"
+                vals_add = _evaluate_metric_all(eng, add_metric, n_jobs=self.n_jobs)
+                vals_rem = _evaluate_metric_all(eng, rem_metric, n_jobs=self.n_jobs)
                 lowest_indices = np.argsort(vals_add)[:self.batch_add * 3]
                 highest_indices = np.argsort(vals_rem)[::-1]
             else:
