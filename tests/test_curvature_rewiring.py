@@ -68,7 +68,7 @@ def test_sdrf_rewiring_adds_edges(make_square):
         metric="c_BF", 
         max_iters=1, 
         max_candidates=2, 
-        remove_edges=False, 
+        remove_edges=False,
         n_jobs=1
     )
     
@@ -91,7 +91,6 @@ def test_sdrf_rewiring_removes_edges(make_square):
         metric="c_OR_lower_from_c_BF", 
         max_iters=3, 
         max_candidates=3, 
-        remove_edges=True, 
         n_jobs=1
     )
     
@@ -150,7 +149,6 @@ def test_sdrf_path3_forms_triangle(make_path3):
         metric="c_BF", 
         max_iters=1, 
         max_candidates=3, 
-        remove_edges=False, 
         n_jobs=1
     )
     
@@ -216,7 +214,6 @@ def test_sdrf_fully_connected_terminates(make_triangle):
     transform = rewiring.SDRFRewiring(
         metric="c_BF", 
         max_iters=5, 
-        remove_edges=False, 
         n_jobs=1
     )
     
@@ -243,7 +240,6 @@ def test_sdrf_protects_bridges(torch_mod, tg_data):
         metric="c_BF", 
         max_iters=1, 
         max_candidates=0, # Disable additions to isolate removal logic
-        remove_edges=True,
         n_jobs=1
     )
     
@@ -263,7 +259,7 @@ def test_fosr_empty_graph(torch_mod):
     empty_ei = torch_mod.empty((2, 0), dtype=torch_mod.long)
     data = tg_data.Data(num_nodes=5, edge_index=empty_ei)
     
-    transform = rewiring.FoSRRewiring(max_iters=2, remove_edges=True)
+    transform = rewiring.FoSRRewiring(max_iters=2)
     new_data = transform(_clone_data(data))
     
     assert new_data.edge_index.shape[1] == 0, "Should handle empty edge sets gracefully without crashing"
@@ -276,7 +272,7 @@ def test_fosr_path3_forms_triangle(make_path3):
     data = make_path3()
     original_edges = data.edge_index.shape[1] // 2
     
-    transform = rewiring.FoSRRewiring(max_iters=1, remove_edges=False)
+    transform = rewiring.FoSRRewiring(max_iters=1)
     new_data = transform(_clone_data(data))
     new_edges = new_data.edge_index.shape[1] // 2
     
@@ -289,7 +285,7 @@ def test_fosr_square_adds_diagonal(make_square):
     data = make_square() 
     original_edges = data.edge_index.shape[1] // 2
     
-    transform = rewiring.FoSRRewiring(max_iters=1, remove_edges=False)
+    transform = rewiring.FoSRRewiring(max_iters=1)
     new_data = transform(_clone_data(data))
     new_edges = new_data.edge_index.shape[1] // 2
     
@@ -304,7 +300,7 @@ def test_fosr_fully_connected_terminates(make_triangle):
     data = make_triangle()
     original_edges = data.edge_index.shape[1] // 2
     
-    transform = rewiring.FoSRRewiring(max_iters=5, remove_edges=False)
+    transform = rewiring.FoSRRewiring(max_iters=5)
     new_data = transform(_clone_data(data))
     new_edges = new_data.edge_index.shape[1] // 2
     
@@ -324,7 +320,7 @@ def test_fosr_protects_bridges(torch_mod, tg_data):
     data = tg_data.Data(num_nodes=4, edge_index=ei)
     
     # max_iters=5 to give it ample opportunity to remove edges
-    transform = rewiring.FoSRRewiring(max_iters=5, remove_edges=True)
+    transform = rewiring.FoSRRewiring(max_iters=5)
     new_data = transform(_clone_data(data))
     
     edges = set()
@@ -354,7 +350,7 @@ def test_fosr_preserves_edge_attr(torch_mod, tg_data):
     ], dtype=torch_mod.float)
     
     data = tg_data.Data(num_nodes=3, edge_index=ei, edge_attr=attr)
-    transform = rewiring.FoSRRewiring(max_iters=1, remove_edges=False)
+    transform = rewiring.FoSRRewiring(max_iters=1)
     
     # Use PyG's native clone() to ensure edge_attr is passed to the transform
     new_data = transform(data.clone())
