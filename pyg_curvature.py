@@ -589,6 +589,120 @@ def wasserstein1_uniform(
     _, val = _transportation_simplex(cost, supply, demand)
     return float(val)
 
+
+@njit
+def _bipartite_matching_fast(n_left: int, n_right: int, indptr: np.ndarray, indices: np.ndarray) -> int:
+    """Optimized exact bipartite matching using greedy initialization and zero-allocation BFS."""
+    match_L = np.full(n_left, -1, dtype=np.int32)
+    match_R = np.full(n_right, -1, dtype=np.int32)
+    matches = 0
+    
+    # Greedy Pre-pass
+    for u in range(n_left):
+        for i in range(indptr[u], indptr[u+1]):
+            v = indices[i]
+            if match_R[v] == -1:
+                match_L[u] = v
+                match_R[v] = u
+                matches += 1
+                break
+                
+    parent = np.empty(n_left, dtype=np.int32)
+    visited_R = np.zeros(n_right, dtype=np.int32) 
+    q = np.empty(n_left, dtype=np.int32)
+    
+    epoch = 0
+    
+    # Augmenting Paths for remaining unmatched nodes
+    for root in range(n_left):
+        if match_L[root] != -1:
+            continue
+            
+        # Increment epoch
+        epoch += 1
+        head, tail = 0, 0
+        q[tail] = root
+        tail += 1
+        
+        aug_node = -1
+        
+        while head < tail and aug_node == -1:
+            u = q[head]
+            head += 1
+            
+            for i in range(indptr[u], indptr[u+1]):
+                v = indices[i]
+                
+                # O(1) check against current epoch
+                if visited_R[v] != epoch:
+                    visited_R[v] = epoch
+                    
+                    if match_R[v] == -1:
+                        aug_node = v
+                        curr_v, curr_u = v, u
+                        # Backtrack to flip matching
+                        while True:
+                            temp = match_L[curr_u]
+                            match_L[curr_u] = curr_v
+                            match_R[curr_v] = curr_u
+                            curr_v = temp
+                            if curr_v == -1:
+                                break
+                            curr_u = parent[curr_u]
+                        break
+                    else:
+                        nxt_u = match_R[v]
+                        parent[nxt_u] = u
+                        q[tail] = nxt_u
+                        tail += 1
+                        
+        if aug_node != -1:
+            matches += 1
+            
+    return matches
+
+def _compute_matching_smax_fast(Ui: Set[int], Uj: Set[int], neighbors: List[Set[int]], deg_i: int, deg_j: int) -> Tuple[int, float]:
+    if not Ui or not Uj:
+        return 0, 0.0
+
+    Uj_map = {v: idx for idx, v in enumerate(Uj)}
+    
+    n_left = len(Ui)
+    n_right = len(Uj)
+    
+    indptr = np.zeros(n_left + 1, dtype=np.int32)
+    indices = []
+    
+    app = indices.append  
+    edge_count = 0
+    
+    for k, u in enumerate(Ui):
+        nu = neighbors[u]
+        
+        if len(nu) < n_right:
+            for v in nu:
+                if v in Uj_map:
+                    app(Uj_map[v])
+                    edge_count += 1
+        else:
+            for v in Uj_map:
+                if v in nu:
+                    app(Uj_map[v])
+                    edge_count += 1
+                    
+        indptr[k+1] = edge_count
+        
+    if edge_count == 0:
+        return 0, 0.0
+    
+    # Ensure you are calling the optimized Numba function here
+    m = _bipartite_matching_fast(n_left, n_right, indptr, np.array(indices, dtype=np.int32))
+    
+    max_deg = deg_i if deg_i > deg_j else deg_j
+    smax = float(m) / max_deg if max_deg > 0 else 0.0
+    
+    return m, smax
+
 # ------------------------------
 # Core engine
 # ------------------------------
@@ -625,6 +739,8 @@ class EdgeLocal:
     Xi: int
     varpi_max: int
     sho_max: int
+    m: int
+    smax: float
 
 
 # === Parallelization additions: global worker state ===
@@ -683,6 +799,7 @@ def _edge_metrics_worker(
     deg_j = int(deg_arr[j])
     sho_max = varpi_max * max(deg_i, deg_j)
     C4 = (float(Xi) / float(sho_max)) if Xi > 0 and sho_max > 0 else 0.0
+    _, smax = _compute_matching_smax_fast(Ui, Uj, neighbors, deg_i, deg_j)
 
     # Balanced Forman curvature (see c_BF_edge for the formula derivation)
     if min(deg_i, deg_j) == 1:
@@ -716,8 +833,7 @@ def _edge_metrics_worker(
 
     # Pack in the order expected by the collector
     return (eidx, float(deg_i), float(deg_j), float(tri), float(Xi), float(sho_max),
-            float(C4), float(c_BF), float(c_OR), float(c_OR0), float(Const), float(Slope))
-
+            float(C4), float(smax), float(c_BF), float(c_OR), float(c_OR0), float(Const), float(Slope))
 
 class CurvatureEngine:
     """
@@ -881,9 +997,9 @@ class CurvatureEngine:
         deg_i = self.deg[i]
         deg_j = self.deg[j]
         sho_max = varpi_max * max(deg_i, deg_j)
-
+        m, smax = _compute_matching_smax_fast(Ui, Uj, self.neighbors, deg_i, deg_j)
         return EdgeLocal(i=i, j=j, deg_i=deg_i, deg_j=deg_j, Ni=Ni, Nj=Nj, C=Ci, Ui=Ui, Uj=Uj,
-                         tri=tri, Xi=Xi, varpi_max=varpi_max, sho_max=sho_max)
+                         tri=tri, Xi=Xi, varpi_max=varpi_max, sho_max=sho_max, m=m, smax=smax)
 
     # ------------------------------ Distances ------------------------------
     def _values_to_undirected(
@@ -1287,8 +1403,7 @@ class CurvatureEngine:
         Zscr = max(0.0, (zeta_e - S - C4) / T)
         Zbar_max = Zscr / dmax
         Zbar_min = Zscr / dmin
-        leftover = max(0.0, zeta_e - S - T * (dmin - 1.0))
-        S_floor = 0.5 * max(C4, leftover)
+        S_floor = loc.smax
         
         phi0 = ( -max(0.0, K - Zbar_max - S_floor)
                  -max(0.0, K - Zbar_min - S_floor)
@@ -1527,7 +1642,7 @@ class CurvatureEngine:
             s0 = float('inf') if denom <= 0 else (theta_e + Delta) / denom
             
             C4 = self._C4_edge(loc.Xi, loc.sho_max)
-            s_floor = 0.5 * C4
+            s_floor = loc.smax
             u_max = self._u_max_from_s0(i_deg, j_deg, s0, s=s_floor)
             out[eidx] = S + T * u_max + C4
         return out
@@ -1621,6 +1736,7 @@ class CurvatureEngine:
         Xi = np.zeros(M, dtype=float)
         sho = np.zeros(M, dtype=float)
         C4 = np.zeros(M, dtype=float)
+        smax_arr = np.zeros(M, dtype=float)
         cBF = np.zeros(M, dtype=float)
         cOR = np.zeros(M, dtype=float)
         cOR0 = np.zeros(M, dtype=float)
@@ -1688,7 +1804,7 @@ class CurvatureEngine:
             chunksize = int(np.clip(target_block_time / per_edge, 64, 8192))
                 
             for item in ex.map(_edge_metrics_worker, range(M), chunksize=chunksize):
-                idx, di, dj, t, xi, sho_i, c4, bf, orv, or0, cst, slp = item
+                idx, di, dj, t, xi, sho_i, c4, s_max, bf, orv, or0, cst, slp = item
                 i = int(idx)
                 deg_i[i] = di
                 deg_j[i] = dj
@@ -1696,6 +1812,7 @@ class CurvatureEngine:
                 Xi[i] = xi
                 sho[i] = sho_i
                 C4[i] = c4
+                smax_arr[i] = s_max
                 cBF[i] = bf
                 cOR[i] = orv
                 cOR0[i] = or0
@@ -1710,6 +1827,7 @@ class CurvatureEngine:
             "Xi": Xi,
             "sho_max": sho,
             "C4": C4,
+            "smax": smax_arr,
             "c_BF": cBF,
             "c_OR": cOR,
             "c_OR0": cOR0,
