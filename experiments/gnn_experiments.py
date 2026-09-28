@@ -122,7 +122,10 @@ class GNN(torch.nn.Module):
         if self.task == "graph":
             if batch is None:
                 batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
-            x = self.pool(x, batch)
+            if x.size(1) == 35: 
+                x = x[x[:, -1] == 1.0]
+            else:
+                x = self.pool(x, batch)
             x = self.lin(x)
         return x
 
@@ -187,12 +190,12 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
 
     if task == "graph":
         for train_idx, test_idx in kf.split(dataset):
-            train_data = [dataset[i].to(device) for i in train_idx]
-            test_data = [dataset[i].to(device) for i in test_idx]
+            train_data = [dataset[i] for i in train_idx]
+            test_data = [dataset[i] for i in test_idx]
 
             from torch_geometric.loader import DataLoader
-            train_loader = DataLoader(train_data, batch_size=512, shuffle=True)
-            test_loader = DataLoader(test_data, batch_size=512, shuffle=False)
+            train_loader = DataLoader(train_data, batch_size=512, shuffle=True, pin_memory=True, persistent_workers=True)
+            test_loader = DataLoader(test_data, batch_size=512, shuffle=False, pin_memory=True, persistent_workers=True)
 
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
@@ -207,6 +210,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
             for _ in range(epochs):
                 model.train()
                 for batch in train_loader:
+                    batch = batch.to(device)
                     optimizer.zero_grad()
                     out = model(batch.x.float(), batch.edge_index, batch.batch)
                     
@@ -223,6 +227,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
             y_true, y_pred = [], []
             with torch.no_grad():
                 for batch in test_loader:
+                    batch = batch.to(device)
                     out = model(batch.x.float(), batch.edge_index, batch.batch)
                     if metric_name == "acc":
                         y_true.append(batch.y.view(-1))
@@ -264,7 +269,7 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
 
     return np.mean(scores)
 
-def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring, max_workers=4):
+def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring, max_workers=4, pipelines_to_run=None):
     checkpoint_file = os.path.join(out_dir, "gnn_results.json")
     results = {}
     if os.path.exists(checkpoint_file):
@@ -284,14 +289,15 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
     pipelines = {
         "Base": None,
         "FoSR": FoSRRewiring(max_iters=max_iters_rewiring),
-        "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=-1),
-        "SDRF (OR)": SDRFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=-1),
-        "SDRF (BF)": SDRFRewiring(metric="c_BF", max_iters=max_iters_rewiring, n_jobs=-1),
-        "BORF (Bounds)": BORFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=-1),
-        "SDRF (Bounds)": SDRFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=-1),
-        "BORF (JL)": BORFRewiring(metric="jl_bounds", max_iters=max_iters_rewiring, n_jobs=-1),
+        "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=1),
+        "SDRF (OR)": SDRFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=1),
+        "SDRF (BF)": SDRFRewiring(metric="c_BF", max_iters=max_iters_rewiring, n_jobs=1),
+        "BORF (Bounds)": BORFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=1),
+        "SDRF (Bounds)": SDRFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=1),
+        "BORF (JL)": BORFRewiring(metric="jl_bounds", max_iters=max_iters_rewiring, n_jobs=1),
     }
-
+    if pipelines_to_run:
+        pipelines = {k: v for k, v in pipelines.items() if k in pipelines_to_run}
     cache_data = {}
     
     for pipe_name, transform in pipelines.items():
@@ -308,7 +314,16 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
             if task == "node":
                 cache_data[pipe_name] = transform(copy.deepcopy(raw_dataset))
             else:
-                cache_data[pipe_name] = [transform(copy.deepcopy(g)) for g in raw_dataset]
+                cache_data[pipe_name] = []
+                ctx = mp.get_context('spawn')                
+                def _graph_gen():
+                    for g in raw_dataset:
+                        yield g.clone() if hasattr(g, 'clone') else copy.deepcopy(g)
+                        
+                with ctx.Pool(processes=max_workers, maxtasksperchild=50) as pool:
+                    for out_g in pool.imap(transform, _graph_gen(), chunksize=50):
+                        # Clone incoming graphs to sever PyTorch shared-memory ties
+                        cache_data[pipe_name].append(out_g.clone())
             rewire_time = time.perf_counter() - t0
 
         diam, avg_sp, fiedler = compute_topological_metrics(cache_data[pipe_name])
@@ -346,18 +361,8 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
             best_params, target_dataset, task, metric_name, cv_split, epochs, optimizer_name
         )
 
-        if max_workers == 1:
-            for rep in range(n_reps):
-                scores.append(worker_func(seed=seed + rep))
-        else:
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                future_to_rep = {
-                    executor.submit(worker_func, seed=seed + rep): rep 
-                    for rep in range(n_reps)
-                }
-                for future in as_completed(future_to_rep):
-                    scores.append(future.result())
-
+        for rep in range(n_reps):
+            scores.append(worker_func(seed=seed + rep))
         avg, std = float(np.mean(scores)), float(np.std(scores))
         
         results[run_key][pipe_name] = {
