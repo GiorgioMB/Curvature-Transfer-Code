@@ -125,6 +125,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--only-gnn", action="store_true", help="Skip graph generation and OT benchmarks, run ONLY GNN experiments.")
     parser.add_argument("--gnn-datasets", nargs="+", type=str, default=None, help="Datasets to evaluate (e.g., ZINC minesweeper)")
     parser.add_argument("--gnn-archs", nargs="+", type=str, default=None, choices=["GCN", "GIN", "GAT"], help="Architectures to evaluate")
+    parser.add_argument("--gnn-pipelines", nargs="+", type=str, default=None, help="Specific rewiring pipelines to evaluate")
     parser.add_argument("--gnn-trials", type=int, default=None, help="Number of Optuna trials for GNNs")
     parser.add_argument("--gnn-epochs", type=int, default=None, help="Number of epochs to train GNNs")
     parser.add_argument("--gnn-cv", type=int, default=None, help="Number of CV splits for GNNs")
@@ -570,7 +571,8 @@ def main():
                         n_reps=reps,
                         out_dir=out_dir,
                         max_iters_rewiring=args.max_iters_rewiring,
-                        max_workers=args.jobs
+                        max_workers=args.jobs,
+                        pipelines_to_run=args.gnn_pipelines
                     )
         except Exception as e:
             print(f"[gnn_experiments] GNN evaluation failed: {e}")
