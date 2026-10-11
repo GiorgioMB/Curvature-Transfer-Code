@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 def assert_bounded(val, lower, upper, name="Value", eidx=None):
+    """Helper to enforce strict bounding with clear violation messages."""
     tol = 1e-9
     ctx = f" on edge {eidx}" if eidx is not None else ""
     assert val + tol >= lower, (
@@ -31,6 +32,7 @@ def test_bounds_BF_to_OR_and_back(graph_fixture, request, new_engine):
     c_BF = base["c_BF"]
     c_OR = base["c_OR"]
 
+    # 1. Given BF -> bounds on OR must strictly contain actual OR
     bf_bounds = eng.bounds_from_BF(c_BF)
     or_lower = bf_bounds["c_OR_lower_from_c_BF"]
     or_upper = bf_bounds["c_OR_upper_from_c_BF"]
@@ -40,6 +42,7 @@ def test_bounds_BF_to_OR_and_back(graph_fixture, request, new_engine):
     for i in range(len(c_OR)):
         assert_bounded(c_OR[i], or_lower[i], or_upper[i], name="c_OR (Lazy)", eidx=i)
 
+    # 2. Given OR -> bounds on BF must strictly contain actual BF
     or_bounds = eng.bounds_from_OR(c_OR)
     bf_lower = or_bounds["c_BF_lower_from_c_OR"]
     bf_upper = or_bounds["c_BF_upper_from_c_OR"]
@@ -59,6 +62,7 @@ def test_theta_envelope_consistency(make_square, new_engine):
 
 @pytest.mark.parametrize("graph_fixture", ["make_triangle", "make_square", "make_star4"])
 def test_smax_replaces_c4_correctly(graph_fixture, request, new_engine):
+    """Verifies the algorithmic fix: exact smax matching must be mathematically <= the C4 heuristic capacity."""
     data = request.getfixturevalue(graph_fixture)()
     eng = new_engine(data, n_jobs=1)
     base = eng.compute_all(n_jobs=1)
@@ -73,6 +77,7 @@ def test_smax_replaces_c4_correctly(graph_fixture, request, new_engine):
         # smax must be a valid proportion [0, 1]
         assert 0.0 <= smax_arr[i] <= 1.0 + 1e-12
         
+        # The exact matching proportion (smax) can never exceed the theoretical maximum capacity (C4)
         assert smax_arr[i] <= c4_arr[i] + 1e-12, (
             f"SMAX VIOLATION on edge {i}:\n"
             f"  smax (exact):   {smax_arr[i]}\n"
