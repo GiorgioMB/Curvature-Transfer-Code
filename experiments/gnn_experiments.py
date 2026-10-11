@@ -12,7 +12,12 @@ import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from tree_neighbors_match import TreeNeighborsMatch
-
+import multiprocessing
+import scipy.linalg as spl
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINConv, GATConv, global_add_pool, global_mean_pool
@@ -54,17 +59,29 @@ def compute_topological_metrics(data_list):
         lcc_mask = labels == np.argmax(np.bincount(labels))
         A_lcc = A[lcc_mask][:, lcc_mask]
         
+        # Enforce perfect symmetry to prevent eigensolver failure
+        A_lcc = A_lcc.maximum(A_lcc.T)
+        
         deg = np.array(A_lcc.sum(axis=1)).flatten()
         deg_inv_sqrt = np.divide(1.0, np.sqrt(deg), out=np.zeros_like(deg, dtype=float), where=deg > 0)
         D_inv_sqrt = sp.diags(deg_inv_sqrt)
-        L_norm = sp.eye(A_lcc.shape[0]) - (D_inv_sqrt @ A_lcc @ D_inv_sqrt)
-
+        
+        N = A_lcc.shape[0]
         try:
-            if A_lcc.shape[0] > 2:
-                evals = eigsh(L_norm.astype(float), k=2, which='SA', return_eigenvectors=False)
-                fiedlers.append(evals[1])
+            if N > 2:
+                if N <= 1000:
+                    # Exact dense solver for small/medium graphs
+                    L_norm = sp.eye(N) - (D_inv_sqrt @ A_lcc @ D_inv_sqrt)
+                    evals = spl.eigh(L_norm.toarray(), eigvals_only=True)
+                    fiedlers.append(evals[1])
+                else:
+                    # Sparse solver for massive graphs (solve M for LARGEST roots)
+                    M = D_inv_sqrt @ A_lcc @ D_inv_sqrt
+                    evals = eigsh(M.astype(float), k=2, which='LA', return_eigenvectors=False)
+                    fiedler_val = 1.0 - evals[0]
+                    fiedlers.append(max(0.0, fiedler_val))
             else:
-                fiedlers.append(2.0 if A_lcc.shape[0] == 2 else 0.0)
+                fiedlers.append(2.0 if N == 2 else 0.0)
         except Exception:
             fiedlers.append(0.0)
 
@@ -178,9 +195,17 @@ def compute_metric(y_true, y_pred, metric_name):
         return accuracy_score(y_true, y_pred_classes)
 
 
-def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, optim_name, seed):
+def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epochs, optim_name, seed, num_splits_to_run=None, device_id=None):    
     set_seed(seed)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device_id is not None and torch.cuda.is_available():
+        device = torch.device(f'cuda:{device_id}')
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+    if isinstance(dataset_or_path, str):
+        dataset = torch.load(dataset_or_path)
+    else:
+        dataset = dataset_or_path
     
     model_params = model_params.copy()
     lr = model_params.pop("lr", 0.01)
@@ -189,13 +214,14 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
     scores = []
 
     if task == "graph":
-        for train_idx, test_idx in kf.split(dataset):
+        for fold_idx, (train_idx, test_idx) in enumerate(kf.split(dataset)):
             train_data = [dataset[i] for i in train_idx]
             test_data = [dataset[i] for i in test_idx]
 
+            
             from torch_geometric.loader import DataLoader
-            train_loader = DataLoader(train_data, batch_size=512, shuffle=True, pin_memory=True, persistent_workers=True)
-            test_loader = DataLoader(test_data, batch_size=512, shuffle=False, pin_memory=True, persistent_workers=True)
+            train_loader = DataLoader(train_data, batch_size=512, shuffle=True, pin_memory=True, num_workers=0, persistent_workers=False)
+            test_loader = DataLoader(test_data, batch_size=512, shuffle=False, pin_memory=True, num_workers=0, persistent_workers=False)
 
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
@@ -207,10 +233,12 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
             else:
                 criterion = torch.nn.BCEWithLogitsLoss()
 
-            for _ in range(epochs):
+            for epoch in range(epochs):
+                if (epoch + 1) % 10 == 0:
+                    print(f"  [Fold] Graph Task Epoch {epoch + 1}/{epochs} complete.", flush=True)
                 model.train()
                 for batch in train_loader:
-                    batch = batch.to(device)
+                    batch = batch.to(device, non_blocking=True)
                     optimizer.zero_grad()
                     out = model(batch.x.float(), batch.edge_index, batch.batch)
                     
@@ -237,11 +265,13 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
 
             score = compute_metric(torch.cat(y_true), torch.cat(y_pred), metric_name)
             scores.append(score)
+            if num_splits_to_run is not None and (fold_idx + 1) >= num_splits_to_run:
+                break
 
     elif task == "node":
         data = dataset.to(device)
         indices = np.arange(data.num_nodes)
-        for train_idx, test_idx in kf.split(indices):
+        for fold_idx, (train_idx, test_idx) in enumerate(kf.split(indices)):
             model = GNN(**model_params).to(device)
             optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
             criterion = torch.nn.BCEWithLogitsLoss()
@@ -251,7 +281,9 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
             train_mask[train_idx] = True
             test_mask[test_idx] = True
 
-            for _ in range(epochs):
+            for epoch in range(epochs):
+                if (epoch + 1) % 50 == 0:
+                    print(f"  [Fold] Node Task Epoch {epoch + 1}/{epochs} complete.", flush=True)
                 model.train()
                 optimizer.zero_grad()
                 out = model(data.x.float(), data.edge_index)
@@ -266,6 +298,8 @@ def run_cv_fold(model_params, dataset, task, metric_name, cv_split, epochs, opti
                 y = data.y.view(-1, 1).float()
                 score = compute_metric(y[test_mask], out[test_mask], metric_name)
                 scores.append(score)
+                if num_splits_to_run is not None and (fold_idx + 1) >= num_splits_to_run:
+                    break
 
     return np.mean(scores)
 
@@ -302,7 +336,7 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
     
     for pipe_name, transform in pipelines.items():
         if pipe_name in results[run_key] and len(results[run_key][pipe_name].get("scores", [])) >= n_reps:
-            print(f"Skipping {pipe_name} - already evaluated.")
+            print(f"Skipping {pipe_name}, already evaluated.")
             continue
             
         print(f"\nPreparing topology: {pipe_name}")
@@ -321,48 +355,81 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
                         yield g.clone() if hasattr(g, 'clone') else copy.deepcopy(g)
                         
                 with ctx.Pool(processes=max_workers, maxtasksperchild=50) as pool:
-                    for out_g in pool.imap(transform, _graph_gen(), chunksize=50):
-                        # Clone incoming graphs to sever PyTorch shared-memory ties
+                    total_graphs = len(raw_dataset)
+                    for i, out_g in enumerate(pool.imap(transform, _graph_gen(), chunksize=50)):
+                        if (i + 1) % max(1, total_graphs // 10) == 0:
+                            print(f"  [Topology] Rewired {i + 1}/{total_graphs} graphs...", flush=True)
                         cache_data[pipe_name].append(out_g.clone())
             rewire_time = time.perf_counter() - t0
 
         diam, avg_sp, fiedler = compute_topological_metrics(cache_data[pipe_name])
         topology_metrics = {"Diameter": float(diam), "Avg_SP": float(avg_sp), "Fiedler": float(fiedler)}
         
-        print(f"Optuna hyperparameter search for {pipe_name} ({n_trials} trials)...")
-        def objective(trial):
-            params = {
-                "in_channels": in_c,
-                "hidden_channels": trial.suggest_categorical("hidden_channels", [32, 64, 128]),
-                "out_channels": out_c,
-                "num_layers": trial.suggest_int("num_layers", 2, 5),
-                "dropout": trial.suggest_float("dropout", 0.0, 0.5),
-                "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
-                "arch": arch_name,
-                "task": task
-            }
-            return run_cv_fold(params, cache_data[pipe_name], task, metric_name, cv_split, epochs, optimizer_name, seed=seed)
+        pipe_name_safe = pipe_name.replace(" ", "_").replace("(", "").replace(")", "")
+        params_file = os.path.join(out_dir, f"optuna_params_{dataset_name}_{arch_name}_{pipe_name_safe}.json")
         
+        if os.path.exists(params_file):
+            print(f"  [Optuna] Found cached hyperparameters at {params_file}. Skipping search.", flush=True)
+            with open(params_file, 'r') as f:
+                best_params = json.load(f)
+        else:
+            print(f"Optuna hyperparameter search for {pipe_name} ({n_trials} trials)...", flush=True)
+            def objective(trial):
+                params = {
+                    "in_channels": in_c,
+                    "hidden_channels": trial.suggest_categorical("hidden_channels", [32, 64, 128]),
+                    "out_channels": out_c,
+                    "num_layers": trial.suggest_int("num_layers", 2, 5),
+                    "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+                    "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
+                    "arch": arch_name,
+                    "task": task
+                }
+                return run_cv_fold(params, cache_data[pipe_name], task, 
+                                    metric_name, cv_split, epochs, 
+                                    optimizer_name, seed=seed, 
+                                    num_splits_to_run=(cv_split // 2) + 1)
+            
 
-        direction = "minimize" if metric_name == "mae" else "maximize"
-        study = optuna.create_study(direction=direction)
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-        study.optimize(objective, n_trials=n_trials)
-        
-        best_params = study.best_params
-        best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
+            direction = "minimize" if metric_name == "mae" else "maximize"
+            study = optuna.create_study(direction=direction)
+            optuna.logging.set_verbosity(optuna.logging.INFO)
+            study.optimize(objective, n_trials=n_trials, n_jobs=4)
+            
+            best_params = study.best_params
+            best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
+            
+            with open(params_file, 'w') as f:
+                json.dump(best_params, f, indent=4)
+            print(f"  [Optuna] Saved best hyperparameters to {params_file}.", flush=True)
 
         print(f"Executing {n_reps} parallel repetitions for {pipe_name}...")
         scores = []
         target_dataset = cache_data[pipe_name]
         
-        worker_func = partial(
-            run_cv_fold,
-            best_params, target_dataset, task, metric_name, cv_split, epochs, optimizer_name
-        )
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pt")
+        os.close(tmp_fd)
+        torch.save(target_dataset, tmp_path)
+        
+        num_gpus = torch.cuda.device_count()
+        safe_workers = min(max_workers, max(1, num_gpus * 2)) 
 
-        for rep in range(n_reps):
-            scores.append(worker_func(seed=seed + rep))
+        def worker_rep_wrapper(rep):
+            gpu_id = rep % num_gpus if num_gpus > 0 else None
+            return run_cv_fold(
+                best_params, tmp_path, task, metric_name, cv_split, 
+                epochs, optimizer_name, seed=seed + rep, device_id=gpu_id
+            )
+
+        with ProcessPoolExecutor(max_workers=safe_workers) as executor:
+            futures = [executor.submit(worker_rep_wrapper, rep) for rep in range(n_reps)]
+            for fut in as_completed(futures):
+                 scores.append(fut.result())
+                
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
         avg, std = float(np.mean(scores)), float(np.std(scores))
         
         results[run_key][pipe_name] = {
