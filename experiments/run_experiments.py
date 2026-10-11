@@ -111,7 +111,8 @@ def add_family_args(parser: argparse.ArgumentParser):
     parser.add_argument("--bench-max-n", type=int, default=20000, help="Maximum number of nodes for the runtime benchmark.")
     parser.add_argument("--bench-graphs", type=int, default=100, help="Total number of graph instances evaluated in the benchmark.")
     parser.add_argument("--bench-seed", type=int, default=42, help="Random seed for the benchmark generation.")
-
+    parser.add_argument("--bench-families", nargs="+", type=str, default=None, choices=["ER", "BA", "RGG"], help="Graph families to benchmark.")
+    
     # Ablation controls
     parser.add_argument("--only-ablation", action="store_true", help="Skip everything and run ONLY the SDRF ablation study on minesweeper.")
     parser.add_argument("--no-ablation", action="store_true", help="Skip the SDRF ablation phase during standard runs.")
@@ -151,6 +152,7 @@ def handle_presets(args, seed: int):
 
     if args.preset == "tiny":
         args.bench_max_n = 1000
+        args.bench_families = args.bench_families or ["ER"]
 
         args.max_iters_ablation = args.max_iters_ablation or 10
         args.max_n_ablation = args.max_n_ablation or 100
@@ -177,6 +179,7 @@ def handle_presets(args, seed: int):
 
     elif args.preset == "small":
         args.bench_max_n = 5000
+        args.bench_families = args.bench_families or ["ER"]
 
         args.max_n_ablation = args.max_n_ablation or 200
         args.max_iters_ablation = args.max_iters_ablation or 20
@@ -201,6 +204,7 @@ def handle_presets(args, seed: int):
         args.max_iters_rewiring = args.max_iters_rewiring or 10
 
     elif args.preset == "medium":
+        args.bench_families = args.bench_families or ["ER", "BA"]
         args.bench_max_n = 10000
 
         args.max_n_ablation = args.max_n_ablation or 400
@@ -227,12 +231,13 @@ def handle_presets(args, seed: int):
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
-        args.gnn_trials = args.gnn_trials or 30
-        args.gnn_epochs = args.gnn_epochs or 200
+        args.gnn_trials = args.gnn_trials or 20
+        args.gnn_epochs = args.gnn_epochs or 100
         args.max_iters_rewiring = args.max_iters_rewiring or 30
 
     elif args.preset == "paper":
         args.bench_max_n = 15000
+        args.bench_families = args.bench_families or ["ER", "BA", "RGG"]
 
         args.max_n_ablation = args.max_n_ablation or 800
         args.max_iters_ablation = args.max_iters_ablation or 40
@@ -256,10 +261,10 @@ def handle_presets(args, seed: int):
         
         args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
-        args.gnn_reps = args.gnn_reps or 100
+        args.gnn_reps = args.gnn_reps or 50
         args.gnn_cv = args.gnn_cv or 5
-        args.gnn_trials = args.gnn_trials or 100
-        args.gnn_epochs = args.gnn_epochs or 500
+        args.gnn_trials = args.gnn_trials or 50
+        args.gnn_epochs = args.gnn_epochs or 200
         args.max_iters_rewiring = args.max_iters_rewiring or 60
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
@@ -331,17 +336,19 @@ def main():
     def run_benchmark_phase():
         try:
             import benchmark_run
-            bench_csv = os.path.join(out_dir, "benchmark_runtime_scaling.csv")
-            print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling -> {bench_csv}")
-            benchmark_run.run_benchmark(
-                output_csv=bench_csv,
-                max_workers=args.jobs,
-                min_n=args.bench_min_n,
-                n_benchmark=args.bench_max_n,
-                num_graphs=args.bench_graphs,
-                seed=args.bench_seed,
-                auto_figures=getattr(args, "auto-figures", False)
-            )
+            families = getattr(args, "bench_families", None) or ["ER"]
+            for fam in families:
+                bench_csv = os.path.join(out_dir, f"{fam.lower()}_benchmark_runtime_scaling.csv")
+                print(f"\n[benchmark] Executing OT vs. Bounds runtime scaling for {fam} -> {bench_csv}")
+                benchmark_run.run_benchmark(
+                    graph_family=fam,
+                    max_workers=args.jobs,
+                    min_n=args.bench_min_n,
+                    n_benchmark=args.bench_max_n,
+                    num_graphs=args.bench_graphs,
+                    seed=args.bench_seed,
+                    auto_figures=getattr(args, "auto-figures", False)
+                )
         except Exception as e:
             print(f"[benchmark] Runtime benchmark failed: {e}")
 
