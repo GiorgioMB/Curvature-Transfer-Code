@@ -501,6 +501,8 @@ def _transportation_simplex(
     - Numerical tolerances are conservative to keep results stable.
     """
     m, n = cost.shape
+    candidate_max = 100 * m * n
+    max_iter = max(max_iter, candidate_max)
     assert supply.shape[0] == m and demand.shape[0] == n
     if not np.isclose(supply.sum(), demand.sum(), atol=1e-9):
         raise ValueError("Supply and demand must sum to the same total.")
@@ -1759,6 +1761,7 @@ class CurvatureEngine:
                     ThC[eidx] = cst
                     ThS[eidx] = slp
                     C4[eidx] = self._C4_edge(loc.Xi, loc.sho_max)
+                    smax_arr[eidx] = loc.smax
                     
             target_tasks_per_worker = 8    
             bs = max(8192, (M + resolved_max_workers*target_tasks_per_worker - 1) //
