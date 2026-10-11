@@ -142,7 +142,7 @@ def generate_runtime_plot(csv_path: str, out_pdf: str, out_png: str):
     print(f"[benchmark] Rendered scaling plot -> {out_pdf}")
 
 def run_benchmark(
-    output_csv: str = "data/benchmark_runtime_scaling.csv", 
+    graph_family: str = "ER",
     max_workers: int = None,
     min_n: int = 50,
     n_benchmark: int = 20000,
@@ -152,9 +152,11 @@ def run_benchmark(
 ):
     if max_workers is None:
         max_workers = os.cpu_count() or 1
-
-    out_dir = os.path.dirname(output_csv)
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "benchmark")
     os.makedirs(out_dir, exist_ok=True)
+    
+    # Construct the full path for the CSV
+    output_csv = os.path.join(out_dir, f"benchmark_{graph_family.upper()}_n_{min_n}_to_{n_benchmark}.csv")
     set_deterministic_seed(seed)
     
     completed_n = set()
@@ -182,9 +184,24 @@ def run_benchmark(
             continue
             
         p = float(0.2 * (50 / n) ** 0.6)
-        print(f"--- Benchmarking n={n}, p={p:.5f} ---")
         
-        _, edges = models.erdos_renyi(n, p, seed=seed)
+        if graph_family.upper() == "ER":
+            param_val = p
+            print(f"--- Benchmarking n={n}, p={param_val:.5f} ---")
+            _, edges = models.erdos_renyi(n, param_val, seed=seed)
+        elif graph_family.upper() == "BA":
+            # Scale m to match ER expected average degree (d ≈ np for ER, d ≈ 2m for BA)
+            param_val = max(1, int(round((n * p) / 2)))
+            print(f"--- Benchmarking n={n}, m={param_val} ---")
+            _, edges = models.barabasi_albert(n, param_val, seed=seed)
+        elif graph_family.upper() == "RGG":
+            # Scale r to match ER expected average degree (d ≈ n*pi*r^2 for RGG, d ≈ np for ER)
+            param_val = float(np.sqrt(p / np.pi))
+            print(f"--- Benchmarking n={n}, r={param_val:.5f} ---")
+            _, edges = models.random_geometric(n, param_val, seed=seed)
+        else:
+            raise ValueError(f"Unknown graph family: {graph_family}")
+            
         edge_index = make_edge_index(n, edges)
         data = Data(num_nodes=n, edge_index=edge_index)
         
@@ -230,11 +247,11 @@ def run_benchmark(
         
         with open(output_csv, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([n, p, M, f"{avg_deg:.2f}", f"{t_ot_total:.4f}", f"{t_ours_total:.4f}", f"{t_bf_total:.4f}", f"{t_prior_total:.4f}"])
-
+            writer.writerow([n, param_val, M, f"{avg_deg:.2f}", f"{t_ot_total:.4f}", f"{t_ours_total:.4f}", f"{t_bf_total:.4f}", f"{t_prior_total:.4f}"])
+            
     if auto_figures:
-        out_pdf = os.path.join(out_dir, "runtime_scaling_loglog.pdf")
-        out_png = os.path.join(out_dir, "runtime_scaling_loglog.png")
+        out_pdf = os.path.join(out_dir, f"runtime_scaling_loglog_{graph_family.lower()}.pdf")
+        out_png = os.path.join(out_dir, f"runtime_scaling_loglog_{graph_family.lower()}.png")
         generate_runtime_plot(output_csv, out_pdf, out_png)
 
     return output_csv
