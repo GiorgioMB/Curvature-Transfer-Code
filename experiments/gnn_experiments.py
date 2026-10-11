@@ -203,7 +203,7 @@ def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epoc
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
     if isinstance(dataset_or_path, str):
-        dataset = torch.load(dataset_or_path)
+        dataset = torch.load(dataset_or_path, weights_only=False)
     else:
         dataset = dataset_or_path
     
@@ -302,6 +302,13 @@ def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epoc
                     break
 
     return np.mean(scores)
+
+def global_worker_rep_wrapper(rep, num_gpus, best_params, tmp_path, task, metric_name, cv_split, epochs, optimizer_name, seed):
+    gpu_id = rep % num_gpus if num_gpus > 0 else None
+    return run_cv_fold(
+        best_params, tmp_path, task, metric_name, cv_split, 
+        epochs, optimizer_name, seed=seed + rep, device_id=gpu_id
+    )
 
 def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring, max_workers=4, pipelines_to_run=None):
     checkpoint_file = os.path.join(out_dir, "gnn_results.json")
@@ -415,15 +422,21 @@ def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_spli
         num_gpus = torch.cuda.device_count()
         safe_workers = min(max_workers, max(1, num_gpus * 2)) 
 
-        def worker_rep_wrapper(rep):
-            gpu_id = rep % num_gpus if num_gpus > 0 else None
-            return run_cv_fold(
-                best_params, tmp_path, task, metric_name, cv_split, 
-                epochs, optimizer_name, seed=seed + rep, device_id=gpu_id
-            )
+        worker_fn = partial(
+            global_worker_rep_wrapper,
+            num_gpus=num_gpus,
+            best_params=best_params,
+            tmp_path=tmp_path,
+            task=task,
+            metric_name=metric_name,
+            cv_split=cv_split,
+            epochs=epochs,
+            optimizer_name=optimizer_name,
+            seed=seed
+        )
 
         with ProcessPoolExecutor(max_workers=safe_workers) as executor:
-            futures = [executor.submit(worker_rep_wrapper, rep) for rep in range(n_reps)]
+            futures = [executor.submit(worker_fn, rep) for rep in range(n_reps)]
             for fut in as_completed(futures):
                  scores.append(fut.result())
                 
