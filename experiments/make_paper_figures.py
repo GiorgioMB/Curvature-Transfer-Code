@@ -1,810 +1,471 @@
-"""
-Paper-ready figure generator for curvature experiments.
-
-This module scans experiment output folders created by experiments/run_experiments.py
-and saves a small set of high-resolution, publication-ready figures into a dedicated subfolder
-figures_paper/ inside each run directory.
-
-What this script expects to find
-- A run directory containing:
-  * manifest.json with a list of runs under the key "runs". Each run item
-    should include at least a "tag" or "name" that identifies a graph/model
-    instance (e.g., "er_n2000_p0.01"). Optionally, a pretty display name can
-    be provided under "title" or "pretty".
-  * One edge-level CSV per tag, typically named {tag}_edges.csv (dots are
-    normalized to underscores). These CSVs are produced by run_experiments.py
-    and contain columns describing per-edge curvatures, bounds, and metadata.
-
-Figures produced per tag (when the required columns exist)
-- A histogram of observed Ollivier--Ricci curvature (c_OR) with optional
-  overlays for transfers/bounds and envelope quantities.
-- A histogram of observed Balanced Forman curvature (c_BF) with optional
-  overlays for OR->BF transfer bounds.
-- A scatter plot of c_BF vs c_OR including an observed quantile ribbon and
-  the median of the BF->OR lower-transfer across binned c_BF.
-
-Key columns used from the CSV (if present)
-- c_OR, c_BF, c_OR0: observed curvatures (edgewise).
-- cOR_lower_from_cBF, cOR_upper_from_cBF: BF->OR transfer bounds (edgewise).
-- cBF_lower_from_cOR, cBF_upper_from_cOR: OR->BF transfer bounds (edgewise).
-- env_upper: transport envelope upper value (edgewise).
-- Theta_at_t: Theta evaluated at the implied transport weight (edgewise).
-The reader is robust to variations in column letter case.
-
-Usage (CLI)
-- Generate figures for all run directories under a root folder:
-    python experiments/make_paper_figures.py --out-root experiments/out
-- Generate figures only for a specific run folder name:
-    python experiments/make_paper_figures.py --out-root experiments/out --run-name my_run
-
-Rendering details
-- The script selects the non-interactive Matplotlib backend (Agg) and applies a
-  consistent set of rcParams for paper-friendly styling. All figures are saved
-  as PNG files inside figures_paper/ under each run directory.
-"""
-
-import argparse
-import json
 import os
-import glob
-import shutil
-from typing import Dict, Optional, Tuple, Sequence
-
+import time
+import argparse
+import random
+import copy
 import numpy as np
-import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib import ticker
-from matplotlib.patches import Patch
-import re
-
-# ==============================
-# Style
-# ==============================
-
-_PAPER_RC = {
-    "figure.dpi": 220,
-    "savefig.dpi": 320,
-    "font.size": 12.0,
-    "axes.titlesize": 14,
-    "axes.labelsize": 12.5,
-    "legend.fontsize": 11.0,
-    "xtick.labelsize": 11.0,
-    "ytick.labelsize": 11.0,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "grid.linestyle": ":",
-    "grid.alpha": 0.28,
-}
-# Neutral palette
-COL_OBS   = "#4C78A8"
-COL_LOWER = "#54A24B"
-COL_UPPER = "#E45756"
-COL_ENV   = "#F58518"
-COL_THETA = "#B279A2"
-COL_QRIB  = "#333333"  # almost black
-
-def _apply_style():
-    """
-    Apply a consistent, paper-friendly Matplotlib style via rcParams.
-
-    This sets DPI, font sizes, spines visibility, and a light grid. It should be
-    called before creating any figures to ensure consistent styling.
-    """
-    for k, v in _PAPER_RC.items():
-        matplotlib.rcParams[k] = v
-
-# ==============================
-# Notation and display names (LaTeX-friendly via mathtext)
-# ==============================
-
-DISPLAY = {
-    "c_OR":    r"$\mathfrak{c}_{\mathrm{OR}}$",
-    "c_BF":    r"$\mathfrak{c}_{\mathrm{BF}}$",
-    "c_OR0":   r"$\mathfrak{c}_{\mathrm{OR\text{-}0}}$",
-    "Theta_at_t": r"$\Theta_\alpha(\triangle)$",
-    "env_upper":  r"transport envelope (upper)",
-}
-
-# CSV columns expected from run_experiments / util_curvature
-EXPECTED_COLS = [
-    "u","v","deg_i","deg_j","triangle","Xi","sho_max",
-    "c_BF","c_OR","c_OR0","Theta_const","Theta_slope","Theta_at_t","env_upper",
-    "cOR_lower_from_cBF","cOR_upper_from_cBF","cBF_lower_from_cOR","cBF_upper_from_cOR",
-]
-
-# ==============================
-# I/O helpers
-# ==============================
-
-def _load_manifest(
-        run_root: str
-        ) -> Dict:
-    """
-    Load and parse the manifest.json that describes available runs.
-
-    Parameters
-    - run_root: Path to a run directory containing manifest.json.
-
-    Returns
-    - A Python dict parsed from the JSON file.
-
-    Raises
-    - FileNotFoundError if the manifest file does not exist.
-    """
-    man_path = os.path.join(run_root, "manifest.json")
-    if not os.path.exists(man_path):
-        raise FileNotFoundError(f"No manifest.json in {run_root}")
-    with open(man_path, "r") as f:
-        return json.load(f)
-
-def _edge_csv_for_tag(
-        run_root: str, 
-        tag: str
-        ) -> Optional[str]:
-    """
-    Return the path to the edge CSV for a given run tag, if present.
-
-    Files are normally named {tag}_edges.csv where periods in tag are
-    replaced with underscores. As a fallback, the function returns the first
-    file in the directory that starts with the normalized base and ends with
-    edges.csv.
-
-    Parameters
-    - run_root: Run directory that should contain CSVs.
-    - tag: Identifier string for a graph/model instance.
-
-    Returns
-    - The absolute path to the CSV file if found, else None.
-    """
-    # run_experiments writes {base_name}_edges.csv in the run folder.
-    base = tag.replace('.', '_')
-    cand = os.path.join(run_root, f"{base}_edges.csv")
-    if os.path.exists(cand):
-        return cand
-    # fallback: pick the first *edges.csv that starts with base
-    gl = glob.glob(os.path.join(run_root, f"{base}*edges.csv"))
-    return gl[0] if gl else None
-
-def _read_edges(
-        path_csv: str
-        ) -> pd.DataFrame:
-    """
-    Read a per-edge CSV and normalize column names when possible.
-
-    The reader is tolerant to letter-casing differences by attempting to map
-    lower-cased versions of known column names back to the expected names.
-
-    Parameters
-    - path_csv: Path to the edge-level CSV file.
-
-    Returns
-    - A pandas DataFrame with original or normalized column names.
-    """
-    df = pd.read_csv(path_csv)
-    # Be robust to lower-cased headers
-    missing = [c for c in EXPECTED_COLS if c not in df.columns]
-    if missing:
-        lower_map = {c.lower(): c for c in df.columns}
-        new_cols = {}
-        for c in missing:
-            if c.lower() in lower_map:
-                new_cols[lower_map[c.lower()]] = c
-        if new_cols:
-            df = df.rename(columns=new_cols)
-    return df
-
-# ==============================
-# Pretty naming for tags (for titles and file names)
-# ==============================
-
-def _pretty_from_tag(tag: str) -> str:
-    """
-    Short, publication-friendly display name for a run tag.
-    Examples:
-      - "er_n2000_p0.01" -> "ER $n=2000$, $p=0.01$"
-      - "ws_n1000_k10_b0.2" -> "WS $n=1000$, $k=10$, $\\beta=0.2$"
-      - "ba_n5000_m3" -> "BA $n=5000$, $m=3$"
-      - "real_karate" -> "Real: Zachary Karate"
-    """
-    t = tag
-
-    # ER: er_n{n}_p{p}
-    m = re.fullmatch(r"er_n(\d+)_p([0-9.]+)", t)
-    if m:
-        n, p = m.groups()
-        return rf"ER $n={int(n)}$, $p={p}$"
-
-    # WS: ws_n{n}_k{k}_b{beta}
-    m = re.fullmatch(r"ws_n(\d+)_k(\d+)_b([0-9.]+)", t)
-    if m:
-        n, k, b = m.groups()
-        return rf"WS $n={int(n)}$, $k={int(k)}$, $\beta={b}$"
-
-    # BA: ba_n{n}_m{m}
-    m = re.fullmatch(r"ba_n(\d+)_m(\d+)", t)
-    if m:
-        n, m2 = m.groups()
-        return rf"BA $n={int(n)}$, $m={int(m2)}$"
-
-    # RG: rg_n{n}_r{r}
-    m = re.fullmatch(r"rg_n(\d+)_r([0-9.]+)", t)
-    if m:
-        n, r = m.groups()
-        return rf"RG $n={int(n)}$, $r={r}$"
-
-
-    # 2-block SBM: sbm2_n{n}_pin{p_in}_pout{p_out}
-    m = re.fullmatch(r"sbm2_n(\d+)_pin([0-9.]+)_pout([0-9.]+)", t)
-    if m:
-        n, pin, pout = m.groups()
-        return rf"SBM2 $n={int(n)}$, $p_{{\mathrm{{in}}}}={pin}$, $p_{{\mathrm{{out}}}}={pout}$"
-
-    # HRG: hrg_n{n}_R{R}_a{alpha}_T{T}
-    m = re.fullmatch(r"hrg_n(\d+)_R([0-9.]+)_a([0-9.]+)_T([0-9.]+)", t)
-    if m:
-        n, R, a, T = m.groups()
-        return rf"HRG $n={int(n)}$, $R={R}$, $\alpha={a}$, $T={T}$"
-
-    # Canonical families
-    m = re.fullmatch(r"cycle_n(\d+)", t)
-    if m:
-        (n,) = m.groups()
-        return rf"Cycle $C_{{{int(n)}}}$"
-
-    m = re.fullmatch(r"torus_(\d+)x(\d+)", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Torus $C_{{{int(m1)}}}\times C_{{{int(n1)}}}$"
-    m = re.fullmatch(r"torus_(\d+)x(\d+)_edges", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Torus $C_{{{int(m1)}}}\times C_{{{int(n1)}}}$"
-
-    m = re.fullmatch(r"rreg_n(\d+)_d(\d+)", t)
-    if m:
-        n, d = m.groups()
-        return rf"d-Reg $n={int(n)}$, $d={int(d)}$"
-
-    m = re.fullmatch(r"grid_(\d+)x(\d+)", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Grid ${{{int(m1)}\times {int(n1)}}}$"
-
-    m = re.fullmatch(r"grid_(\d+)x(\d+)_edges", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Grid ${{{int(m1)}\times {int(n1)}}}$"
-
-    m = re.fullmatch(r"tree_d(\d+)_h(\d+)", t)
-    if m:
-        d, h = m.groups()
-        return rf"{int(d)}-ary Tree ($h={int(h)}$)"
-
-    m = re.fullmatch(r"complete_n(\d+)", t)
-    if m:
-        (n,) = m.groups()
-        return rf"Complete $K_{{{int(n)}}}$"
-
-    # Real networks (remove/avoid Wikipedia mention)
-    m = re.fullmatch(r"real_(.+)", t)
-    if m:
-        name = m.group(1)
-        # Any 'wiki' variant maps to a generic label; no Wikipedia mention
-        if re.search(r"wiki", name, flags=re.IGNORECASE):
-            return "Real network"
-
-        pretty_map = {
-            "karate": "Zachary Karate",
-            "jazz": "Jazz Musicians",
-            "power_grid": "US Power Grid",
-            "yeast": "Yeast TF",
-            "arxiv": "arXiv hep-ph citations",
-        }
-        return f"Real: {pretty_map.get(name, name.replace('_', ' '))}"
-
-    # Fallback
-    return t
-
-
-# ==============================
-# Plot primitives
-# ==============================
-
-def _hist_with_bands(
-        ax: plt.Axes, 
-        obs: np.ndarray,
-        lower: Optional[np.ndarray] = None,
-        upper: Optional[np.ndarray] = None,
-        env: Optional[np.ndarray] = None,
-        theta: Optional[np.ndarray] = None,
-        lower_label: Optional[str] = None,
-        upper_label: Optional[str] = None,
-        bins: int | str = "auto",
-        title: str = "", 
-        xlabel: str = ""
-        ) -> None:
-    """
-    Plot a histogram of observed values with optional overlay distributions.
-
-    Parameters
-    - ax: A Matplotlib Axes to draw on.
-    - obs: Observed values (e.g., edgewise c_OR or c_BF).
-    - lower, upper: Optional arrays for lower/upper transfer distributions
-      (e.g., BF->OR or OR->BF bounds per edge). Each is plotted as a step outline.
-    - env: Optional transport envelope values (edgewise) drawn as a step outline.
-    - theta: Optional Theta-at-t values (edgewise) drawn as a step outline.
-    - lower_label, upper_label: Legend labels for the overlay distributions.
-    - bins: Number of histogram bins or plt bins option.
-    - title: Axes title.
-    - xlabel: X-axis label.
-    """
-    # Observed distribution
-    ax.hist(obs, bins=bins, density=True, alpha=0.5, color=COL_OBS, label="Observed")
-    # Lower/upper transfer distributions (edgewise)
-    if lower is not None and len(lower) > 0:
-        ax.hist(lower, bins=bins, density=True, histtype="step", linewidth=1.6, color=COL_LOWER,
-                label=(lower_label or "L. Transfer Dist."))
-    if upper is not None and len(upper) > 0:
-        ax.hist(upper, bins=bins, density=True, histtype="step", linewidth=1.6, color=COL_UPPER,
-                label=(upper_label or "U. Transfer Dist."))
-    # Envelope / Theta distributions
-    if env is not None and len(env) > 0:
-        ax.hist(env, bins=bins, density=True, histtype="step", linewidth=1.3, color=COL_ENV, alpha=0.5,
-                label="Transport Envelope Dist.")
-    if theta is not None and len(theta) > 0:
-        ax.hist(theta, bins=bins, density=True, histtype="step", linewidth=1.1, color=COL_THETA, alpha=0.5,
-                label=DISPLAY["Theta_at_t"] + " Dist.")
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Count")
-    ax.grid(True)
-    ax.legend(frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5,
-                loc='best')
-    
-def _binned_quantiles(
-        x: np.ndarray, 
-        y: np.ndarray, 
-        nbins: int = 28,
-        qs=(0.1, 0.5, 0.9)
-        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Compute per-bin quantiles of y after binning by x.
-
-    This function masks non-finite values, bins x into nbins equal-width
-    bins (or a single tiny bin in degenerate cases), and computes quantiles of
-    y in each bin. If no data remain after masking, it returns four empty
-    arrays to simplify downstream handling.
-
-    Parameters
-    - x: Values to bin on (e.g., c_BF).
-    - y: Values whose quantiles are computed per bin (e.g., c_OR).
-    - nbins: Target number of bins.
-    - qs: Quantiles to compute per bin.
-
-    Returns
-    - (centers, qL, qM, qH): Bin centers and the requested lower/median/upper
-      quantiles arrays (NaN for bins with no data).
-    """
-    mask = np.isfinite(x) & np.isfinite(y)
-    x, y = x[mask], y[mask]
-    if len(x) == 0:
-        # No data: return empty arrays consistently
-        return (np.array([]),) * 4
-
-    lo, hi = float(np.min(x)), float(np.max(x))
-    if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
-        # Degenerate: single bin
-        bins = np.array([lo, lo + 1e-6])
-    else:
-        bins = np.linspace(lo, hi, nbins + 1)
-
-    nb = len(bins) - 1                 # <-- ACTUAL number of bins
-    idx = np.clip(np.digitize(x, bins) - 1, 0, nb - 1)
-    centers = 0.5 * (bins[:-1] + bins[1:])
-
-    qL = np.full(nb, np.nan)
-    qM = np.full(nb, np.nan)
-    qH = np.full(nb, np.nan)
-    for b in range(nb):
-        vals = y[idx == b]
-        if len(vals) > 0:
-            qL[b], qM[b], qH[b] = np.quantile(vals, qs)
-
-    return centers, qL, qM, qH
-
-
-def _scatter_ribbon(ax: plt.Axes,
-                    bf: np.ndarray, 
-                    orv: np.ndarray,
-                    lower_from_bf: Optional[np.ndarray] = None,
-                    upper_from_bf: Optional[np.ndarray] = None,
-                    nbins: int | str = "auto",
-                    ) -> None:
-    """
-    Scatter plot of bf vs or with an observed quantile ribbon.
-
-    The function optionally overlays the median of the predicted lower and/or
-    upper transfer (BF->OR) after binning by bf. If the dataset is very large, a
-    fixed-size random subsample is used for the scatter for clarity.
-
-    Parameters
-    - ax: A Matplotlib Axes to draw on.
-    - bf: Edgewise Balanced Forman curvature values.
-    - orv: Edgewise Ollivier--Ricci curvature values.
-    - lower_from_bf: Optional edgewise BF->OR lower transfer predictions.
-    - upper_from_bf: Optional edgewise BF->OR upper transfer predictions.
-    - nbins: Number of bins to use for computing the quantile ribbon or plt bins option.
-    """
-    # Subsample if large for visual clarity
-    n = len(bf)
-    if n > 25000:
-        rng = np.random.default_rng(1234)
-        sel = rng.choice(n, size=25000, replace=False)
-        bf_s, or_s = bf[sel], orv[sel]
-        low_s = lower_from_bf[sel] if lower_from_bf is not None else None
-    else:
-        bf_s, or_s, low_s = bf, orv, lower_from_bf
-    
-    nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
-    ax.scatter(bf_s, or_s, s=6, alpha=0.28, color=COL_OBS, linewidth=0, label="Edges (sample)")
-    # Observed quantile ribbon of OR|BF
-    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
-    if len(xc) > 0:
-        ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7, label=r"[median $\mathfrak{c}_{\mathrm{OR}} ] \mid \mathfrak{c}_{\mathrm{BF}}$")
-        ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--")
-        ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--")
-    # Predicted BF->OR lower (median per bin)
-    if low_s is not None:
-        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
-                label=r"L. Transfer >(BF$\rightarrow$OR): median")
-    # Predicted BF->OR upper (median per bin)
-    if upper_from_bf is not None:
-        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
-                label=r"U. Transfer (BF$\rightarrow$OR): median")
-    ax.set_title(r"Comparison between $\mathfrak{c}_{\mathrm{BF}}$ and $\mathfrak{c}_{\mathrm{OR}}$")
-    ax.set_xlabel("Curvature " + DISPLAY["c_BF"])
-    ax.set_ylabel("Curvature " + DISPLAY["c_OR"])
-    ax.grid(True)
-    ax.legend(frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5,
-                loc='best')
-    
-    
-def _scatter_ribbon_hist(ax: plt.Axes,
-                    bf: np.ndarray,
-                    orv: np.ndarray,
-                    lower_from_bf: Optional[np.ndarray] = None,
-                    upper_from_bf: Optional[np.ndarray] = None,
-                    nbins: int | str = "auto") -> None:
-    
-    h, _, _, quad = ax.hist2d(bf, orv, bins=30, cmap="Blues")
-    quad.set_zorder(0)
-    
-    cbar = ax.figure.colorbar(quad, ax=ax)
-    hmax = int(np.nanmax(h)) if np.isfinite(np.nanmax(h)) else 0
-    quad.set_clim(0, hmax)
-    cbar.ax.yaxis.set_major_locator(ticker.MultipleLocator(1 if hmax <= 10 else 10))
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
-    cbar.update_normal(quad)
-    
-    nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
-
-    sample_proxy = Patch(facecolor=plt.get_cmap("Blues")(0.6), edgecolor="none", label="Edges (sample)")
-
-    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
-    if len(xc) > 0:
-        ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7,
-                label=r"[median $\mathfrak{c}_{\mathrm{OR}} ] \mid \mathfrak{c}_{\mathrm{BF}}$", zorder=3)
-        ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
-        ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
-
-    if lower_from_bf is not None:
-        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
-                label=r"L. Transfer (BF$\rightarrow$OR): median", zorder=3)
-
-    if upper_from_bf is not None:
-        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
-                label=r"U. Transfer (BF$\rightarrow$OR): median", zorder=3)
-
-    ax.set_title(r"Comparison between $\mathfrak{c}_{\mathrm{BF}}$ and $\mathfrak{c}_{\mathrm{OR}}$")
-    ax.set_xlabel("Curvature " + DISPLAY["c_BF"])
-    ax.set_ylabel("Curvature " + DISPLAY["c_OR"])
-    ax.grid(True)
-    ax.relim(); ax.autoscale()
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend([sample_proxy] + handles, ["Edges (sample)"] + labels,
-              frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5, loc='best')
-    
-    
-def _quantile_lines(ax: plt.Axes,
-                    arrays: Sequence[np.ndarray],
-                    labels: Optional[Sequence[str]] = None,
-                    xlabel: str = r"Quantile $p$",
-                    ylabel: Optional[str] = None) -> None:
-    """
-    Plot sorted values of each array against quantile p on a shared y-scale.
-    """
-    arrs = [np.asarray(a).ravel() for a in arrays if a is not None]
-    if len(arrs) == 0:
-        return
-
-    # Shared y-scale across all lines
-    ymin = min(np.nanmin(a) for a in arrs)
-    ymax = max(np.nanmax(a) for a in arrs)
-    ax.set_ylim(ymin, ymax)
-
-    # Quantile lines
-    for i, a in enumerate(arrs):
-        p = np.linspace(0.0, 1.0, len(a), endpoint=True)
-        lab = labels[i] if (labels is not None and i < len(labels)) else f"Series {i+1}"
-        ax.plot(p, np.sort(a), linewidth=1.6, zorder=3, label=lab)
-
-    # Axes/legend styling (mirror helper style)
-    ax.set_xlim(0.0, 1.0)
-    ax.set_title(r"Quantile profiles across series")
-    ax.set_xlabel(xlabel)
-    if ylabel:
-        ax.set_ylabel(ylabel)
-    ax.grid(True)
-    ax.relim(); ax.autoscale(axis="x", tight=True)
-
-    handles, labs = ax.get_legend_handles_labels()
-    ax.legend(handles, labs, frameon=False, ncol=1, handlelength=1.0,
-              handletextpad=0.5, loc="best")
-
-
-# ==============================
-# Figure orchestration per run
-# ==============================
-
-def _make_run_figures(
-        run_root: str, 
-        tag: str, 
-        pretty: Optional[str], 
-        bins: int | str = "auto",
-        keep_existing: bool = False
-        ) -> None:
-    """
-    Generate and save figures for a single run tag within run_root.
-
-    This loads the associated edge CSV, extracts the columns required for each
-    figure, and writes up to three PNG files in run_root/figures_paper/:
-    - fig_cOR_hist__{tag}.png
-    - fig_cBF_hist__{tag}.png
-    - fig_scatter_cBF_cOR__{tag}.png
-
-    Parameters
-    - run_root: Path to a run directory containing the manifest and CSVs.
-    - tag: The run identifier used to locate the edge CSV.
-    - pretty: Optional pre-specified display name for titles; falls back to a
-      derived pretty name from the tag.
-    - bins: Number of histogram bins or plt bins option.
-    - keep_existing: Currently used by the caller to control directory setup;
-      the function itself always writes or overwrites files by name.
-    """
-    csv_path = _edge_csv_for_tag(run_root, tag)
-    if csv_path is None or not os.path.exists(csv_path):
-        print(f"[make_paper_figures] No edge CSV for '{tag}' under {run_root}; skipping.")
-        return
-    df = _read_edges(csv_path)
-
-    as_np = lambda name: pd.to_numeric(df[name], errors="coerce").to_numpy() if name in df.columns else None
-
-    cOR     = as_np("c_OR")
-    cBF     = as_np("c_BF")
-    cOR_lo  = as_np("cOR_lower_from_cBF")
-    cOR_up  = as_np("cOR_upper_from_cBF")
-    cBF_lo  = as_np("cBF_lower_from_cOR")
-    cBF_up  = as_np("cBF_upper_from_cOR")
-    env_up  = as_np("env_upper")
-    theta_t = as_np("Theta_at_t")
-
-    fig_dir = os.path.join(run_root, "figures_paper")
-    safe_tag = tag.replace("/", "-").replace(" ", "_").replace(".", "_")
-    pretty_tag = pretty or _pretty_from_tag(tag)
-
-    # 1) OR histogram (short title; run name as suptitle)
-    if cOR is not None:
-        fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        _hist_with_bands(ax, obs=cOR, lower=cOR_lo, upper=cOR_up, env=env_up, theta=theta_t,
-                            lower_label=r"BF$\rightarrow$OR L. Dist.", upper_label=r"BF$\rightarrow$OR U. Dist.",
-                            bins=bins, title=f"Olivier-Ricci Curvature", xlabel="Curvature " + DISPLAY["c_OR"])
-        fig.suptitle(pretty_tag, y=0.90, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-        filename = os.path.join(fig_dir, f"fig_cOR_hist__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-        
-        # quantile plot    
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _quantile_lines(
-            ax,
-            arrays=[cOR, cOR_lo, cOR_up],
-            labels=[
-                r"OR Curvature " + DISPLAY["c_OR"],
-                r"BF$\rightarrow$OR lower (dist.)",
-                r"BF$\rightarrow$OR upper (dist.)"
-            ],
-            xlabel=r"Quantile $p$",
-            ylabel="Curvature " + DISPLAY["c_OR"],
-        )
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_cOR_quantile__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-
-    # 2) BF histogram (short title; run name as suptitle)
-    if cBF is not None:
-        fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        _hist_with_bands(ax, obs=cBF, lower=cBF_lo, upper=cBF_up, env=None, theta=None,
-                            lower_label=r"OR$\rightarrow$BF lower (dist.)", upper_label=r"OR$\rightarrow$BF upper (dist.)",
-                            bins=bins, title="Balanced Forman Curvature", xlabel="Curvature " + DISPLAY["c_BF"])
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-        filename = os.path.join(fig_dir, f"fig_cBF_hist__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-
-        # quantile plot
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _quantile_lines(
-            ax,
-            arrays=[cBF, cBF_lo, cBF_up],
-            labels=[
-                r"BF Curvature " + DISPLAY["c_BF"],
-                r"OR$\rightarrow$BF lower (dist.)",
-                r"OR$\rightarrow$BF upper (dist.)"
-            ],
-            xlabel=r"Quantile $p$",
-            ylabel="Curvature " + DISPLAY["c_BF"],
-        )
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_cBF_quantile__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-
-    # 3) Scatter BF vs OR (short title already set inside helper; keep short suptitle)
-    if (cBF is not None) and (cOR is not None):
-        # plot with many points
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _scatter_ribbon(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-        
-        # plot with 2D hist
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _scatter_ribbon_hist(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}_2d_Hist.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-                        
-        
-def generate_paper_figures(
-        out_root: Optional[str] = None, 
-        run_name: Optional[str] = None, 
-        bins: int = 60, 
-        keep_existing: bool = False
-        ) -> None:
-    """
-    Generate figures for all runs under out_root or for a specific run_name.
-
-    Parameters
-    - out_root: Directory that contains one or more run subfolders (defaults to
-      experiments/out relative to this file if None).
-    - run_name: Optional subfolder name within out_root to process (if None,
-      all run subfolders are processed).
-    - bins: Number of bins for histograms.
-    - keep_existing: If False (default), the figures_paper/ directory is
-      recreated for a clean slate; if True, existing figures are kept and new
-      ones overwrite by filename only.
-    """
-    _apply_style()
-    base_root = out_root or os.path.join(os.path.dirname(__file__), "out")
-    if not os.path.isdir(base_root):
-        print(f"[make_paper_figures] Output base not found: {base_root}")
-        return
-    if run_name is None:
-        run_dirs = [d for d in glob.glob(os.path.join(base_root, "*")) if os.path.isdir(d)]
-        if not run_dirs:
-            print(f"[make_paper_figures] No run dirs in {base_root}")
-            return
-        for rd in run_dirs:
-            _generate_for_run_dir(rd, bins=bins, keep_existing=keep_existing)
-    else:
-        rd = os.path.join(base_root, run_name)
-        _generate_for_run_dir(rd, bins=bins, keep_existing=keep_existing)
-
-def _generate_for_run_dir(
-        run_dir: str, 
-        bins: int | str = "auto",
-        keep_existing: bool = False
-        ) -> None:
-    """
-    Generate figures for every run entry listed in one run directory.
-
-    This function reads manifest.json, prepares/cleans the figures_paper/
-    directory according to keep_existing, and then calls
-    _make_run_figures(...) for each run entry.
-
-    Parameters
-    - run_dir: Absolute path to a specific run directory containing outputs.
-    - bins: Number of bins for histograms or plt bins option.
-    - keep_existing: Whether to keep an existing figures_paper/ directory.
-    """
-    man = _load_manifest(run_dir)
-    runs = man.get("runs", [])
-    if not runs:
-        print(f"[make_paper_figures] Empty manifest in {run_dir}")
-        return
-    print(f"[make_paper_figures] Generating figures for {len(runs)} run(s) in {os.path.basename(run_dir)}")
-    
-    # Handle directory creation/deletion once per run directory
-    fig_dir = os.path.join(run_dir, "figures_paper")
-    if os.path.exists(fig_dir):
-        if not keep_existing:
-            print(f"[make_paper_figures] Removing existing figures directory: {fig_dir}")
-            shutil.rmtree(fig_dir)
-            os.makedirs(fig_dir, exist_ok=True)
+import json
+import scipy.sparse as sp
+from scipy.sparse.csgraph import shortest_path, connected_components
+from scipy.sparse.linalg import eigsh
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
+from tree_neighbors_match import TreeNeighborsMatch
+import multiprocessing
+import scipy.linalg as spl
+try:
+    multiprocessing.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+import torch
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv, GINConv, GATConv, global_add_pool, global_mean_pool
+from torch_geometric.datasets import ZINC, LRGBDataset, HeterophilousGraphDataset
+from torch_geometric.utils import to_scipy_sparse_matrix
+from sklearn.model_selection import KFold
+from sklearn.metrics import average_precision_score, mean_absolute_error, roc_auc_score
+import optuna
+
+from curvature_rewiring import SDRFRewiring, BORFRewiring, FoSRRewiring
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def compute_topological_metrics(data_list):
+    if not isinstance(data_list, list):
+        data_list = [data_list]
+
+    diams, avg_sps, fiedlers = [], [], []
+    for data in data_list:
+        A = to_scipy_sparse_matrix(data.edge_index, num_nodes=data.num_nodes).tocsr()
+        dist_matrix = shortest_path(csgraph=A, directed=False, unweighted=True)
+        upper_tri = dist_matrix[np.triu_indices_from(dist_matrix, k=1)]
+        valid_dists = upper_tri[np.isfinite(upper_tri)]
+
+        if len(valid_dists) > 0:
+            diams.append(np.max(valid_dists))
+            avg_sps.append(np.mean(valid_dists))
         else:
-            print(f"[make_paper_figures] Keeping existing figures directory: {fig_dir}")
-    else:
-        print(f"[make_paper_figures] Creating new figures directory: {fig_dir}")
-        os.makedirs(fig_dir, exist_ok=True)
+            diams.append(0.0)
+            avg_sps.append(0.0)
+
+        n_components, labels = connected_components(csgraph=A, directed=False, return_labels=True)
+        lcc_mask = labels == np.argmax(np.bincount(labels))
+        A_lcc = A[lcc_mask][:, lcc_mask]
+        
+        # Enforce perfect symmetry to prevent eigensolver failure
+        A_lcc = A_lcc.maximum(A_lcc.T)
+        
+        deg = np.array(A_lcc.sum(axis=1)).flatten()
+        deg_inv_sqrt = np.divide(1.0, np.sqrt(deg), out=np.zeros_like(deg, dtype=float), where=deg > 0)
+        D_inv_sqrt = sp.diags(deg_inv_sqrt)
+        
+        N = A_lcc.shape[0]
+        try:
+            if N > 2:
+                if N <= 1000:
+                    # Exact dense solver for small/medium graphs
+                    L_norm = sp.eye(N) - (D_inv_sqrt @ A_lcc @ D_inv_sqrt)
+                    evals = spl.eigh(L_norm.toarray(), eigvals_only=True)
+                    fiedlers.append(evals[1])
+                else:
+                    # Sparse solver for massive graphs (solve M for LARGEST roots)
+                    M = D_inv_sqrt @ A_lcc @ D_inv_sqrt
+                    evals = eigsh(M.astype(float), k=2, which='LA', return_eigenvectors=False)
+                    fiedler_val = 1.0 - evals[0]
+                    fiedlers.append(max(0.0, fiedler_val))
+            else:
+                fiedlers.append(2.0 if N == 2 else 0.0)
+        except Exception:
+            fiedlers.append(0.0)
+
+    return np.mean(diams), np.mean(avg_sps), np.mean(fiedlers)
+
+
+class GNN(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers, arch="GCN", task="graph", dropout=0.5):
+        super().__init__()
+        self.task = task
+        self.dropout = dropout
+        self.layers = torch.nn.ModuleList()
+
+        if arch == "GCN":
+            self.layers.append(GCNConv(in_channels, hidden_channels))
+            for _ in range(num_layers - 2):
+                self.layers.append(GCNConv(hidden_channels, hidden_channels))
+            self.layers.append(GCNConv(hidden_channels, hidden_channels if task == "graph" else out_channels))
+
+        elif arch == "GIN":
+            self.layers.append(GINConv(torch.nn.Sequential(
+                torch.nn.Linear(in_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels)
+            )))
+            for _ in range(num_layers - 2):
+                self.layers.append(GINConv(torch.nn.Sequential(
+                    torch.nn.Linear(hidden_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels)
+                )))
+            self.layers.append(GINConv(torch.nn.Sequential(
+                torch.nn.Linear(hidden_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels if task == "graph" else out_channels)
+            )))
+
+        elif arch == "GAT":
+            heads = 4
+            head_dim = hidden_channels // heads
+            self.layers.append(GATConv(in_channels, head_dim, heads=heads, concat=True))
+            for _ in range(num_layers - 2):
+                self.layers.append(GATConv(hidden_channels, head_dim, heads=heads, concat=True))
+
+            if task == "graph":
+                self.layers.append(GATConv(hidden_channels, hidden_channels, heads=1, concat=False))
+            else:
+                self.layers.append(GATConv(hidden_channels, out_channels, heads=1, concat=False))
+
+        if task == "graph":
+            self.pool = global_mean_pool
+            self.lin = torch.nn.Linear(hidden_channels, out_channels)
+
+    def forward(self, x, edge_index, batch=None):
+        for i, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            if i < len(self.layers) - 1 or self.task == "graph":
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+
+        if self.task == "graph":
+            if batch is None:
+                batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+            if x.size(1) == 35: 
+                x = x[x[:, -1] == 1.0]
+            else:
+                x = self.pool(x, batch)
+            x = self.lin(x)
+        return x
+
+def get_dataset(name):
+    if name == "ZINC":
+        d_train = ZINC(root="data/ZINC", split="train", subset=True)
+        d_val = ZINC(root="data/ZINC", split="val", subset=True)
+        d_test = ZINC(root="data/ZINC", split="test", subset=True)
+        return list(d_train) + list(d_val) + list(d_test), "graph", "mae", 1, 1
+    elif name == "Peptides-func":
+        dataset = LRGBDataset(root="data/LRGB", name="Peptides-func")
+        return list(dataset), "graph", "ap", dataset.num_node_features, 10
+    elif name == "Peptides-struct":
+        dataset = LRGBDataset(root="data/LRGB", name="Peptides-struct")
+        return list(dataset), "graph", "mae", dataset.num_node_features, 11
+    elif name == "minesweeper":
+        dataset = HeterophilousGraphDataset(root="data/Heterophilous", name="minesweeper")
+        return dataset[0], "node", "rocauc", dataset.num_node_features, 1
+    elif name == "QM9":
+        from torch_geometric.datasets import QM9
+        dataset = QM9(root="data/QM9")
+        return list(dataset), "graph", "mae", dataset.num_node_features, 19
+    elif name == "ogbg-molhiv":
+        from ogb.graphproppred import PygGraphPropPredDataset
+        dataset = PygGraphPropPredDataset(name="ogbg-molhiv", root="data/OGB")
+        return list(dataset), "graph", "rocauc", dataset.num_node_features, 1
+    elif name == "Tree-NeighborsMatch":
+        dataset = TreeNeighborsMatch(root="data/Tree-NeighborsMatch", depth=4, num_graphs=16000)
+        # Using cross-entropy (accuracy) for multi-class prediction where classes = 2^depth
+        num_classes = 2 ** dataset.depth
+        return list(dataset), "graph", "acc", dataset.num_node_features, num_classes
     
-    for r in runs:
-        tag = r.get("tag") or r.get("name") or "run"
-        pretty = r.get("title") or r.get("pretty")  # optional pretty name in manifest
-        _make_run_figures(run_dir, tag, pretty, bins=bins, keep_existing=keep_existing)
+    raise ValueError(f"Unknown dataset: {name}")
 
-_ALLOWED = {"auto","fd","scott","sturges","doane","rice","sqrt","stone"}
+def compute_metric(y_true, y_pred, metric_name):
+    y_true, y_pred = y_true.detach().cpu().numpy(), y_pred.detach().cpu().numpy()
+    if metric_name == "mae":
+        return mean_absolute_error(y_true, y_pred)
+    elif metric_name == "ap":
+        valid = ~np.isnan(y_true)
+        if not np.any(valid): return 0.0
+        y_true[np.isnan(y_true)] = 0
+        return average_precision_score(y_true, y_pred)
+    elif metric_name == "rocauc":
+        if len(np.unique(y_true)) == 1: return 0.5
+        return roc_auc_score(y_true, y_pred)
+    elif metric_name == "acc":
+        from sklearn.metrics import accuracy_score
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        return accuracy_score(y_true, y_pred_classes)
 
-def parse_bins(s):
-    try:
-        return int(s)
-    except ValueError:
-        s = s.lower()
-        if s in _ALLOWED: return s
-        raise argparse.ArgumentTypeError(f"bins must be int or one of: {', '.join(sorted(_ALLOWED))}")
 
-def main():
-    """
-    Command-line entry point.
+def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epochs, optim_name, seed, num_splits_to_run=None, device_id=None):    
+    set_seed(seed)
+    if device_id is not None and torch.cuda.is_available():
+        device = torch.device(f'cuda:{device_id}')
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+    if isinstance(dataset_or_path, str):
+        dataset = torch.load(dataset_or_path)
+    else:
+        dataset = dataset_or_path
+    
+    model_params = model_params.copy()
+    lr = model_params.pop("lr", 0.01)
 
-    Parses arguments and calls generate_paper_figures. Use --help for a
-    description of available options.
-    """
-    _apply_style()
-    ap = argparse.ArgumentParser(description="Generate paper-ready figures from experiment outputs.")
-    ap.add_argument("--out-root", type=str, default=None, help="Root folder containing run subfolders (default: experiments/out)")
-    ap.add_argument("--run-name", type=str, default=None, help="Specific run folder name to process (default: all under out-root)")
-    ap.add_argument(
-        "--bins",
-        type=parse_bins,
-        default="scott",
-        metavar="INT|RULE",
-        help="Number of bins or rule: auto, fd, scott, sturges, doane, rice, sqrt, stone",
-    )
-    ap.add_argument("--keep-existing", action="store_true", help="Keep existing figures directory instead of recreating it")
-    args = ap.parse_args()
-    generate_paper_figures(out_root=args.out_root, run_name=args.run_name, bins=args.bins, keep_existing=args.keep_existing)
+    kf = KFold(n_splits=cv_split, shuffle=True, random_state=seed)
+    scores = []
+
+    if task == "graph":
+        for fold_idx, (train_idx, test_idx) in enumerate(kf.split(dataset)):
+            train_data = [dataset[i] for i in train_idx]
+            test_data = [dataset[i] for i in test_idx]
+
+            
+            from torch_geometric.loader import DataLoader
+            train_loader = DataLoader(train_data, batch_size=512, shuffle=True, pin_memory=True, num_workers=0, persistent_workers=False)
+            test_loader = DataLoader(test_data, batch_size=512, shuffle=False, pin_memory=True, num_workers=0, persistent_workers=False)
+
+            model = GNN(**model_params).to(device)
+            optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
+            
+            if metric_name == "mae":
+                criterion = torch.nn.L1Loss()
+            elif metric_name == "acc":
+                criterion = torch.nn.CrossEntropyLoss()
+            else:
+                criterion = torch.nn.BCEWithLogitsLoss()
+
+            for epoch in range(epochs):
+                if (epoch + 1) % 10 == 0:
+                    print(f"  [Fold] Graph Task Epoch {epoch + 1}/{epochs} complete.", flush=True)
+                model.train()
+                for batch in train_loader:
+                    batch = batch.to(device, non_blocking=True)
+                    optimizer.zero_grad()
+                    out = model(batch.x.float(), batch.edge_index, batch.batch)
+                    
+                    if metric_name == "acc":
+                        y = batch.y.long().view(-1)
+                    else:
+                        y = batch.y.view(out.shape).float()
+                        
+                    loss = criterion(out, y)
+                    loss.backward()
+                    optimizer.step()
+
+            model.eval()
+            y_true, y_pred = [], []
+            with torch.no_grad():
+                for batch in test_loader:
+                    batch = batch.to(device)
+                    out = model(batch.x.float(), batch.edge_index, batch.batch)
+                    if metric_name == "acc":
+                        y_true.append(batch.y.view(-1))
+                    else:
+                        y_true.append(batch.y.view(out.shape))
+                    y_pred.append(out)
+
+            score = compute_metric(torch.cat(y_true), torch.cat(y_pred), metric_name)
+            scores.append(score)
+            if num_splits_to_run is not None and (fold_idx + 1) >= num_splits_to_run:
+                break
+
+    elif task == "node":
+        data = dataset.to(device)
+        indices = np.arange(data.num_nodes)
+        for fold_idx, (train_idx, test_idx) in enumerate(kf.split(indices)):
+            model = GNN(**model_params).to(device)
+            optimizer = getattr(torch.optim, optim_name)(model.parameters(), lr=lr)
+            criterion = torch.nn.BCEWithLogitsLoss()
+
+            train_mask = torch.zeros(data.num_nodes, dtype=torch.bool, device=device)
+            test_mask = torch.zeros(data.num_nodes, dtype=torch.bool, device=device)
+            train_mask[train_idx] = True
+            test_mask[test_idx] = True
+
+            for epoch in range(epochs):
+                if (epoch + 1) % 50 == 0:
+                    print(f"  [Fold] Node Task Epoch {epoch + 1}/{epochs} complete.", flush=True)
+                model.train()
+                optimizer.zero_grad()
+                out = model(data.x.float(), data.edge_index)
+                y = data.y.view(-1, 1).float()
+                loss = criterion(out[train_mask], y[train_mask])
+                loss.backward()
+                optimizer.step()
+
+            model.eval()
+            with torch.no_grad():
+                out = model(data.x.float(), data.edge_index)
+                y = data.y.view(-1, 1).float()
+                score = compute_metric(y[test_mask], out[test_mask], metric_name)
+                scores.append(score)
+                if num_splits_to_run is not None and (fold_idx + 1) >= num_splits_to_run:
+                    break
+
+    return np.mean(scores)
+
+def execute_trials(dataset_name, seed, n_trials, epochs, optimizer_name, cv_split, arch_name, n_reps, out_dir, max_iters_rewiring, max_workers=4, pipelines_to_run=None):
+    checkpoint_file = os.path.join(out_dir, "gnn_results.json")
+    results = {}
+    if os.path.exists(checkpoint_file):
+        with open(checkpoint_file, 'r') as f:
+            try:
+                results = json.load(f)
+            except json.JSONDecodeError:
+                pass
+
+    run_key = f"{dataset_name}_{arch_name}"
+    if run_key not in results:
+        results[run_key] = {}
+
+    print(f"\nProcessing Dataset: {dataset_name} | Arch: {arch_name}")
+    raw_dataset, task, metric_name, in_c, out_c = get_dataset(dataset_name)
+
+    pipelines = {
+        "Base": None,
+        "FoSR": FoSRRewiring(max_iters=max_iters_rewiring),
+        "BORF (OR)": BORFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=1),
+        "SDRF (OR)": SDRFRewiring(metric="c_OR", max_iters=max_iters_rewiring, n_jobs=1),
+        "SDRF (BF)": SDRFRewiring(metric="c_BF", max_iters=max_iters_rewiring, n_jobs=1),
+        "BORF (Bounds)": BORFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=1),
+        "SDRF (Bounds)": SDRFRewiring(metric="bounds", max_iters=max_iters_rewiring, n_jobs=1),
+        "BORF (JL)": BORFRewiring(metric="jl_bounds", max_iters=max_iters_rewiring, n_jobs=1),
+    }
+    if pipelines_to_run:
+        pipelines = {k: v for k, v in pipelines.items() if k in pipelines_to_run}
+    cache_data = {}
+    
+    for pipe_name, transform in pipelines.items():
+        if pipe_name in results[run_key] and len(results[run_key][pipe_name].get("scores", [])) >= n_reps:
+            print(f"Skipping {pipe_name}, already evaluated.")
+            continue
+            
+        print(f"\nPreparing topology: {pipe_name}")
+        if transform is None:
+            cache_data[pipe_name] = raw_dataset
+            rewire_time = 0.0
+        else:
+            t0 = time.perf_counter()
+            if task == "node":
+                cache_data[pipe_name] = transform(copy.deepcopy(raw_dataset))
+            else:
+                cache_data[pipe_name] = []
+                ctx = mp.get_context('spawn')                
+                def _graph_gen():
+                    for g in raw_dataset:
+                        yield g.clone() if hasattr(g, 'clone') else copy.deepcopy(g)
+                        
+                with ctx.Pool(processes=max_workers, maxtasksperchild=50) as pool:
+                    total_graphs = len(raw_dataset)
+                    for i, out_g in enumerate(pool.imap(transform, _graph_gen(), chunksize=50)):
+                        if (i + 1) % max(1, total_graphs // 10) == 0:
+                            print(f"  [Topology] Rewired {i + 1}/{total_graphs} graphs...", flush=True)
+                        cache_data[pipe_name].append(out_g.clone())
+            rewire_time = time.perf_counter() - t0
+
+        diam, avg_sp, fiedler = compute_topological_metrics(cache_data[pipe_name])
+        topology_metrics = {"Diameter": float(diam), "Avg_SP": float(avg_sp), "Fiedler": float(fiedler)}
+        
+        pipe_name_safe = pipe_name.replace(" ", "_").replace("(", "").replace(")", "")
+        params_file = os.path.join(out_dir, f"optuna_params_{dataset_name}_{arch_name}_{pipe_name_safe}.json")
+        
+        if os.path.exists(params_file):
+            print(f"  [Optuna] Found cached hyperparameters at {params_file}. Skipping search.", flush=True)
+            with open(params_file, 'r') as f:
+                best_params = json.load(f)
+        else:
+            print(f"Optuna hyperparameter search for {pipe_name} ({n_trials} trials)...", flush=True)
+            def objective(trial):
+                params = {
+                    "in_channels": in_c,
+                    "hidden_channels": trial.suggest_categorical("hidden_channels", [32, 64, 128]),
+                    "out_channels": out_c,
+                    "num_layers": trial.suggest_int("num_layers", 2, 5),
+                    "dropout": trial.suggest_float("dropout", 0.0, 0.5),
+                    "lr": trial.suggest_float("lr", 1e-4, 1e-2, log=True),
+                    "arch": arch_name,
+                    "task": task
+                }
+                return run_cv_fold(params, cache_data[pipe_name], task, 
+                                    metric_name, cv_split, epochs, 
+                                    optimizer_name, seed=seed, 
+                                    num_splits_to_run=(cv_split // 2) + 1)
+            
+
+            direction = "minimize" if metric_name == "mae" else "maximize"
+            study = optuna.create_study(direction=direction)
+            optuna.logging.set_verbosity(optuna.logging.INFO)
+            study.optimize(objective, n_trials=n_trials, n_jobs=4)
+            
+            best_params = study.best_params
+            best_params.update({"in_channels": in_c, "out_channels": out_c, "arch": arch_name, "task": task})
+            
+            with open(params_file, 'w') as f:
+                json.dump(best_params, f, indent=4)
+            print(f"  [Optuna] Saved best hyperparameters to {params_file}.", flush=True)
+
+        print(f"Executing {n_reps} parallel repetitions for {pipe_name}...")
+        scores = []
+        target_dataset = cache_data[pipe_name]
+        
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pt")
+        os.close(tmp_fd)
+        torch.save(target_dataset, tmp_path)
+        
+        num_gpus = torch.cuda.device_count()
+        safe_workers = min(max_workers, max(1, num_gpus * 2)) 
+
+        def worker_rep_wrapper(rep):
+            gpu_id = rep % num_gpus if num_gpus > 0 else None
+            return run_cv_fold(
+                best_params, tmp_path, task, metric_name, cv_split, 
+                epochs, optimizer_name, seed=seed + rep, device_id=gpu_id
+            )
+
+        with ProcessPoolExecutor(max_workers=safe_workers) as executor:
+            futures = [executor.submit(worker_rep_wrapper, rep) for rep in range(n_reps)]
+            for fut in as_completed(futures):
+                 scores.append(fut.result())
+                
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        avg, std = float(np.mean(scores)), float(np.std(scores))
+        
+        results[run_key][pipe_name] = {
+            "scores": scores,
+            "avg": avg,
+            "std": std,
+            "rewire_time": rewire_time,
+            "topology": topology_metrics,
+            "best_params": best_params
+        }
+        
+        with open(checkpoint_file, 'w') as f:
+            json.dump(results, f, indent=4)
+            
+        print(f"Completed {pipe_name} | Avg {metric_name.upper()}: {avg:.4f} ± {std:.4f}")
 
 if __name__ == "__main__":
-    main()
+    mp.set_start_method('spawn', force=True)
+    
+    parser = argparse.ArgumentParser(description="Parallel GNN Topology Rewiring Benchmarks")
+    parser.add_argument("--dataset", type=str, required=True, choices=["ZINC", "QM9", "minesweeper", "ogbg-molhiv", "Tree-NeighborsMatch"])    
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--trials", type=int, default=10, help="Number of Optuna trials per topology")
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--optimizer", type=str, default="Adam")
+    parser.add_argument("--cv-split", type=int, default=5, help="Number of K-Fold splits")
+    parser.add_argument("--arch", type=str, default="GCN", choices=["GCN", "GIN", "GAT"])
+    parser.add_argument("--reps", type=int, default=3, help="Number of parallel evaluation repetitions")
+    parser.add_argument("--out-dir", type=str, default="out", help="Directory to save gnn_results.json")
+    parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for all rewiring methods")
+    parser.add_argument("--workers", type=int, default=4, help="Number of concurrent worker processes")
+
+    args = parser.parse_args()
+
+    execute_trials(
+        args.dataset, args.seed, args.trials, args.epochs, 
+        args.optimizer, args.cv_split, args.arch, args.reps, 
+        args.out_dir, args.max_iters_rewiring, args.workers
+    )
