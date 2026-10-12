@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import copy
 import json
@@ -12,6 +13,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from torch_geometric.datasets import HeterophilousGraphDataset
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from curvature_rewiring import SDRFRewiring
 

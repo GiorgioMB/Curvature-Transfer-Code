@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import argparse
 import random
@@ -26,6 +27,10 @@ from torch_geometric.utils import to_scipy_sparse_matrix
 from sklearn.model_selection import KFold
 from sklearn.metrics import average_precision_score, mean_absolute_error, roc_auc_score
 import optuna
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 from curvature_rewiring import SDRFRewiring, BORFRewiring, FoSRRewiring
 
