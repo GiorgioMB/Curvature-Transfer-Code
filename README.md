@@ -11,6 +11,16 @@ This repository contains the official implementation of the experiments describe
 
 * **GNN Evaluation Pipeline (`gnn_experiments.py`):** Standardized framework executing GCN, GIN, and GAT architectures on datasets including ZINC, Peptides-func/struct, and minesweeper. Uses Optuna for hyperparameter optimization and $K$-Fold cross-validation.
 
+## Installation
+
+Install the pinned CPU environment with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync
+```
+
+`uv` selects a supported Python version from `pyproject.toml`, installs the CPU PyTorch wheels and the matching PyTorch Geometric extensions, and includes the test dependencies by default. Run project commands through `uv run`; no manual virtual-environment activation is needed. The existing `requirements.txt` is retained as a pinned dependency reference.
+
 
 
 ## Execution Presets
@@ -36,7 +46,7 @@ Individual structural families, scale parameters, and compute parallelization pa
 
 ```bash
 # Execute specific topologies with maximum multiprocessing
-python experiments/run_experiments.py \
+uv run python experiments/run_experiments.py \
   --seed 42 \
   --jobs -1 \
   --er 800 0.01 \
@@ -49,6 +59,14 @@ python experiments/run_experiments.py \
 ```
 
 Outputs, including CSV data matrices, JSON metric summaries, and PDF/PNG artifact plots, are directed to `experiments/out/<run_name>/`. The rendering engine (`make_paper_figures.py`) applies unified styling conventions to map the mathematical relationships between $\mathfrak{c}_{\mathrm{BF}}$, $\mathfrak{c}_{\mathrm{OR}}$, and derived theoretical limits across these subdirectories.
+
+To reproduce all paper experiments, including the standalone bounds-comparison tables, run:
+
+```bash
+./run_experiments.sh
+```
+
+The paper preset is intentionally expensive and downloads the benchmark datasets. Extra arguments are forwarded to `experiments/run_experiments.py`; checkpoints make interrupted runs resumable.
 
 ## Checkpointing and Soft Restarts
 
@@ -73,5 +91,5 @@ The evaluation pipelines feature fault-tolerant checkpoints.
 Lastly, the repository includes a comprehensive `pytest` suite; to execute it run:
 
 ```bash
-pytest -q
+uv run pytest -q
 ```
