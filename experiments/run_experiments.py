@@ -21,6 +21,7 @@ $ python run_experiments.py --er 200 0.03 --ws 200 6 0.1 --jobs 4
 $ python run_experiments.py --preset paper --only-gnn
 """
 import os
+os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
 import warnings
 import argparse
 from typing import Tuple, List
@@ -116,7 +117,7 @@ def add_family_args(parser: argparse.ArgumentParser):
     # Ablation controls
     parser.add_argument("--only-ablation", action="store_true", help="Skip everything and run ONLY the SDRF ablation study on minesweeper.")
     parser.add_argument("--no-ablation", action="store_true", help="Skip the SDRF ablation phase during standard runs.")
-    parser.add_argument("--max-iters-rewiring", type=int, default=5, help="Maximum iterations for GNN rewiring")
+    parser.add_argument("--max-iters-rewiring", type=int, default=None, help="Maximum iterations for GNN rewiring")
     parser.add_argument("--max-iters-ablation", type=int, default=None, help="Maximum iterations for SDRF ablation grid")
     parser.add_argument("--max-n-ablation", type=int, default=None, help="Maximum candidates (n) for SDRF ablation grid")
     parser.add_argument("--ablation-points", type=int, default=None, help="Number of points in the logspace grids for SDRF ablation")
@@ -195,13 +196,13 @@ def handle_presets(args, seed: int):
         args.tree = args.tree or [[3, 6]]
         args.complete = args.complete or [[60]]
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper","Tree-NeighborsMatch"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN"]
         args.gnn_reps = args.gnn_reps or 10
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 10
         args.gnn_epochs = args.gnn_epochs or 100
-        args.max_iters_rewiring = args.max_iters_rewiring or 10
+        args.max_iters_rewiring = args.max_iters_rewiring or 5
 
     elif args.preset == "medium":
         args.bench_families = args.bench_families or ["ER", "BA"]
@@ -227,13 +228,13 @@ def handle_presets(args, seed: int):
         args.complete = args.complete or [[90]]
         args.skip_plots = True
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9",  "ogbg-molhiv", "minesweeper","Tree-NeighborsMatch"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 20
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 20
         args.gnn_epochs = args.gnn_epochs or 100
-        args.max_iters_rewiring = args.max_iters_rewiring or 30
+        args.max_iters_rewiring = args.max_iters_rewiring or 5
 
     elif args.preset == "paper":
         args.bench_max_n = 15000
@@ -259,13 +260,13 @@ def handle_presets(args, seed: int):
         args.include_real = True
         args.skip_plots = True
         
-        args.gnn_datasets = args.gnn_datasets or ["ZINC", "Peptides-func", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
+        args.gnn_datasets = args.gnn_datasets or ["ZINC", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
         args.gnn_archs = args.gnn_archs or ["GCN", "GIN", "GAT"]
         args.gnn_reps = args.gnn_reps or 50
         args.gnn_cv = args.gnn_cv or 5
         args.gnn_trials = args.gnn_trials or 50
         args.gnn_epochs = args.gnn_epochs or 200
-        args.max_iters_rewiring = args.max_iters_rewiring or 60
+        args.max_iters_rewiring = args.max_iters_rewiring or 5
 
 def load_real_graphs(data_dir: str) -> List[Tuple[str, int, List[Tuple[int,int]]]]:
     out: List[Tuple[str, int, List[Tuple[int,int]]]] = []
@@ -563,9 +564,12 @@ def main():
             cv_split = args.gnn_cv or 5
             reps = args.gnn_reps or 3
             optim = args.gnn_optim or "Adam"
+            max_iters_rew = args.max_iters_rewiring or 5
+            shared_cache_dir = os.path.join(os.path.dirname(__file__), "out", "rewired_cache")
             
-            print(f"\n{'='*50}\n[gnn_experiments] Starting GNN Evaluations\n{'='*50}")
+            print(f"\n{'='*50}\n[gnn_experiments] Starting GNN Evaluations\n{'='*50}", flush=True)
             for ds in datasets:
+                ds_max_iters = (args.max_iters_rewiring or 40) if ds == "minesweeper" else (args.max_iters_rewiring or 5)
                 for arch in archs:
                     gnn_experiments.execute_trials(
                         dataset_name=ds,
@@ -577,12 +581,15 @@ def main():
                         arch_name=arch,
                         n_reps=reps,
                         out_dir=out_dir,
-                        max_iters_rewiring=args.max_iters_rewiring,
+                        max_iters_rewiring=max_iters_rew,
                         max_workers=args.jobs,
-                        pipelines_to_run=args.gnn_pipelines
+                        pipelines_to_run=args.gnn_pipelines,
+                        cache_scope=args.gnn_cache_scope,
+                        shared_cache_dir=shared_cache_dir,
+                        save_every=args.gnn_save_every
                     )
         except Exception as e:
-            print(f"[gnn_experiments] GNN evaluation failed: {e}")
+            print(f"[gnn_experiments] GNN evaluation failed: {e}", flush=True)
 
     print(f"\n[done] Outputs directed to {out_dir}")
 
