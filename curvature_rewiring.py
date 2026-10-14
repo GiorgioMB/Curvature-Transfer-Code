@@ -31,12 +31,10 @@ def _fast_pyg_edge_index(edges: set, device: torch.device) -> torch.Tensor:
     if not edges:
         return torch.empty((2, 0), dtype=torch.long, device=device)
     
-    # Vectorized conversion rather than Python loops
     edges_arr = np.array(list(edges), dtype=np.int64)
     rows = np.concatenate([edges_arr[:, 0], edges_arr[:, 1]])
     cols = np.concatenate([edges_arr[:, 1], edges_arr[:, 0]])
     
-    # Sort for canonical PyG format using numpy (torch.lexsort is unavailable in older PT)
     order = np.lexsort((cols, rows))
     
     edge_index = torch.from_numpy(np.stack([rows[order], cols[order]])).to(device)
@@ -63,7 +61,6 @@ def _compute_jl_bounds(eng: pc.CurvatureEngine, eidx: int):
 
 
 def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) -> np.ndarray:
-    """Evaluates the requested metric for all edges."""
     M = len(eng.edges)
     if M == 0:
         return np.array([], dtype=float)
@@ -75,14 +72,12 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
         bf_vals = _evaluate_metric_all(eng, "c_BF", n_jobs)
         return eng.psi_BF_to_OR(bf_vals)
 
-    # Target isolated functions based on metric
     def _eval_func(i: int) -> float:
         if metric == "c_BF": return eng.c_BF_edge(i)
         if metric == "c_OR": return eng.c_OR_edge(i)
         if metric == "c_JL_lower": return _compute_jl_bounds(eng, i)[0]
         if metric == "c_JL_upper": return _compute_jl_bounds(eng, i)[1]
-        raise ValueError(f"Unsupported metric identifier: '{metric}'. "
-                         "Allowed: c_BF, c_OR, c_OR_lower_from_c_BF, c_OR_upper_from_c_BF, c_JL_lower, c_JL_upper")
+        raise ValueError(f"Unsupported metric identifier: '{metric}'")
 
     if n_jobs == 1:
         return np.array([_eval_func(i) for i in range(M)], dtype=float)
@@ -92,7 +87,6 @@ def _evaluate_metric_all(eng: pc.CurvatureEngine, metric: str, n_jobs: int = 1) 
             return np.array(list(ex.map(_eval_func, range(M))), dtype=float)
 
 def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> float:
-    """Evaluates a metric for a single edge."""
     if metric == "c_OR_lower_from_c_BF":
         return float(eng.varphi_BF_to_OR_edge(eidx, eng.c_BF_edge(eidx), sharp=False))
     if metric == "c_OR_upper_from_c_BF":
@@ -107,12 +101,6 @@ def _evaluate_metric_single(eng: pc.CurvatureEngine, metric: str, eidx: int) -> 
     raise ValueError(f"Unsupported metric identifier: '{metric}'")
 
 class FoSRRewiring(BaseTransform):
-    """
-    First-Order Spectral Rewiring (FoSR).
-    
-    Iteratively computes the Fiedler vector to maximize algebraic connectivity 
-    by systematically adding edges.
-    """
     def __init__(self, max_iters=10):
         super().__init__()
         self.max_iters = max_iters
@@ -121,18 +109,13 @@ class FoSRRewiring(BaseTransform):
         device = data.edge_index.device
         num_nodes = data.num_nodes
 
-        edge_map = {}
-        for i in range(data.edge_index.size(1)):
-            u, v = data.edge_index[0, i].item(), data.edge_index[1, i].item()
-            edge_map[(u, v)] = i
-
-        edges = set(tuple(sorted((u, v))) for u, v in edge_map.keys())
+        original_edges = set(tuple(sorted((data.edge_index[0, i].item(), data.edge_index[1, i].item()))) for i in range(data.edge_index.size(1)))
+        edges = set(original_edges)
 
         for _ in range(self.max_iters):
             if not edges: 
                 break
                 
-            # Vectorized Adjacency and Laplacian construction
             edges_arr = np.array(list(edges), dtype=np.int32)
             rows = np.concatenate([edges_arr[:, 0], edges_arr[:, 1]])
             cols = np.concatenate([edges_arr[:, 1], edges_arr[:, 0]])
@@ -151,7 +134,6 @@ class FoSRRewiring(BaseTransform):
             fiedler = evecs[:, idx[1]]
             sorted_nodes = np.argsort(fiedler)
             
-            # Add Edge: Maximize Fiedler difference
             added_edge = None
             for i in range(num_nodes):
                 if added_edge: break
@@ -166,40 +148,23 @@ class FoSRRewiring(BaseTransform):
             if not added_edge:
                 break
 
-        # Reconstruct bidirectional PyG edge_index and align attributes
+        # Reconstruct PyG edge_index and assign 0 for original edges, 1 for added edges
         new_edge_index = []
-        has_edge_attr = getattr(data, 'edge_attr', None) is not None
-        has_edge_weight = getattr(data, 'edge_weight', None) is not None
-        
-        new_edge_attr = [] if has_edge_attr else None
-        new_edge_weight = [] if has_edge_weight else None
+        edge_attr_list = []
 
+        # Canonicalize undirected edges for lookup
         for u, v in edges:
+            is_added = 1.0 if tuple(sorted((u, v))) not in original_edges else 0.0
             for source, target in [(u, v), (v, u)]:
                 new_edge_index.append([source, target])
-                
-                if has_edge_attr or has_edge_weight:
-                    orig_idx = edge_map.get((source, target))
-                    if orig_idx is not None:
-                        if has_edge_attr: 
-                            new_edge_attr.append(data.edge_attr[orig_idx])
-                        if has_edge_weight: 
-                            new_edge_weight.append(data.edge_weight[orig_idx])
-                    else:
-                        if has_edge_attr:
-                            new_edge_attr.append(torch.zeros_like(data.edge_attr[0]))
-                        if has_edge_weight:
-                            new_edge_weight.append(torch.ones_like(data.edge_weight[0]))
+                edge_attr_list.append(is_added)
 
         if new_edge_index:
             data.edge_index = torch.tensor(new_edge_index, dtype=torch.long, device=device).t().contiguous()
+            data.edge_attr = torch.tensor(edge_attr_list, dtype=torch.float, device=device).unsqueeze(1)
         else:
             data.edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
-
-        if has_edge_attr:
-            data.edge_attr = torch.stack(new_edge_attr).to(device)
-        if has_edge_weight:
-            data.edge_weight = torch.stack(new_edge_weight).to(device)
+            data.edge_attr = torch.empty((0, 1), dtype=torch.float, device=device)
 
         return data
 
@@ -217,7 +182,8 @@ class SDRFRewiring(BaseTransform):
         num_nodes = data.num_nodes
         
         eng_init = pc.CurvatureEngine(data, n_jobs=self.n_jobs)
-        current_edges = set(tuple(sorted(e)) for e in eng_init.edges)
+        original_edges = set(tuple(sorted(e)) for e in eng_init.edges)
+        current_edges = set(original_edges)
         
         for _ in range(self.max_iters):
             if not current_edges:
@@ -227,7 +193,6 @@ class SDRFRewiring(BaseTransform):
             eng = pc.CurvatureEngine(Data(num_nodes=num_nodes, edge_index=edge_index), n_jobs=self.n_jobs)
             edges_list = list(eng.edges)
             
-            # Asymmetric objective resolution
             if self.metric in ["bounds", "jl_bounds"]:
                 add_metric = "c_OR_upper_from_c_BF" if self.metric == "bounds" else "c_JL_upper"
                 rem_metric = "c_OR_lower_from_c_BF" if self.metric == "bounds" else "c_JL_lower"
@@ -295,7 +260,21 @@ class SDRFRewiring(BaseTransform):
                 if eng.deg[e_max[0]] > 1 and eng.deg[e_max[1]] > 1:
                     current_edges.discard(e_max)
                     
-        data.edge_index = _fast_pyg_edge_index(current_edges, device)
+        new_edge_index = []
+        edge_attr_list = []
+        for u, v in current_edges:
+            is_added = 1.0 if tuple(sorted((u, v))) not in original_edges else 0.0
+            for source, target in [(u, v), (v, u)]:
+                new_edge_index.append([source, target])
+                edge_attr_list.append(is_added)
+
+        if new_edge_index:
+            data.edge_index = torch.tensor(new_edge_index, dtype=torch.long, device=device).t().contiguous()
+            data.edge_attr = torch.tensor(edge_attr_list, dtype=torch.float, device=device).unsqueeze(1)
+        else:
+            data.edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
+            data.edge_attr = torch.empty((0, 1), dtype=torch.float, device=device)
+
         return data
 
 
@@ -312,7 +291,8 @@ class BORFRewiring(BaseTransform):
         num_nodes = data.num_nodes
         
         eng_init = pc.CurvatureEngine(data, n_jobs=self.n_jobs)
-        current_edges = set(tuple(sorted(e)) for e in eng_init.edges)
+        original_edges = set(tuple(sorted(e)) for e in eng_init.edges)
+        current_edges = set(original_edges)
         
         for _ in range(self.max_iters):
             if not current_edges:
@@ -322,7 +302,6 @@ class BORFRewiring(BaseTransform):
             eng = pc.CurvatureEngine(Data(num_nodes=num_nodes, edge_index=edge_index), n_jobs=self.n_jobs)
             edges_list = eng.edges
             
-            # Asymmetric objective resolution
             if self.metric in ["bounds", "jl_bounds"]:
                 add_metric = "c_OR_upper_from_c_BF" if self.metric == "bounds" else "c_JL_upper"
                 rem_metric = "c_OR_lower_from_c_BF" if self.metric == "bounds" else "c_JL_lower"
@@ -385,5 +364,19 @@ class BORFRewiring(BaseTransform):
                             eng.deg[v] -= 1
                             removed_count += 1
                             
-        data.edge_index = _fast_pyg_edge_index(current_edges, device)
+        new_edge_index = []
+        edge_attr_list = []
+        for u, v in current_edges:
+            is_added = 1.0 if tuple(sorted((u, v))) not in original_edges else 0.0
+            for source, target in [(u, v), (v, u)]:
+                new_edge_index.append([source, target])
+                edge_attr_list.append(is_added)
+
+        if new_edge_index:
+            data.edge_index = torch.tensor(new_edge_index, dtype=torch.long, device=device).t().contiguous()
+            data.edge_attr = torch.tensor(edge_attr_list, dtype=torch.float, device=device).unsqueeze(1)
+        else:
+            data.edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
+            data.edge_attr = torch.empty((0, 1), dtype=torch.float, device=device)
+
         return data
