@@ -19,20 +19,21 @@ from typing import Callable, Dict, Optional
 import numpy as np
 
 __all__ = ["certify_threshold", "certify_bottom_k", "certify_then_solve"]
+TOL = 1e-9  # safety margin for floating-point round-off in the bounds
 
 
-def certify_threshold(lower, upper, tau: float = 0.0):
+def certify_threshold(lower, upper, tau: float = 0.0, tol: float = TOL):
     """Return (in_mask, out_mask, undecided_mask) for {c_OR < tau}."""
     lower = np.asarray(lower, float)
     upper = np.asarray(upper, float)
     if np.any(lower > upper + 1e-12):
         raise ValueError("lower > upper on some edge: the intervals are not valid")
-    cin = upper < tau
+    cin = upper < tau - tol
     cout = lower >= tau
     return cin, cout, ~(cin | cout)
 
 
-def certify_bottom_k(lower, upper, k: int):
+def certify_bottom_k(lower, upper, k: int, tol: float = TOL):
     """Return (in_mask, out_mask, undecided_mask) for the k smallest c_OR."""
     lower = np.asarray(lower, float)
     upper = np.asarray(upper, float)
@@ -48,16 +49,17 @@ def certify_bottom_k(lower, upper, k: int):
     lo_sorted = np.sort(lower)
     up_sorted = np.sort(upper)
     # number of other edges f with lower_f <= upper_e (subtract e itself)
-    n_le = np.searchsorted(lo_sorted, upper, side="right") - 1
+    n_le = np.searchsorted(lo_sorted, upper + tol, side="right") - 1
     # number of other edges f with upper_f < lower_e (e itself never counts)
-    n_lt = np.searchsorted(up_sorted, lower, side="left")
+    n_lt = np.searchsorted(up_sorted, lower - tol, side="left")
     cin = n_le <= k - 1
     cout = n_lt >= k
     return cin, cout, ~(cin | cout)
 
 
 def certify_then_solve(lower, upper, exact_fn: Callable[[np.ndarray], np.ndarray],
-                       tau: Optional[float] = 0.0, k: Optional[int] = None) -> Dict[str, object]:
+                       tau: Optional[float] = 0.0, k: Optional[int] = None,
+                       tol: float = TOL) -> Dict[str, object]:
     """Exact answer to a threshold query (``tau``) or a bottom-k query (``k``).
 
     ``exact_fn(ids)`` must return exact c_OR values for the edge ids it is
@@ -68,9 +70,9 @@ def certify_then_solve(lower, upper, exact_fn: Callable[[np.ndarray], np.ndarray
         raise ValueError("give exactly one of tau or k")
     t0 = time.perf_counter()
     if k is None:
-        cin, cout, und = certify_threshold(lower, upper, tau)
+        cin, cout, und = certify_threshold(lower, upper, tau, tol)
     else:
-        cin, cout, und = certify_bottom_k(lower, upper, k)
+        cin, cout, und = certify_bottom_k(lower, upper, k, tol)
     t1 = time.perf_counter()
     ids = np.flatnonzero(und)
     vals = np.asarray(exact_fn(ids), float) if ids.size else np.empty(0)
