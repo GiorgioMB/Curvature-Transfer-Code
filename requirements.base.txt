@@ -1,8 +1,0 @@
-# Core scientific stack
-pandas
-numpy
-numexpr
-matplotlib
-
-# Testing
-pytest
