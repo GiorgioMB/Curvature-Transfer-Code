@@ -25,7 +25,7 @@ from scipy.sparse.linalg import eigsh
 
 import torch
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINConv, GATConv, global_add_pool, global_mean_pool
+from torch_geometric.nn import CGConv, GINConv, GATConv, global_add_pool, global_mean_pool
 from torch_geometric.datasets import ZINC, HeterophilousGraphDataset
 from torch_geometric.utils import to_scipy_sparse_matrix
 from sklearn.model_selection import KFold
@@ -383,40 +383,40 @@ class GNN(torch.nn.Module):
         self.layers = torch.nn.ModuleList()
 
         if arch == "GCN":
-            self.layers.append(GCNConv(in_channels, hidden_channels))
+            self.layers.append(CGConv(in_channels, hidden_channels, dim=1))
             for _ in range(num_layers - 2):
-                self.layers.append(GCNConv(hidden_channels, hidden_channels))
-            self.layers.append(GCNConv(hidden_channels, hidden_channels if task == "graph" else out_channels))
+                self.layers.append(CGConv(hidden_channels, hidden_channels, dim=1))
+            self.layers.append(CGConv(hidden_channels, hidden_channels if task == "graph" else out_channels, dim=1))
 
         elif arch == "GIN":
-            self.layers.append(GINConv(torch.nn.Sequential(
+            self.layers.append(GINEConv(torch.nn.Sequential(
                 torch.nn.Linear(in_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels)
-            )))
+            ), edge_dim=1))
             for _ in range(num_layers - 2):
-                self.layers.append(GINConv(torch.nn.Sequential(
+                self.layers.append(GINEConv(torch.nn.Sequential(
                     torch.nn.Linear(hidden_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels)
-                )))
-            self.layers.append(GINConv(torch.nn.Sequential(
+                ), edge_dim=1))
+            self.layers.append(GINEConv(torch.nn.Sequential(
                 torch.nn.Linear(hidden_channels, hidden_channels), torch.nn.ReLU(), torch.nn.Linear(hidden_channels, hidden_channels if task == "graph" else out_channels)
-            )))
+            ), edge_dim=1))
 
         elif arch == "GAT":
             heads = 4
             head_dim = hidden_channels // heads
-            self.layers.append(GATConv(in_channels, head_dim, heads=heads, concat=True))
+            self.layers.append(GATConv(in_channels, head_dim, heads=heads, concat=True, edge_dim=1))
             for _ in range(num_layers - 2):
-                self.layers.append(GATConv(hidden_channels, head_dim, heads=heads, concat=True))
+                self.layers.append(GATConv(hidden_channels, head_dim, heads=heads, concat=True, edge_dim=1))
 
             if task == "graph":
-                self.layers.append(GATConv(hidden_channels, hidden_channels, heads=1, concat=False))
+                self.layers.append(GATConv(hidden_channels, hidden_channels, heads=1, concat=False, edge_dim=1))
             else:
-                self.layers.append(GATConv(hidden_channels, out_channels, heads=1, concat=False))
+                self.layers.append(GATConv(hidden_channels, out_channels, heads=1, concat=False, edge_dim=1))
 
         if task == "graph":
             self.pool = global_mean_pool
             self.lin = torch.nn.Linear(hidden_channels, out_channels)
 
-    def forward(self, x, edge_index, batch=None):
+    def forward(self, x, edge_index, edge_attr=None, batch=None):
         for i, layer in enumerate(self.layers):
             x = layer(x, edge_index)
             if i < len(self.layers) - 1 or self.task == "graph":
@@ -529,7 +529,7 @@ def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epoc
                 for batch in train_loader:
                     batch = batch.to(device, non_blocking=use_pin_memory)
                     optimizer.zero_grad()
-                    out = model(batch.x.float(), batch.edge_index, batch.batch)
+                    out = model(batch.x.float(), batch.edge_index, edge_attr=getattr(batch, 'edge_attr', None), batch=batch.batch)
 
                     if metric_name == "acc":
                         y = batch.y.long().view(-1)
@@ -545,7 +545,7 @@ def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epoc
             with torch.no_grad():
                 for batch in test_loader:
                     batch = batch.to(device)
-                    out = model(batch.x.float(), batch.edge_index, batch.batch)
+                    out = model(batch.x.float(), batch.edge_index, edge_attr=getattr(batch, 'edge_attr', None), batch=batch.batch)
                     if metric_name == "acc":
                         y_true.append(batch.y.view(-1))
                     else:
@@ -575,7 +575,7 @@ def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epoc
                     print(f"  [Fold] Node Task Epoch {epoch + 1}/{epochs} complete.", flush=True)
                 model.train()
                 optimizer.zero_grad()
-                out = model(data.x.float(), data.edge_index)
+                out = model(data.x.float(), data.edge_index, edge_attr=getattr(data, 'edge_attr', None))
                 y = data.y.view(-1, 1).float()
                 loss = criterion(out[train_mask], y[train_mask])
                 loss.backward()
@@ -583,7 +583,7 @@ def run_cv_fold(model_params, dataset_or_path, task, metric_name, cv_split, epoc
 
             model.eval()
             with torch.no_grad():
-                out = model(data.x.float(), data.edge_index)
+                out = model(data.x.float(), data.edge_index, edge_attr=getattr(data, 'edge_attr', None))
                 y = data.y.view(-1, 1).float()
                 score = compute_metric(y[test_mask], out[test_mask], metric_name)
                 scores.append(score)
