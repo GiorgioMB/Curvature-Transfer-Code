@@ -32,7 +32,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 EXP = os.path.join(ROOT, "experiments")
 PY = sys.executable
 
-# Figures included by the manuscript (figures_paper/<name>), produced by the
+# Figures of the manuscript (results/figures_paper/<name>), produced by the
 # "distributions" and "benchmark" steps.
 PAPER_FIGURES = [
     "fig_scatter_cBF_cOR__er_n800_p0_0100125_2d_Hist.png",
@@ -44,7 +44,6 @@ PAPER_FIGURES = [
     *[f"fig_{c}_{v}__{t}.png" for c in ("cOR", "cBF") for v in ("hist", "quantile")
       for t in ("er_n800_p0_0100125", "hrg_n800_R5_0_a1_0_T0_0", "real_yeast")],
 ]
-PAPER = os.path.join(ROOT, "paper")
 GNN_DATASETS = ["ZINC", "QM9", "ogbg-molhiv", "minesweeper", "Tree-NeighborsMatch"]
 GNN_ARCHS = ["GCN", "GIN", "GAT"]
 
@@ -61,10 +60,9 @@ STEPS = {
     "gnn": "rewiring case study (Appendix A; needs torch) -> gnn/",
     "gnn_stats": "non-inferiority tests for the case study -> tables/gnn_stats.txt",
     "ablation": "SDRF runtime ablation on Minesweeper (needs torch) -> ablation/",
-    "paper": "write paper/generated/ (all table rows + numbers.tex + INDEX.md), copy figures, compile paper/manuscript.pdf",
     "report": "REPORT.md mapping paper artifacts to files",
 }
-DEFAULT_STEPS = ["environment", "tests", "examples", "bounds", "screening", "distributions", "benchmark", "figures", "paper", "report"]
+DEFAULT_STEPS = ["environment", "tests", "examples", "bounds", "screening", "distributions", "benchmark", "figures", "report"]
 
 
 class Runner:
@@ -177,19 +175,16 @@ class Runner:
     def figures(self):
         dst = self.path("figures_paper")
         src = self.path("runs", "paper", "figures_paper")
-        os.makedirs(os.path.join(PAPER, "figures_paper"), exist_ok=True)
         missing = []
         for f in PAPER_FIGURES:
             if os.path.exists(os.path.join(src, f)):
                 shutil.copy2(os.path.join(src, f), os.path.join(dst, f))
-                shutil.copy2(os.path.join(src, f), os.path.join(PAPER, "figures_paper", f))
             else:
                 missing.append(f)
         rt = self.path("benchmark", "runtime_scaling_loglog_er.pdf")
         if os.path.exists(rt):
             shutil.copy2(rt, os.path.join(dst, "runtime_scaling_loglog_er.pdf"))
-            for d in (dst, os.path.join(PAPER, "figures_paper")):
-                shutil.copy2(rt, os.path.join(d, "runtime_scaling.pdf"))  # name used by the manuscript
+            shutil.copy2(rt, os.path.join(dst, "runtime_scaling.pdf"))  # name used by the manuscript
         else:
             missing.append("runtime_scaling.pdf")
         if missing and not self.a.quick:
@@ -214,10 +209,8 @@ class Runner:
                        "--out-dir", self.path("gnn"), "--workers", str(self.a.gnn_workers)]
                 its = cfg["max_iters_rewiring"]["minesweeper" if ds == "minesweeper" else "other"]
                 cmd += ["--max-iters-rewiring", str(its)]
-                cmd += (["--trials", str(cfg["trials"]), "--epochs", str(cfg["epochs"]), "--reps", str(cfg["reps"]),
-                         "--cv-split", str(cfg["cv_split"])] if self.a.quick else
-                        ["--trials", str(cfg["trials"]), "--epochs", str(cfg["epochs"]), "--reps", str(cfg["reps"]),
-                         "--cv-split", str(cfg["cv_split"])])
+                cmd += ["--trials", str(cfg["trials"]), "--epochs", str(cfg["epochs"]), "--reps", str(cfg["reps"]),
+                        "--cv-split", str(cfg["cv_split"])]
                 ok &= self.run(f"gnn_{ds}_{arch}", cmd)
         return ok
 
@@ -235,33 +228,6 @@ class Runner:
     def ablation(self):
         return self.run("ablation", [PY, "sdrf_ablation.py", "--seed", str(self.a.seed), "--out", self.path("ablation")])
 
-    def paper(self):
-        sys.path.insert(0, EXP)
-        import paper_artifacts
-        status, N = paper_artifacts.build(self.out, PAPER)
-        shutil.copy2(os.path.join(PAPER, "generated", "INDEX.md"), self.path("WHAT_GOES_WHERE.md"))
-        missing = [k for k, v in status.items() if v != "generated"]
-        print(f"[ ok ] paper/generated: {len(N.vals)} numbers, {len(status) - len(missing)}/{len(status)} tables"
-              + (f" (missing: {', '.join(missing)})" if missing else ""))
-        pdflatex, bibtex = shutil.which("pdflatex"), shutil.which("bibtex")
-        if not (pdflatex and bibtex):
-            self.status["paper"] = "generated; PDF not compiled (pdflatex/bibtex not found)"
-            return True
-        log = self.path("logs", "paper_latex.log")
-        with open(log, "w") as fh:
-            for cmd in ([pdflatex, "-interaction=nonstopmode", "manuscript.tex"], [bibtex, "manuscript"],
-                        [pdflatex, "-interaction=nonstopmode", "manuscript.tex"],
-                        [pdflatex, "-interaction=nonstopmode", "manuscript.tex"]):
-                subprocess.run(cmd, cwd=PAPER, stdout=fh, stderr=subprocess.STDOUT)
-        pdf = os.path.join(PAPER, "manuscript.pdf")
-        if os.path.exists(pdf):
-            shutil.copy2(pdf, self.path("manuscript.pdf"))
-            self.status["paper"] = "ok: paper/manuscript.pdf (also results/manuscript.pdf)"
-            print(f"[ ok ] compiled {pdf}")
-        else:
-            self.status["paper"] = "generated; LaTeX failed (see logs/paper_latex.log)"
-        return True
-
     def report(self):
         rel = lambda *p: os.path.join(*p)
         ex = lambda *p: "yes" if os.path.exists(self.path(*p)) else "**missing**"
@@ -273,8 +239,6 @@ class Runner:
             ("All per-graph quantities (CSV)", rel("tables", "bounds", "bound_comparison.csv"), ""),
             ("Numbers quoted in the abstract / Section 7", rel("tables", "bounds", "text_numbers.txt"), ""),
             ("Certify-then-solve table (Section 7.3)", rel("tables", "screening", "screening_rows.tex"), ""),
-            ("Compiled paper with every number filled in", "manuscript.pdf", "step 'paper' (needs pdflatex)"),
-            ("Where every table row and number goes", "WHAT_GOES_WHERE.md", "copy of paper/generated/INDEX.md"),
             ("Closed-form values stated in the paper", rel("tables", "examples.txt"), ""),
             ("Figure 1 (runtime scaling)", rel("figures_paper", "runtime_scaling.pdf"), ""),
             ("Figure 1 data", rel("benchmark", "benchmark_ER_50_15000.csv" if not self.a.quick else "benchmark_ER_50_800.csv"), ""),
