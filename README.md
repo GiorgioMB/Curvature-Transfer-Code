@@ -1,95 +1,83 @@
-# Curvature Transfer: Comparing Edgewise Graph Curvatures and Analytic Envelopes
+# Curvature Transfer
 
-This repository contains the official implementation of the experiments described in our paper, [Curvature Transfer](https://arxiv.org/abs/2603.13535). The codebase provides a pipeline for evaluating empirical runtime bounds and benchmarking curvature-driven graph neural network (GNN) rewiring.
+Code for *What Balanced Forman Curvature Certifies About Ollivier–Ricci Curvature* (Micaletto & Nigrelli, [arXiv:2603.13535](https://arxiv.org/abs/2603.13535)).
 
-## Architecture and Core Modules
+The package computes, for every edge of an undirected simple graph:
 
-* **Curvature Engine (`pyg_curvature.py`):** Computes exact Lazy and Non-lazy Ollivier-Ricci curvatures, Balanced Forman curvature, analytic envelopes, and transfer bounds between the two.
+* **exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, by optimal transport;
+* **Balanced Forman curvature** and the 2-hop statistics behind it;
+* **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the matching-augmented bound (Thm 4.8), the lazy transport envelope (Prop 4.6), the BF interval (Thms 5.3–5.4, Cor 5.6), the BF deficits (Prop 5.1), the sharpened interval (Prop 5.7), and the reverse direction (Cors 6.1–6.2);
+* **certify-then-solve** screening, which answers threshold and bottom-k queries exactly while solving transport problems only on undecided edges.
 
-* **Topology Rewiring (`curvature_rewiring.py`):** Implements dynamic edge addition and deletion layers for PyTorch Geometric adapted to our `CurvatureEngine`. Features curvature-guided Stochastic Discrete Ricci Flow (SDRF) and Batched Ollivier-Ricci Flow (BORF). Includes also First-Order Spectral Rewiring (FoSR), which iteratively maximizes algebraic connectivity via the Fiedler vector and serves as the primary non-curvature editing baseline for comparative ablation against the curvature-driven methods.
-
-
-* **GNN Evaluation Pipeline (`gnn_experiments.py`):** Standardized framework executing GCN, GIN, and GAT architectures on datasets including ZINC, Peptides-func/struct, and minesweeper. Uses Optuna for hyperparameter optimization and $K$-Fold cross-validation.
+```python
+from curvature_transfer import CurvatureEngine
+eng = CurvatureEngine.from_edges([(0, 1), (1, 2), (2, 0), (2, 3)])  # or a PyG Data / networkx graph
+eng.bf()                          # Balanced Forman curvature, aligned with eng.edges (u < v)
+eng.exact()["c_OR"]               # exact lazy OR curvature (also "c_OR0", "c_LLY")
+iv = eng.intervals()              # BF, matching, and sharpened intervals for c_OR
+eng.edge_table()                  # everything as a pandas DataFrame
+```
 
 ## Installation
 
-Install the pinned CPU environment with [uv](https://docs.astral.sh/uv/):
-
 ```bash
-uv sync
+pip install -e .                    # core
+pip install -e ".[experiments,dev]" # experiments + tests
+pip install -e ".[gnn]"             # rewiring / GNN case study (install torch for your platform first)
+pytest -q
 ```
 
-`uv` selects a supported Python version from `pyproject.toml`, installs the CPU PyTorch wheels and the matching PyTorch Geometric extensions, and includes the test dependencies by default. Run project commands through `uv run`; no manual virtual-environment activation is needed. The existing `requirements.txt` is retained as a pinned dependency reference.
+## Layout
 
+| Path                                                                                       | Contents                                                                        |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `curvature_transfer/graph.py`                                                            | CSR graph, canonical undirected edges, PyG/networkx/edge-list constructors      |
+| `curvature_transfer/_kernels.py`                                                         | Numba kernels: 2-hop statistics, Hopcroft–Karp, local distances, exact W1      |
+| `curvature_transfer/bounds.py`                                                           | all bounds, vectorized over edges, with equation/result references              |
+| `curvature_transfer/engine.py`                                                           | `CurvatureEngine`: caching, threading, intervals, edge tables                 |
+| `curvature_transfer/screening.py`                                                        | certify-then-solve                                                              |
+| `curvature_transfer/rewiring.py`                                                         | SDRF / BORF / FoSR on edge arrays (no torch), with pluggable oracles            |
+| `curvature_transfer/pyg.py`                                                              | PyG`BaseTransform` wrappers used by the GNN experiments                       |
+| `experiments/compare_bounds.py`                                                          | Tables 3, 4, 5, the ranking table, and the pending quantities of the manuscript |
+| `experiments/screening.py`                                                               | certify-then-solve experiment (Section 7.3)                                     |
+| `experiments/benchmark.py`                                                               | runtime scaling (Section 7.4)                                                   |
+| `experiments/run_experiments.py`                                                         | orchestrator: per-edge tables, manifest, figures, and the phases above          |
+| `experiments/stats.py`                                                                   | paired non-inferiority tests, bootstrap CIs, Holm correction (Appendix A)       |
+| `experiments/gnn_experiments.py`, `tree_neighbors_match.py`, `make_paper_figures.py` | experiments (and required files) for Appendix A                                     |
+| `experiments/generators.py`                                                              | graph generators, unchanged so that seeded graphs reproduce                     |
 
-
-## Execution Presets
-
-The `run_experiments.py` orchestrator supports predefined scaling suites tailored to different execution hardware and computational constraints. Use `--preset <name>` to load these configurations.
-
-* **`tiny`:** A rapid diagnostic suite designed to verify compilation and execution pathways without runtime errors.
-
-
-* **`small`:** Intended for local workstation evaluation.
-
-
-* **`medium`:** Evaluates moderate-to-large topologies; omits per-run exploratory plotting and halves the parameters in the GNN pipeline.
-
-
-* **`paper`:** The complete empirical reproduction suite yielding all artifacts for publication. Evaluates large-scale models, real-world networks, and automatically renders all comparative metric figures. GNNs undergo 100 Optuna optimization trials, 500 training epochs, and 50 independent empirical repetitions to ensure statistical significance.
-
-
-
-## Custom Evaluation and Command-Line Interface
-
-Individual structural families, scale parameters, and compute parallelization parameters can be specified explicitly, overriding the preset baselines.
+## Reproducing the paper
 
 ```bash
-# Execute specific topologies with maximum multiprocessing
-uv run python experiments/run_experiments.py \
-  --seed 42 \
-  --jobs -1 \
-  --er 800 0.01 \
-  --hrg 800 5.0 1.0 0.5 \
-  --sbm2 1000 0.012 0.004 \
-  --cycle 400 \
-  --include-real \
-  --auto-figures
-
+pip install -e ".[experiments,dev]"
+python main.py                       # every result except the GNN case study, then compiles the paper
+python main.py --gnn --delta 0.01    # + Appendix A (needs the [gnn] extra; the margin must be fixed in advance)
+python main.py --quick               # smoke run of the whole pipeline (~2 minutes; not the paper's numbers)
 ```
 
-Outputs, including CSV data matrices, JSON metric summaries, and PDF/PNG artifact plots, are directed to `experiments/out/<run_name>/`. The rendering engine (`make_paper_figures.py`) applies unified styling conventions to map the mathematical relationships between $\mathfrak{c}_{\mathrm{BF}}$, $\mathfrak{c}_{\mathrm{OR}}$, and derived theoretical limits across these subdirectories.
+**Cost.** The full run is dominated by Figure 2, which matches the configuration of the paper: 100 ER graphs up to
+n = 15000, with exact OR on every edge (about 7×10^5 edges at the largest size). It also computes exact curvatures on
+every edge of every graph family, including Arxiv (4.2×10^5 edges). Expect a few hours on a workstation; use
+`--jobs -1` on a many-core machine.
 
-To reproduce all paper experiments, including the standalone bounds-comparison tables, run:
+## Exact Ollivier–Ricci curvature
 
-```bash
-./run_experiments.sh
-```
+For an edge (i, j), every measure lives on $S=N(i)\cup N(j)$. All distances on $S$ lie in {0, 1, 2, 3} and are read off
+the adjacency structure (edges, then shared neighbours), so no BFS is needed. The Kantorovich dual has an integral
+optimal potential with range at most 3. Writing $\phi = \sum_k [\phi\ge k]$ turns it into a maximum-weight closure problem,
+solved by one s–t min cut (Dinic) in exact integer arithmetic. Lipschitz constraints implied by transitivity through
+i or j are dropped, so the cut graph stays sparse. Twin vertices, such as the leaves of a hub, are merged exactly.
 
-The paper preset is intentionally expensive and downloads the benchmark datasets. Extra arguments are forwarded to `experiments/run_experiments.py`; checkpoints make interrupted runs resumable.
+The solver is verified against linear programming in the tests. With warm JIT on one thread, it is about 34× faster
+than the preliminary transportation simplex on ER graphs with n = 100 and about 170× faster with n = 1200, and the
+gap keeps widening with size.
 
-## Checkpointing and Soft Restarts
+## Notes on the experiments
 
-The evaluation pipelines feature fault-tolerant checkpoints.
-
-1. **Topological Properties:** Using the `--soft-restart` flag in `run_experiments.py` bypasses edge curvature calculations for any configuration whose `$TAG_edges.csv` already exists in the target output directory.
-
-
-2. **GNN Optimization:** GNN performance scores, standard deviations, and optimal architecture parameters are serialized to `gnn_results.json` upon completion of a dataset/architecture pair. The pipeline natively skips re-evaluation of logged configuration pairs. **Note:** If executing codebase modifications (e.g., altering GNN depth, modifying FoSR or SDRF topological limits, or shifting Optuna search domains), you must manually delete or rename `gnn_results.json` to force a complete computational re-evaluation.
-
-
-
-## Additional Diagnostics
-
-* **Runtime Scaling Benchmark (`--benchmark`):** Overrides standard execution to generate hardware scaling datasets and log-log visual plots isolating the asymptotic computation cost of Exact Optimal Transport against proposed combinatorial metric bounds across a geometric sequence of graph sizes.
-
-
-* **SDRF Ablation (`--ablation-only`):** Evaluates the computational scaling of Stochastic Discrete Ricci Flow under variable constraints on `max_candidates` and `max_iters`, projecting heatmap and conditional scaling matrices.
-
-## Testing Suite
-
-Lastly, the repository includes a comprehensive `pytest` suite; to execute it run:
-
-```bash
-uv run pytest -q
-```
+* In `screening.py`, "sign" means the query $\{\mathfrak{c}_{\rm OR}<0\}$ , so edges with lower $\ge0$ count as decided, including
+  zero-curvature edges. `compare_bounds.py` reports the paper's strict sign certification (lower > 0 or upper < 0).
+* The TLW dual bound needs the local distance matrix, so it is computed inside the exact kernel. The matching and
+  sharpened intervals in `compare_bounds.py` include it, as in the paper. `screening.py` uses only certificates that
+  need no distances, so its fractions are slightly lower than the certified-sign column.
+* Certify-then-solve saves wall-clock time mainly on large or dense graphs. On small graphs, exact evaluation is now
+  cheap enough that computing the statistics costs about as much as it saves.
