@@ -27,10 +27,12 @@ Oracles (``metric``):
 from __future__ import annotations
 
 import random as _random
+import time as _time
 from typing import Dict, Iterable, Optional, Set, Tuple
 
 import numpy as np
 
+from . import _io
 from .engine import CurvatureEngine
 from .graph import Graph
 
@@ -110,6 +112,46 @@ def _sdrf_candidates(adj, u, v) -> list:
     return sorted(cand)
 
 
+class _IterCheckpoint:
+    """Per-iteration checkpoint of a rewiring loop.
+
+    After every iteration the current edge set, the iteration counter, the RNG
+    state, and the accumulated *compute* time (checkpoint I/O excluded) are
+    written atomically to ``path``. A restarted call with the same inputs
+    (checked through a fingerprint) continues from the last finished iteration
+    and produces the same result as an uninterrupted run.
+    """
+
+    def __init__(self, path: Optional[str], key: str):
+        self.path, self.key = path, key
+
+    def load(self):
+        if not self.path:
+            return None
+        st = _io.read_pickle(self.path)
+        return st if isinstance(st, dict) and st.get("key") == self.key else None
+
+    def save(self, it: int, current: Set[Edge], rng_state, elapsed: float):
+        if self.path:
+            _io.atomic_pickle({"key": self.key, "it": it, "edges": sorted(current),
+                               "rng": rng_state, "elapsed": elapsed}, self.path)
+
+
+def _start(kind, num_nodes, edges, params, checkpoint, rng=None):
+    current: Set[Edge] = {_canon(int(a), int(b)) for a, b in np.asarray(edges).reshape(-1, 2) if a != b}
+    key = (_io.fingerprint(kind, int(num_nodes), np.array(sorted(current), dtype=np.int64).reshape(-1, 2), params)
+           if checkpoint else "")
+    ck = _IterCheckpoint(checkpoint, key)
+    st = ck.load()
+    it0, elapsed = 0, 0.0
+    if st is not None:
+        current = {tuple(e) for e in st["edges"]}
+        it0, elapsed = int(st["it"]), float(st["elapsed"])
+        if rng is not None and st.get("rng") is not None:
+            rng.setstate(st["rng"])
+    return current, ck, it0, elapsed
+
+
 def _random_non_edge(adj, n, rng, tries=1000):
     for _ in range(tries):
         a, b = rng.randrange(n), rng.randrange(n)
@@ -120,14 +162,20 @@ def _random_non_edge(adj, n, rng, tries=1000):
 
 def sdrf(num_nodes: int, edges: np.ndarray, metric: str = "bounds", max_iters: int = 10,
          max_candidates: int = 3, remove_edges: bool = True, rng=None,
-         n_jobs: Optional[int] = None) -> np.ndarray:
+         n_jobs: Optional[int] = None, checkpoint: Optional[str] = None,
+         info: Optional[dict] = None) -> np.ndarray:
     """Greedy SDRF. Returns the rewired undirected edge array (u < v, sorted).
 
     ``rng``: a ``random.Random`` (default: the global ``random`` module, so
-    that seeding with ``random.seed`` reproduces the preliminary code)."""
+    that seeding with ``random.seed`` reproduces the preliminary code).
+    ``checkpoint``: optional file; the loop state is saved there after every
+    iteration and a restarted call resumes from it. ``info`` (a dict) receives
+    ``compute_time`` (seconds, all iterations, including resumed ones)."""
     rng = _random if rng is None else rng
-    current: Set[Edge] = {_canon(int(a), int(b)) for a, b in np.asarray(edges).reshape(-1, 2) if a != b}
-    for _ in range(max_iters):
+    current, ck, it0, elapsed = _start("sdrf", num_nodes, edges, [metric, max_iters, max_candidates, remove_edges],
+                                       checkpoint, rng)
+    for it in range(it0, max_iters):
+        t0 = _time.perf_counter()
         if not current:
             break
         g = Graph.from_edges(np.array(sorted(current), dtype=np.int64), num_nodes)
@@ -154,14 +202,21 @@ def sdrf(num_nodes: int, edges: np.ndarray, metric: str = "bounds", max_iters: i
             current.add(best)
         if remove_edges and len(current) > 1 and g.deg[e_max[0]] > 1 and g.deg[e_max[1]] > 1:
             current.discard(e_max)
+        elapsed += _time.perf_counter() - t0
+        ck.save(it + 1, current, rng.getstate(), elapsed)
+    if info is not None:
+        info["compute_time"] = elapsed
     return np.array(sorted(current), dtype=np.int64).reshape(-1, 2)
 
 
 def borf(num_nodes: int, edges: np.ndarray, metric: str = "bounds", max_iters: int = 3,
-         batch_add: int = 3, batch_remove: int = 3, n_jobs: Optional[int] = None) -> np.ndarray:
-    """Batched BORF-style rewiring. Returns the rewired undirected edge array."""
-    current: Set[Edge] = {_canon(int(a), int(b)) for a, b in np.asarray(edges).reshape(-1, 2) if a != b}
-    for _ in range(max_iters):
+         batch_add: int = 3, batch_remove: int = 3, n_jobs: Optional[int] = None,
+         checkpoint: Optional[str] = None, info: Optional[dict] = None) -> np.ndarray:
+    """Batched BORF-style rewiring. Returns the rewired undirected edge array.
+    ``checkpoint`` / ``info``: as in :func:`sdrf`."""
+    current, ck, it0, elapsed = _start("borf", num_nodes, edges, [metric, max_iters, batch_add, batch_remove], checkpoint)
+    for it in range(it0, max_iters):
+        t0 = _time.perf_counter()
         if not current:
             break
         g = Graph.from_edges(np.array(sorted(current), dtype=np.int64), num_nodes)
@@ -192,18 +247,25 @@ def borf(num_nodes: int, edges: np.ndarray, metric: str = "bounds", max_iters: i
                 current.discard((u, v))
                 deg[u] -= 1; deg[v] -= 1
                 removed += 1
+        elapsed += _time.perf_counter() - t0
+        ck.save(it + 1, current, None, elapsed)
+    if info is not None:
+        info["compute_time"] = elapsed
     return np.array(sorted(current), dtype=np.int64).reshape(-1, 2)
 
 
-def fosr(num_nodes: int, edges: np.ndarray, max_iters: int = 10) -> np.ndarray:
+def fosr(num_nodes: int, edges: np.ndarray, max_iters: int = 10,
+         checkpoint: Optional[str] = None, info: Optional[dict] = None) -> np.ndarray:
     """Spectral rewiring: add the non-edge maximizing (x_u - x_v)^2 for the
-    current Fiedler vector x, ``max_iters`` times."""
+    current Fiedler vector x, ``max_iters`` times. ``checkpoint`` / ``info``:
+    as in :func:`sdrf`."""
     import scipy.sparse as sp
     from scipy.sparse.linalg import eigsh
 
-    current: Set[Edge] = {_canon(int(a), int(b)) for a, b in np.asarray(edges).reshape(-1, 2) if a != b}
+    current, ck, it0, elapsed = _start("fosr", num_nodes, edges, [max_iters], checkpoint)
     n = num_nodes
-    for _ in range(max_iters):
+    for it in range(it0, max_iters):
+        t0 = _time.perf_counter()
         if not current or n < 3:
             break
         e = np.array(sorted(current), dtype=np.int64)
@@ -229,4 +291,8 @@ def fosr(num_nodes: int, edges: np.ndarray, max_iters: int = 10) -> np.ndarray:
         if added is None:
             break
         current.add(added)
+        elapsed += _time.perf_counter() - t0
+        ck.save(it + 1, current, None, elapsed)
+    if info is not None:
+        info["compute_time"] = elapsed
     return np.array(sorted(current), dtype=np.int64).reshape(-1, 2)
