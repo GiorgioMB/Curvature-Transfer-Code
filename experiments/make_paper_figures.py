@@ -1,7 +1,7 @@
 """
 Paper-ready figure generator for curvature experiments.
 
-This module scans experiment output folders created by experiments/run_experiments.py
+This module scans experiment output folders created by experiments/distributions.py (via edges.py --csv)
 and saves a small set of high-resolution, publication-ready figures into a dedicated subfolder
 figures_paper/ inside each run directory.
 
@@ -12,7 +12,7 @@ What this script expects to find
     instance (e.g., "er_n2000_p0.01"). Optionally, a pretty display name can
     be provided under "title" or "pretty".
   * One edge-level CSV per tag, typically named {tag}_edges.csv (dots are
-    normalized to underscores). These CSVs are produced by run_experiments.py
+    normalized to underscores). These CSVs are produced by edges.py --csv
     and contain columns describing per-edge curvatures, bounds, and metadata.
 
 Figures produced per tag (when the required columns exist)
@@ -107,7 +107,7 @@ DISPLAY = {
     "env_upper":  r"transport envelope (upper)",
 }
 
-# CSV columns expected from run_experiments / util_curvature
+# CSV columns expected from edges.py (CurvatureEngine.edge_table)
 EXPECTED_COLS = [
     "u","v","deg_i","deg_j","triangle","Xi","sho_max",
     "c_BF","c_OR","c_OR0","Theta_const","Theta_slope","Theta_at_t","env_upper",
@@ -158,7 +158,7 @@ def _edge_csv_for_tag(
     Returns
     - The absolute path to the CSV file if found, else None.
     """
-    # run_experiments writes {base_name}_edges.csv in the run folder.
+    # edges.py writes {base_name}_edges.csv in the run folder.
     base = tag.replace('.', '_')
     cand = os.path.join(run_root, f"{base}_edges.csv")
     if os.path.exists(cand):
@@ -358,7 +358,7 @@ def _hist_with_bands(
                 label=DISPLAY["Theta_at_t"] + " Dist.")
     ax.set_title(title)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("Count")
+    ax.set_ylabel("Density")  # the histograms are drawn with density=True
     ax.grid(True)
     ax.legend(frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5,
                 loc='best')
@@ -448,7 +448,8 @@ def _scatter_ribbon(ax: plt.Axes,
         bf_s, or_s, low_s = bf, orv, lower_from_bf
 
     nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
-    ax.scatter(bf_s, or_s, s=6, alpha=0.28, color=COL_OBS, linewidth=0, label="Edges (sample)")
+    ax.scatter(bf_s, or_s, s=6, alpha=0.28, color=COL_OBS, linewidth=0,
+               label="Edges (sample)" if n > 25000 else "Edges")
     # Observed quantile ribbon of OR|BF
     xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
     if len(xc) > 0:
@@ -492,7 +493,7 @@ def _scatter_ribbon_hist(ax: plt.Axes,
 
     nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
 
-    sample_proxy = Patch(facecolor=plt.get_cmap("Blues")(0.6), edgecolor="none", label="Edges (sample)")
+    sample_proxy = Patch(facecolor=plt.get_cmap("Blues")(0.6), edgecolor="none", label="Edges")
 
     xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
     if len(xc) > 0:
@@ -517,7 +518,7 @@ def _scatter_ribbon_hist(ax: plt.Axes,
     ax.grid(True)
     ax.relim(); ax.autoscale()
     handles, labels = ax.get_legend_handles_labels()
-    ax.legend([sample_proxy] + handles, ["Edges (sample)"] + labels,
+    ax.legend([sample_proxy] + handles, ["Edges"] + labels,
               frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5, loc='best')
 
 
@@ -525,7 +526,8 @@ def _quantile_lines(ax: plt.Axes,
                     arrays: Sequence[np.ndarray],
                     labels: Optional[Sequence[str]] = None,
                     xlabel: str = r"Quantile $p$",
-                    ylabel: Optional[str] = None) -> None:
+                    ylabel: Optional[str] = None,
+                    colors: Optional[Sequence[str]] = (COL_OBS, COL_LOWER, COL_UPPER)) -> None:
     """
     Plot sorted values of each array against quantile p on a shared y-scale.
     """
@@ -536,13 +538,16 @@ def _quantile_lines(ax: plt.Axes,
     # Shared y-scale across all lines
     ymin = min(np.nanmin(a) for a in arrs)
     ymax = max(np.nanmax(a) for a in arrs)
+    if ymax <= ymin:  # constant curvature (e.g. cycles, complete graphs)
+        ymin, ymax = ymin - 0.5, ymax + 0.5
     ax.set_ylim(ymin, ymax)
 
     # Quantile lines
     for i, a in enumerate(arrs):
         p = np.linspace(0.0, 1.0, len(a), endpoint=True)
         lab = labels[i] if (labels is not None and i < len(labels)) else f"Series {i+1}"
-        ax.plot(p, np.sort(a), linewidth=1.6, zorder=3, label=lab)
+        col = colors[i] if (colors is not None and i < len(colors)) else None
+        ax.plot(p, np.sort(a), linewidth=1.6, zorder=3, label=lab, color=col)
 
     # Axes/legend styling (mirror helper style)
     ax.set_xlim(0.0, 1.0)
