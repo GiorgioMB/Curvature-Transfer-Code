@@ -7,8 +7,9 @@ only needed for :mod:`curvature_transfer.pyg`.
 from .graph import Graph
 from .engine import CurvatureEngine
 from . import bounds
+from . import intervals
 from .screening import certify_threshold, certify_bottom_k, certify_then_solve
 
-__all__ = ["Graph", "CurvatureEngine", "bounds",
+__all__ = ["Graph", "CurvatureEngine", "bounds", "intervals",
            "certify_threshold", "certify_bottom_k", "certify_then_solve"]
 __version__ = "1.0.0"
