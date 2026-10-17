@@ -3,6 +3,7 @@ name = "curvature-transfer"
 version = "0.1.0"
 description = "Experiments for comparing edgewise graph curvatures and analytic envelopes"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "matplotlib==3.10.7",
