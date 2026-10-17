@@ -110,7 +110,7 @@ gap keeps widening with size.
   `intervals.ROUNDING_TOL` = 1e-9: the bounds are floating point, the exact curvatures exact rationals, and on
   graphs where lower and upper bound coincide (e.g. K_n) rounding can otherwise put lower > upper.
 * "Sign certified" means lower > 0 or upper < 0; the screening query {c_OR < 0} also counts lower >= 0 as
-  decided, so its avoided fraction is never below the certified-sign fraction (checked by the `paper` step).
+  decided, so its avoided fraction is never below the certified-sign fraction.
 * The matching and sharpened intervals of Section 7.1 include the TLW dual certificate, which needs the local
   distance matrix (but no transport solve). Screening and Figure 5 time exactly these intervals, computed from
   scratch.
