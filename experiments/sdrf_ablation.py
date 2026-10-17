@@ -19,6 +19,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from curvature_transfer.pyg import SDRFRewiring
+from curvature_transfer import _io
 
 def set_seed(seed):
     random.seed(seed)
@@ -125,9 +126,8 @@ def execute_ablation(seed, out_dir, preset, max_iters_limit, max_n_limit=None, a
                         "time_seconds": float(elapsed)
                     })
                     
-                    # Atomic flush in main thread guarantees json integrity
-                    with open(out_file, "w") as f:
-                        json.dump(results, f, indent=4)
+                    # saved as soon as each grid point is done (atomic: tmp file + rename)
+                    _io.atomic_json(results, out_file, indent=4)
                         
                     print(f"[ablation] Completed: n = {n:5d} | iters = {iters:4d} | Time = {elapsed:.4f}s")
                 except Exception as exc:
