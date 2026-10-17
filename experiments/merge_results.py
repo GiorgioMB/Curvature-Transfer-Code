@@ -1,33 +1,33 @@
-import os
+#!/usr/bin/env python3
+"""Merge the per-(dataset, arch) result files of gnn_experiments.py.
+
+gnn_experiments.py writes one file per (dataset, architecture),
+``<out>/parts/<dataset>_<arch>.json``, so that parallel jobs never overwrite
+each other's results. ``merge(out)`` combines them into
+``<out>/gnn_results.json`` (atomically), the file read by stats.py and by the
+paper step. Running it again at any time is safe.
+
+Usage: python merge_results.py <out_dir>
+"""
 import glob
-import json
+import os
+import sys
 
-def merge_results(parts_dir="experiments/out/gnn_parts", output_file="experiments/out/gnn_results.json"):
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+from curvature_transfer import _io  # noqa: E402
+
+
+def merge(out_dir):
     merged = {}
-    json_paths = sorted(glob.glob(os.path.join(parts_dir, "*", "gnn_results.json")))
-    
-    if not json_paths:
-        print(f"No result files found in {parts_dir}")
-        return
+    for path in sorted(glob.glob(os.path.join(out_dir, "parts", "*.json"))):
+        data = _io.read_json(path)
+        if isinstance(data, dict):
+            merged[os.path.basename(path)[:-5]] = data
+    _io.atomic_json(merged, os.path.join(out_dir, "gnn_results.json"), indent=1)
+    return merged
 
-    for path in json_paths:
-        try:
-            with open(path, "r") as f:
-                data = json.load(f)
-                for run_key, topologies in data.items():
-                    if run_key not in merged:
-                        merged[run_key] = {}
-                    merged[run_key].update(topologies)
-            print(f"Loaded: {path}")
-        except Exception as e:
-            print(f"Error reading {path}: {e}")
-
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    with open(output_file, "w") as f:
-        json.dump(merged, f, indent=4)
-        
-    print(f"\nSuccessfully merged {len(json_paths)} runs into {output_file}")
-    print("Contained configurations:", list(merged.keys()))
 
 if __name__ == "__main__":
-    merge_results()
+    m = merge(sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "out"))
+    print(f"merged {len(m)} (dataset, arch) result files: {sorted(m)}")
