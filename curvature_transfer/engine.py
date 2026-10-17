@@ -225,6 +225,13 @@ class CurvatureEngine:
             "sharpened_lower": b["sharpened_lower"], "sharpened_upper": np.minimum(up, b["bf_upper"]),
         }
 
+    def certified_intervals(self, prior_upper: Optional[np.ndarray] = None):
+        """The BF, matching, and sharpened intervals of Section 7.1, as
+        ``{kind: (lower, upper)}`` (see :mod:`curvature_transfer.intervals`).
+        ``prior_upper`` defaults to :meth:`prior_upper` (TLW dual + zero-cost)."""
+        from . import intervals as I
+        return I.from_arrays(self.bounds(), self.prior_upper() if prior_upper is None else prior_upper)
+
     # ------------------------------------------------ transfer conveniences
     def bounds_from_BF(self, c_BF=None) -> Dict[str, np.ndarray]:
         """Lower/upper bounds on c_OR from BF values (default: this graph's BF)."""
@@ -252,8 +259,13 @@ class CurvatureEngine:
         raise ValueError(f"{name} must be a scalar or have length {M}, got shape {a.shape}")
 
     # ---------------------------------------------------------- one call
-    def compute_all(self, exact: bool = True, lly: bool = True) -> Dict[str, np.ndarray]:
-        """Everything in one dict (keys of the preliminary code preserved)."""
+    def compute_all(self, exact: bool = True, lly: bool = True,
+                    exact_values: Optional[Dict[str, np.ndarray]] = None) -> Dict[str, np.ndarray]:
+        """Everything in one dict (keys of the preliminary code preserved).
+
+        ``exact_values``: precomputed output of :meth:`exact` on all edges (e.g.
+        loaded from a checkpoint); used instead of recomputing it.
+        """
         st = self.stats()
         out: Dict[str, np.ndarray] = {"edges": self.edges.copy()}
         out.update(st)
@@ -262,7 +274,8 @@ class CurvatureEngine:
         out.update(b)
         out["Theta_Const"], out["Theta_Slope"] = b["theta_const"], b["theta_slope"]
         if exact:
-            ex = self.exact(("c_OR", "c_OR0", "c_LLY") if lly else ("c_OR", "c_OR0"))
+            ex = exact_values if exact_values is not None else \
+                self.exact(("c_OR", "c_OR0", "c_LLY") if lly else ("c_OR", "c_OR0"))
             out.update(ex)
             out["prior_upper"] = np.minimum(ex["tlw_dual_lazy"], b["zero_cost_upper"])
             br = self.bounds_from_OR(ex["c_OR"])
@@ -272,11 +285,11 @@ class CurvatureEngine:
         out["c_OR_upper_from_c_BF"] = b["bf_upper"]
         return out
 
-    def edge_table(self, exact: bool = True):
+    def edge_table(self, exact: bool = True, exact_values: Optional[Dict[str, np.ndarray]] = None):
         """Per-edge pandas DataFrame (columns compatible with the figure code)."""
         import pandas as pd
 
-        r = self.compute_all(exact=exact)
+        r = self.compute_all(exact=exact, exact_values=exact_values)
         cols = {
             "u": r["edges"][:, 0], "v": r["edges"][:, 1],
             "deg_i": r["deg_i"].astype(int), "deg_j": r["deg_j"].astype(int),
