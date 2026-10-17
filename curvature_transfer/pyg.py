@@ -16,7 +16,7 @@ from . import rewiring
 from .engine import CurvatureEngine
 from .graph import Graph
 
-__all__ = ["SDRFRewiring", "BORFRewiring", "FoSRRewiring", "engine_from_data"]
+__all__ = ["SDRFRewiring", "BORFRewiring", "FoSRRewiring", "engine_from_data", "mark_original"]
 
 
 def engine_from_data(data, **kw) -> CurvatureEngine:
@@ -37,10 +37,29 @@ def _write_back(data, original: np.ndarray, new: np.ndarray):
     return data
 
 
+def mark_original(data):
+    """Give an un-rewired graph the same edge feature schema as a rewired one
+    (``edge_attr`` = 0 on every edge), dropping original edge features."""
+    E = data.edge_index.shape[1]
+    data.edge_attr = torch.zeros((E, 1), dtype=torch.float32, device=data.edge_index.device)
+    return data
+
+
 class _Rewire(BaseTransform):
+    """Base transform. Set ``checkpoint_path`` to make a single long call (e.g.
+    the node-level Minesweeper graph) resumable per rewiring iteration;
+    ``last_compute_time`` is the pure rewiring compute time of the last call,
+    including iterations done before a restart."""
+
+    checkpoint_path = None
+    last_compute_time = None
+
     def forward(self, data):
         g = Graph.from_edge_index(data.edge_index, int(data.num_nodes))
-        return _write_back(data, g.edges, self._rewire(g))
+        self._info = {}
+        out = _write_back(data, g.edges, self._rewire(g))
+        self.last_compute_time = self._info.get("compute_time")
+        return out
 
     def _rewire(self, g: Graph) -> np.ndarray:  # pragma: no cover
         raise NotImplementedError
@@ -56,7 +75,8 @@ class SDRFRewiring(_Rewire):
         import random
         rng = None if self.seed is None else random.Random(self.seed)
         return rewiring.sdrf(g.num_nodes, g.edges, self.metric, self.max_iters, self.max_candidates,
-                             self.remove_edges, rng=rng, n_jobs=self.n_jobs)
+                             self.remove_edges, rng=rng, n_jobs=self.n_jobs,
+                             checkpoint=self.checkpoint_path, info=self._info)
 
 
 class BORFRewiring(_Rewire):
@@ -67,7 +87,8 @@ class BORFRewiring(_Rewire):
 
     def _rewire(self, g):
         return rewiring.borf(g.num_nodes, g.edges, self.metric, self.max_iters,
-                             self.batch_add, self.batch_remove, n_jobs=self.n_jobs)
+                             self.batch_add, self.batch_remove, n_jobs=self.n_jobs,
+                             checkpoint=self.checkpoint_path, info=self._info)
 
 
 class FoSRRewiring(_Rewire):
@@ -76,4 +97,5 @@ class FoSRRewiring(_Rewire):
         self.max_iters = max_iters
 
     def _rewire(self, g):
-        return rewiring.fosr(g.num_nodes, g.edges, self.max_iters)
+        return rewiring.fosr(g.num_nodes, g.edges, self.max_iters,
+                             checkpoint=self.checkpoint_path, info=self._info)
