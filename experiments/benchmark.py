@@ -76,8 +76,8 @@ from curvature_transfer import _io  # noqa: E402
 import timing  # noqa: E402
 
 FAMILIES = ("ER", "BA", "RGG", "WS")
-FAMILY_TITLES = {"ER": "Erdős–Rényi", "BA": "Barabási–Albert", "RGG": "Random geometric",
-                 "WS": r"Watts–Strogatz ($\beta=0.2$)"}
+FAMILY_TITLES = {"ER": "Erdős-Rényi", "BA": "Barabási-Albert", "RGG": "Random geometric",
+                 "WS": r"Watts-Strogatz ($\beta=0.2$)"}
 PHASE_ORDER = ["bf", "prior", "bf_interval", "matching_interval", "sharpened_interval", "exact"]
 PHASE_LABELS = {"exact": "Exact OR (min-cut)", "sharpened_interval": "Sharpened interval",
                 "matching_interval": "Matching interval", "bf_interval": "BF interval",
