@@ -681,18 +681,11 @@ class Runner:
         )
 
     def screening(self):
-        return self.run(
-            "screening",
-            [
-                PY,
-                "screening.py",
-                "--results",
-                self.out,
-                "--out",
-                self.path("tables", "screening"),
-            ]
-            + self.common(),
-        )
+        return self.run("screening", 
+                        [PY, "screening.py", "--results", 
+                             self.out, "--out", self.path("tables", "screening"),
+                            "--data-dir", self.path("data", "large")] + self.common()
+                       )
 
     def distributions(self):
         return self.run(
