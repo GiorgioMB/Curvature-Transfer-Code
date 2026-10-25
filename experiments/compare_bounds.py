@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edgewise comparison of certified OR bounds against exact OR (Section 7.1).
+"""Edgewise comparison of certified OR bounds against exact OR (Section 6.1).
 
 Reads the per-edge arrays of ``edges.py`` (computing and checkpointing them
 if they are missing) for every graph of the registry, on every edge, and
@@ -20,7 +20,7 @@ Table 5 (BF and sharpened intervals): mean gap of the BF lift and of the
   Lambda(L^square), sign certification and Spearman rho of both intervals.
 Extras quoted in the text: share of edges with B^BF >= 0 (Prop 5.1(iii)),
   gain of Theorem 5.3 over the preliminary modulus, the active term of
-  Corollary 6.2, and violations of any certified bound (must be 0).
+  Corollary C.3, and violations of any certified bound (must be 0).
 
 The intervals are those of :mod:`curvature_transfer.intervals`, the same
 arrays that ``screening.py`` uses.
