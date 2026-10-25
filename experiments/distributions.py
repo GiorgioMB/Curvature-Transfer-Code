@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Figures 2-4 (Section 7.2) from the shared per-edge arrays.
+"""Figures 2-4 (Section 6.2) from the shared per-edge arrays.
 
 Writes, for every graph of the registry, the per-edge CSV and manifest that
 ``make_paper_figures.py`` reads (``<results>/edges/csv/``), computed from the
