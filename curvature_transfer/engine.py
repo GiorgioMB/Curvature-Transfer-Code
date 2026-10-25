@@ -212,7 +212,7 @@ class CurvatureEngine:
         """Certified intervals for c_OR.
 
         * BF interval (Corollary 5.6): depends on c_BF and the degrees only.
-        * matching interval: [Lambda(L^square), U^env] (Section 7.1).
+        * matching interval: [Lambda(L^square), U^env] (Section 6.1).
         * sharpened interval (Proposition 5.7): [Lambda(max(L^square, c_BF)), U^env].
         ``prior_upper`` (e.g. the TLW dual bound) is intersected with the upper
         ends of the matching and sharpened intervals when given.
@@ -226,7 +226,7 @@ class CurvatureEngine:
         }
 
     def certified_intervals(self, prior_upper: Optional[np.ndarray] = None):
-        """The BF, matching, and sharpened intervals of Section 7.1, as
+        """The BF, matching, and sharpened intervals of Section 6.1, as
         ``{kind: (lower, upper)}`` (see :mod:`curvature_transfer.intervals`).
         ``prior_upper`` defaults to :meth:`prior_upper` (TLW dual + zero-cost)."""
         from . import intervals as I
@@ -242,7 +242,7 @@ class CurvatureEngine:
                 "c_OR_upper_from_c_BF": B.psi_bf_to_or(z, st["deg_i"], st["deg_j"])}
 
     def bounds_from_OR(self, c_OR) -> Dict[str, np.ndarray]:
-        """Lower/upper bounds on c_BF from c_OR values (Corollaries 6.1, 6.2)."""
+        """Lower/upper bounds on c_BF from c_OR values (Corollaries C.2, C.3)."""
         st = self.stats()
         th = self._edgewise(c_OR, "c_OR")
         return {"c_OR": th,
