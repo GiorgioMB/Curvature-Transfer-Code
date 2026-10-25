@@ -1,6 +1,6 @@
 """Timing of exact evaluation and of the certified intervals.
 
-Used by both ``screening.py`` (Section 7.3) and ``benchmark.py`` (Section 7.4),
+Used by both ``screening.py`` (Section 6.3) and ``benchmark.py`` (Section 6.4),
 so the two report the cost of the same computations. Every timed phase is a
 function ``f(graph, ids, n_jobs)`` of a set of edge ids (``None`` = every
 edge), listed in :data:`PHASES`:
@@ -9,7 +9,7 @@ edge), listed in :data:`PHASES`:
 * ``bf``                    Balanced Forman curvature;
 * ``prior``                 the JL and TLW lower bounds;
 * ``bf_interval``, ``matching_interval``, ``sharpened_interval``:
-  :func:`curvature_transfer.intervals.compute`, the intervals of Section 7.1
+  :func:`curvature_transfer.intervals.compute`, the intervals of Section 6.1
   computed from scratch with only the work each needs (the matching and
   sharpened intervals include the TLW dual certificate, which needs the local
   distance matrix but no transport solve).
@@ -95,6 +95,9 @@ def warmup():
     e.exact(); e.bounds(); e.prior_upper()
     for f, _ in PHASES.values():
         f(g); f(g, np.array([0, 2], dtype=np.int64))
+    from curvature_transfer import screen  # the kernels of the certify-then-solve cascade
+    exact_all(g)
+    screen(g, tau=0.0); screen(g, k=2)
     _WARM = True
 
 
@@ -142,3 +145,16 @@ def time_exact(g: Graph, n_jobs=None, **kw):
 
 def time_interval(g: Graph, kind: str, n_jobs=None, **kw):
     return repeat(lambda: I.compute(g, kind, n_jobs), **kw)
+
+def exact_all(g: Graph, n_jobs=None, seed: int = 0) -> np.ndarray:
+    """Exact lazy c_OR on every edge, the baseline of the certify-then-solve
+    experiment: the min-cut solver without the TLW dual (``K.exact_or_ids``),
+    edges in a fixed random order so that expensive edges (hubs) are spread
+    over the parallel chunks, exactly as in :func:`curvature_transfer.screen`.
+    Returns the values in edge order."""
+    import numba
+    ids = np.random.default_rng(seed).permutation(g.num_edges).astype(np.int64)
+    out = np.empty(g.num_edges)
+    with _threads(n_jobs):
+        out[ids] = K.exact_or_ids(g.indptr, g.indices, g.edges, ids, 8 * numba.get_num_threads())
+    return out
