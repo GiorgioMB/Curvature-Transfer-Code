@@ -151,7 +151,7 @@ def zero_cost_upper(di, dj, tri, ai=None, aj=None):
 
 
 def theta_const_slope(di, dj):
-    """Const_alpha and Slope_alpha of Proposition 4.10 (coverage envelope)."""
+    """Const_alpha and Slope_alpha of Proposition C.1 (coverage envelope)."""
     di, dj = _f(di), _f(dj)
     ai, aj, _, _, D = idleness(di, dj)
     Sig = di + dj + 2.0
@@ -265,7 +265,7 @@ def sharpened_lower(Lsq, cbf, di, dj):
 
 
 def phi_or_to_bf(theta, di, dj):
-    """Corollary 6.1: c_OR >= theta  =>  c_BF >= S + T t_min(theta)
+    """Corollary C.2: c_OR >= theta  =>  c_BF >= S + T t_min(theta)
     (0 on edges with rho_min = 1, where BF is 0 by definition)."""
     th = _f(theta)
     S, T, _ = degree_terms(di, dj)
@@ -275,7 +275,7 @@ def phi_or_to_bf(theta, di, dj):
 
 
 def psi_or_to_bf_matching(theta, di, dj, C4, match, clip=True):
-    """The second term of Corollary 6.2 (Theorem 4.4 of the preliminary
+    """The second term of Corollary C.3 (Theorem 4.4 of the preliminary
     version): S + T u_max(theta) + C4, with u_max the closed-form inversion of
     the quadrangle-augmented JL bound. With ``clip`` the triangle envelope is
     also capped at rho_min - 1, which is valid and never looser."""
@@ -298,7 +298,7 @@ def psi_or_to_bf_matching(theta, di, dj, C4, match, clip=True):
 
 
 def psi_or_to_bf(theta, di, dj, C4, match, return_parts=False):
-    """Corollary 6.2: c_OR <= theta  =>  c_BF <= min(s_0(theta), psi_matching)."""
+    """Corollary C.3: c_OR <= theta  =>  c_BF <= min(s_0(theta), psi_matching)."""
     a = s0(theta, di, dj)
     b = psi_or_to_bf_matching(theta, di, dj, C4, match)
     out = np.minimum(a, b)
