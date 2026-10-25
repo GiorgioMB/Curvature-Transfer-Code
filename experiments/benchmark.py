@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime scaling of exact OR curvature versus the certified bounds (Section 7.4).
+"""Runtime scaling of exact OR curvature versus the certified bounds (Section 6.4).
 
 Families. Four random graph families with the same scaling law: the average
 degree grows as d(n) = 0.2 (50/n)^0.6 n ~ 2.1 n^0.4 (the law of the ER example
@@ -17,7 +17,7 @@ tables, which are kept unchanged in generators.py.)
 
 Phases (``timing.PHASES``, the same code as the speedup column of the screening
 table): exact (exact lazy OR, min-cut), bf, prior (JL and TLW lower bounds),
-bf_interval, matching_interval, sharpened_interval (the intervals of Section 7.1;
+bf_interval, matching_interval, sharpened_interval (the intervals of Section 6.1;
 the last two include the TLW dual certificate, which needs the local distance
 matrix). Cheap phases run first.
 
