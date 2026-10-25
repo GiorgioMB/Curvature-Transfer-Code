@@ -17,7 +17,7 @@ What this script expects to find
 
 Figures produced per tag (when the required columns exist)
 - A histogram of observed Ollivier--Ricci curvature (c_OR) with optional
-  overlays for transfers/bounds and envelope quantities.
+  overlays for the two ends of the BF interval and the transport envelope.
 - A histogram of observed Balanced Forman curvature (c_BF) with optional
   overlays for OR->BF transfer bounds.
 - A scatter plot of c_BF vs c_OR including an observed quantile ribbon and
@@ -28,7 +28,6 @@ Key columns used from the CSV (if present)
 - cOR_lower_from_cBF, cOR_upper_from_cBF: BF->OR transfer bounds (edgewise).
 - cBF_lower_from_cOR, cBF_upper_from_cOR: OR->BF transfer bounds (edgewise).
 - env_upper: transport envelope upper value (edgewise).
-- Theta_at_t: Theta evaluated at the implied transport weight (edgewise).
 The reader is robust to variations in column letter case.
 
 Usage (CLI)
@@ -82,7 +81,6 @@ COL_OBS   = "#4C78A8"
 COL_LOWER = "#54A24B"
 COL_UPPER = "#E45756"
 COL_ENV   = "#F58518"
-COL_THETA = "#B279A2"
 COL_QRIB  = "#333333"  # almost black
 
 def _apply_style():
@@ -103,14 +101,13 @@ DISPLAY = {
     "c_OR":    r"$\mathfrak{c}_{\mathrm{OR}}$",
     "c_BF":    r"$\mathfrak{c}_{\mathrm{BF}}$",
     "c_OR0":   r"$\mathfrak{c}_{\mathrm{OR\text{-}0}}$",
-    "Theta_at_t": r"$\Theta_\alpha(\triangle)$",
     "env_upper":  r"transport envelope (upper)",
 }
 
 # CSV columns expected from edges.py (CurvatureEngine.edge_table)
 EXPECTED_COLS = [
     "u","v","deg_i","deg_j","triangle","Xi","sho_max",
-    "c_BF","c_OR","c_OR0","Theta_const","Theta_slope","Theta_at_t","env_upper",
+    "c_BF","c_OR","c_OR0","env_upper",
     "cOR_lower_from_cBF","cOR_upper_from_cBF","cBF_lower_from_cOR","cBF_upper_from_cOR",
 ]
 
@@ -318,7 +315,6 @@ def _hist_with_bands(
         lower: Optional[np.ndarray] = None,
         upper: Optional[np.ndarray] = None,
         env: Optional[np.ndarray] = None,
-        theta: Optional[np.ndarray] = None,
         lower_label: Optional[str] = None,
         upper_label: Optional[str] = None,
         bins: int | str = "auto",
@@ -334,7 +330,6 @@ def _hist_with_bands(
     - lower, upper: Optional arrays for lower/upper transfer distributions
       (e.g., BF->OR or OR->BF bounds per edge). Each is plotted as a step outline.
     - env: Optional transport envelope values (edgewise) drawn as a step outline.
-    - theta: Optional Theta-at-t values (edgewise) drawn as a step outline.
     - lower_label, upper_label: Legend labels for the overlay distributions.
     - bins: Number of histogram bins or plt bins option.
     - title: Axes title.
@@ -349,13 +344,10 @@ def _hist_with_bands(
     if upper is not None and len(upper) > 0:
         ax.hist(upper, bins=bins, density=True, histtype="step", linewidth=1.6, color=COL_UPPER,
                 label=(upper_label or "U. Transfer Dist."))
-    # Envelope / Theta distributions
+    # Transport envelope distribution (Proposition 4.5)
     if env is not None and len(env) > 0:
         ax.hist(env, bins=bins, density=True, histtype="step", linewidth=1.3, color=COL_ENV, alpha=0.5,
                 label="Transport Envelope Dist.")
-    if theta is not None and len(theta) > 0:
-        ax.hist(theta, bins=bins, density=True, histtype="step", linewidth=1.1, color=COL_THETA, alpha=0.5,
-                label=DISPLAY["Theta_at_t"] + " Dist.")
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Density")  # the histograms are drawn with density=True
@@ -607,7 +599,6 @@ def _make_run_figures(
     cBF_lo  = as_np("cBF_lower_from_cOR")
     cBF_up  = as_np("cBF_upper_from_cOR")
     env_up  = as_np("env_upper")
-    theta_t = as_np("Theta_at_t")
 
     fig_dir = os.path.join(run_root, "figures_paper")
     safe_tag = tag.replace("/", "-").replace(" ", "_").replace(".", "_")
@@ -616,9 +607,9 @@ def _make_run_figures(
     # 1) OR histogram (short title; run name as suptitle)
     if cOR is not None:
         fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        _hist_with_bands(ax, obs=cOR, lower=cOR_lo, upper=cOR_up, env=env_up, theta=theta_t,
-                            lower_label=r"BF$\rightarrow$OR L. Dist.", upper_label=r"BF$\rightarrow$OR U. Dist.",
-                            bins=bins, title="Ollivier-Ricci Curvature", xlabel="Curvature " + DISPLAY["c_OR"])
+        _hist_with_bands(ax, obs=cOR, lower=cOR_lo, upper=cOR_up, env=env_up, lower_label=r"BF$\rightarrow$OR L. Dist.", 
+                            upper_label=r"BF$\rightarrow$OR U. Dist.", bins=bins, title="Ollivier-Ricci Curvature", 
+                            xlabel="Curvature " + DISPLAY["c_OR"])
         fig.suptitle(pretty_tag, y=0.90, fontsize=12)
         fig.tight_layout(rect=[0, 0, 1, 0.96])
         filename = os.path.join(fig_dir, f"fig_cOR_hist__{safe_tag}.png")
@@ -649,7 +640,7 @@ def _make_run_figures(
     # 2) BF histogram (short title; run name as suptitle)
     if cBF is not None:
         fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        _hist_with_bands(ax, obs=cBF, lower=cBF_lo, upper=cBF_up, env=None, theta=None,
+        _hist_with_bands(ax, obs=cBF, lower=cBF_lo, upper=cBF_up, env=None,
                             lower_label=r"OR$\rightarrow$BF lower (dist.)", upper_label=r"OR$\rightarrow$BF upper (dist.)",
                             bins=bins, title="Balanced Forman Curvature", xlabel="Curvature " + DISPLAY["c_BF"])
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
