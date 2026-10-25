@@ -1,14 +1,14 @@
-"""The certified intervals of Section 7.1, defined in exactly one place.
+"""The certified intervals of Section 6.1, defined in exactly one place.
 
 Every experiment (the bound tables, certify-then-solve, the runtime figure)
 uses these functions, so that "the matching interval" or "the sharpened
 interval" denotes the same pair of arrays everywhere:
 
 * ``bf``        [phi(c_BF), psi(c_BF)]                         (Corollary 5.5)
-* ``matching``  [Lambda(L^square), min(U^prior, U^env)]         (Section 7.1)
+* ``matching``  [Lambda(L^square), min(U^prior, U^env)]         (Section 6.1)
 * ``sharpened`` [Lambda(max(L^square, c_BF)), min(U^prior, U^env, psi(c_BF))]
-                                                                (Section 7.1, i.e.
-                 Proposition 5.6 intersected with the prior certificate)
+                 (Section 6.1, i.e. Proposition 5.6 intersected with the prior 
+                 certificate)
 
 U^prior = min(TLW dual bound, zero-cost bound). The TLW dual bound needs the
 local distance matrix (but no transport solve); the BF interval needs only
@@ -18,6 +18,18 @@ c_BF and the two degrees.
 already computed; :func:`compute` computes one interval from scratch on a
 graph, doing only the work that interval needs, and is what the runtime
 measurements time. The two agree exactly (tested).
+:func:`stage_one` is the first stage of certify-then-solve
+(:mod:`curvature_transfer.screening`): from one pass of 2-hop statistics it
+returns the BF interval and the ``two_hop`` interval, i.e. the sharpened
+interval without the TLW dual certificate (everything that needs no local
+distance matrix):
+
+* ``two_hop``   [Lambda(max(L^square, c_BF)), min(U^env, zero-cost bound, 
+                  psi(c_BF))]
+
+so that the sharpened interval is [two_hop lower, min(two_hop upper, TLW dual)]
+(tested). The TLW dual is evaluated later, only on the edges that stage one
+leaves undecided, together with the exact solve (``_kernels.screen_ids``).
 """
 from __future__ import annotations
 
@@ -29,7 +41,7 @@ from . import _kernels as K
 from . import bounds as B
 from .graph import Graph
 
-__all__ = ["KINDS", "ROUNDING_TOL", "from_arrays", "compute", "needs_distances", "widen"]
+__all__ = ["KINDS", "ROUNDING_TOL", "from_arrays", "compute", "stage_one", "two_hop_from_arrays", "needs_distances", "widen"]
 
 KINDS = ("bf", "matching", "sharpened")
 
@@ -97,3 +109,33 @@ def compute(graph: Graph, kind: str, n_jobs: Optional[int] = None,
         if kind == "matching":
             return B.lift(Lsq, di, dj), up
         return B.sharpened_lower(Lsq, bf, di, dj), np.minimum(up, bf_up)
+
+def two_hop_from_arrays(b: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """The ``two_hop`` interval of :func:`stage_one` from stored bound arrays
+    (:meth:`CurvatureEngine.bounds`); equal to :func:`stage_one` (tested)."""
+    up = np.minimum(np.minimum(b["envelope_upper"], b["zero_cost_upper"]), b["bf_upper"])
+    return np.asarray(b["sharpened_lower"], float), up
+
+
+def stage_one(graph: Graph, n_jobs: Optional[int] = None,
+              ids: Optional[np.ndarray] = None) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """BF interval and ``two_hop`` interval from one pass of 2-hop statistics
+    (one cardinality matching per edge; no local distance matrix, no transport
+    solve). Same formulas as :func:`compute`; ``ids`` restricts to those edges."""
+    from .engine import _threads
+
+    g = graph
+    ids = np.arange(g.num_edges, dtype=np.int64) if ids is None else np.ascontiguousarray(ids, dtype=np.int64)
+    E = np.ascontiguousarray(g.edges[ids])
+    with _threads(n_jobs):
+        di = g.deg[E[:, 0]].astype(float)
+        dj = g.deg[E[:, 1]].astype(float)
+        raw = K.edge_stats_all(g.indptr, g.indices, E, False, True)
+    tri = raw[:, 0].astype(float)
+    C4 = B.c4_term(raw[:, 3].astype(float), raw[:, 4].astype(float), di, dj)
+    bf = B.bf_curvature(di, dj, tri, C4)
+    bf_lo, bf_up = B.phi_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
+    Lsq = B.matching_lower(di, dj, tri, raw[:, 6].astype(float))
+    env = B.envelope_upper(di, dj, tri, raw[:, 1].astype(float), raw[:, 2].astype(float), raw[:, 3].astype(float))
+    up = np.minimum(np.minimum(env, B.zero_cost_upper(di, dj, tri)), bf_up)
+    return {"bf": (bf_lo, bf_up), "two_hop": (B.sharpened_lower(Lsq, bf, di, dj), up)}
