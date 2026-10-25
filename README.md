@@ -5,8 +5,8 @@ The package computes, for every edge of an undirected simple graph:
 
 * **exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, by optimal transport;
 * **Balanced Forman curvature** and the 2-hop statistics behind it;
-* **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the matching-augmented bound (Thm 4.8), the lazy transport envelope (Prop 4.6), the BF interval (Thms 5.3–5.4, Cor 5.6), the BF deficits (Prop 5.1), the sharpened interval (Prop 5.7), and the reverse direction (Cors 6.1–6.2);
-* **certify-then-solve** screening, which answers threshold and bottom-k queries exactly while solving transport problems only on undecided edges.
+* **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the matching-augmented bound (Thm 4.8), the lazy transport envelope (Prop 4.6), the BF interval (Thms 5.3–5.4, Cor 5.6), the BF deficits (Prop 5.1), the sharpened interval (Prop 5.7), and the reverse direction (Appendix C, Cors C.2–C.3);
+* **certify-then-solve** screening, which answers threshold and bottom-k queries exactly while solving transport problems only on undecided edges: a cascade of 2-hop bounds on every edge, then the TLW certificate and the transport problem (sharing one distance matrix) only where needed, with an adaptive schedule for bottom-k queries (`curvature_transfer.screen`).
 
 ```python
 from curvature_transfer import CurvatureEngine
@@ -42,10 +42,11 @@ pytest -q
 | `experiments/suite.py`                                                                            | graph registry: every graph of every table and figure                                    |
 | `experiments/edges.py`                                                                            | per-edge statistics, bounds, exact curvatures of every registry graph (the single store) |
 | `experiments/compare_bounds.py`                                                                   | Tables 2–5 from the per-edge store                                                      |
-| `experiments/screening.py`                                                                        | certify-then-solve table (Section 7.3) from the per-edge store                           |
+| `experiments/screening.py` | Section 6.3: avoided fractions on the registry graphs (from the per-edge store) and Table 6, timed on large real networks |
+| `experiments/large_graphs.py` | the large real networks of Table 6 (10^5 to 10^6 edges): sources, download cache, parsing |
 | `experiments/distributions.py`                                                                    | Figures 2–4 from the per-edge store (`make_paper_figures.py` draws them)              |
 | `experiments/timing.py`                                                                           | timing code shared by the screening table and the runtime figure                         |
-| `experiments/benchmark.py`                                                                        | runtime scaling, Figure 5 (Section 7.4)                                                  |
+| `experiments/benchmark.py`                                                                        | runtime scaling, Figure 5 (Section 6.4)                                                  |
 | `experiments/gnn_experiments.py`, `merge_results.py`, `stats.py`, `tree_neighbors_match.py` | Appendix A                                                                               |
 | `experiments/generators.py`                                                                       | graph generators, unchanged so that seeded graphs reproduce                              |
 
@@ -111,11 +112,16 @@ gap keeps widening with size.
   graphs where lower and upper bound coincide (e.g. K_n) rounding can otherwise put lower > upper.
 * "Sign certified" means lower > 0 or upper < 0; the screening query {c_OR < 0} also counts lower >= 0 as
   decided, so its avoided fraction is never below the certified-sign fraction.
-* The matching and sharpened intervals of Section 7.1 include the TLW dual certificate, which needs the local
+* The matching and sharpened intervals of Section 6.1 include the TLW dual certificate, which needs the local
   distance matrix (but no transport solve). Screening and Figure 5 time exactly these intervals, computed from
   scratch.
-* Certify-then-solve saves wall-clock time mainly on large or dense graphs. On small graphs exact evaluation
-  is cheap enough that computing the bounds costs about as much as it saves.
+* Certify-then-solve (Section 6.3) is timed on the large real networks of `experiments/large_graphs.py`, which are
+  downloaded on first use (SNAP and GitHub; set `--data-dir` to reuse a cache) into `results/data/large/`. The
+  baseline is exact evaluation of every edge with the same min-cut solver, without the TLW dual
+  (`timing.exact_all`); both the baseline and the cascade process the edges in one fixed random order, so that
+  the expensive edges at hubs are spread over the threads. Every answer is checked against the exact curvatures.
+  The `paper` step fails its consistency check if some large graph shows no speedup, since the text says otherwise.
+  On the small registry graphs exact evaluation takes milliseconds, so only their avoided fractions are reported.
 * GNNs: GCN uses `GCNConv`, GIN `GINEConv`, GAT `GATConv`; every topology carries one edge feature (1 = added
   by rewiring), and TreeNeighborsMatch is read out at the root node. Every CV fold is seeded from
   (seed, fold), so restored and recomputed folds give the same results.
