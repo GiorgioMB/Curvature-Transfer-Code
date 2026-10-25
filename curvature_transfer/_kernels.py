@@ -747,6 +747,99 @@ def exact_ids(indptr, indices, edges, ids, want_or, want_or0, want_lly, nchunks)
                                want_or, want_or0, want_lly, scratch, k)
     return out
 
+@njit(cache=True)
+def exact_or_one(indptr, indices, i, j, scratch, epoch):
+    """Exact lazy c_OR of edge (i, j) only (the min-cut of :func:`exact_one`
+    without the TLW dual or the other curvatures); same arithmetic, same value."""
+    S = local_support(indptr, indices, i, j)
+    D = local_distances(indptr, indices, S, scratch, epoch)
+    di = np.int64(indptr[i + 1] - indptr[i])
+    dj = np.int64(indptr[j + 1] - indptr[j])
+    L = (di + 1) * (dj + 1)
+    w = _net(S, indptr, indices, i, j, dj + 1, dj + 1, di + 1, di + 1)
+    return 1.0 - w1_closure(D, w) / L
+
+
+@njit(cache=True, parallel=True)
+def exact_or_ids(indptr, indices, edges, ids, nchunks):
+    """:func:`exact_or_one` for edges[ids], parallel over chunks (as :func:`exact_ids`)."""
+    n = indptr.shape[0] - 1
+    K = ids.shape[0]
+    out = np.full(K, np.nan)
+    if K == 0:
+        return out
+    nchunks = max(1, min(nchunks, K))
+    step = (K + nchunks - 1) // nchunks
+    for c in prange(nchunks):
+        lo = c * step
+        hi = min(K, lo + step)
+        if lo >= hi:
+            continue
+        scratch = new_scratch(n)
+        for k in range(lo, hi):
+            e = ids[k]
+            out[k] = exact_or_one(indptr, indices, edges[e, 0], edges[e, 1], scratch, k)
+    return out
+
+
+@njit(cache=True)
+def screen_one(indptr, indices, i, j, tau, tol, scratch, epoch):
+    """Last stage of certify-then-solve for the query {c_OR < tau} on one edge.
+
+    The local distance matrix is built once; the TLW dual certificate (an upper
+    bound on the lazy curvature, the U^prior of the paper) is evaluated on it,
+    and the min-cut is solved only if the certificate does not put the edge in
+    {c_OR < tau} (with the rounding tolerance ``tol``). Returns float64[2]:
+    (exact c_OR, or NaN if the certificate decided the edge; TLW upper bound).
+    The exact value is computed with the same arithmetic as :func:`exact_one`.
+    """
+    out = np.full(2, np.nan)
+    S = local_support(indptr, indices, i, j)
+    D = local_distances(indptr, indices, S, scratch, epoch)
+    di = np.int64(indptr[i + 1] - indptr[i])
+    dj = np.int64(indptr[j + 1] - indptr[j])
+    L = (di + 1) * (dj + 1)
+    w = _net(S, indptr, indices, i, j, dj + 1, dj + 1, di + 1, di + 1)
+    nz = 0
+    for a in range(w.shape[0]):
+        if w[a] != 0:
+            nz += 1
+    idx = np.empty(nz, np.int64)
+    wsub = np.empty(nz, np.int64)
+    k = 0
+    for a in range(w.shape[0]):
+        if w[a] != 0:
+            idx[k] = a
+            wsub[k] = w[a]
+            k += 1
+    tlw = 1.0 - _tlw_dual(D, wsub, idx) / L
+    out[1] = tlw
+    if tlw + tol < tau:
+        return out
+    out[0] = 1.0 - w1_closure(D.copy(), w.copy()) / L
+    return out
+
+
+@njit(cache=True, parallel=True)
+def screen_ids(indptr, indices, edges, ids, tau, tol, nchunks):
+    """:func:`screen_one` for edges[ids], parallel over chunks (as :func:`exact_ids`)."""
+    n = indptr.shape[0] - 1
+    K = ids.shape[0]
+    out = np.full((K, 2), np.nan)
+    if K == 0:
+        return out
+    nchunks = max(1, min(nchunks, K))
+    step = (K + nchunks - 1) // nchunks
+    for c in prange(nchunks):
+        lo = c * step
+        hi = min(K, lo + step)
+        if lo >= hi:
+            continue
+        scratch = new_scratch(n)
+        for k in range(lo, hi):
+            e = ids[k]
+            out[k] = screen_one(indptr, indices, edges[e, 0], edges[e, 1], tau, tol, scratch, k)
+    return out
 
 @njit(cache=True)
 def tlw_lazy_one(indptr, indices, i, j, scratch, epoch):
