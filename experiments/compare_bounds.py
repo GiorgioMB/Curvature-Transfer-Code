@@ -6,21 +6,23 @@ if they are missing) for every graph of the registry, on every edge, and
 computes:
 
 Table 2 (non-lazy c_OR-0): mean gaps of the lower bounds JL, TLW, and
-  L^square (Theorem 4.8) and of the upper bounds JL, TLW dual, and the
-  envelope at zero idleness; share of edges where ours is strictly tighter /
-  looser than the best prior bound; edges on which L^square is below JL/TLW.
-Table 3 (lazy c_OR): lifted lower bounds, the prior upper certificate, the
-  envelope, and the share of edges whose sign the prior / matching interval
-  certifies.
+  L^square (Theorem 4.3) and of the upper bounds JL, TLW dual, and the
+  envelope of Proposition 4.8 at zero idleness; share of edges where ours is
+  strictly tighter / looser than the best prior bound; edges on which L^square
+  is below JL/TLW.
+Table 3 (lazy c_OR): JL lifted by Proposition 4.1 against L^lazy (Theorem 4.7),
+  the prior upper certificate against U^lazy (Proposition 4.10), and the share
+  of edges whose sign the prior / sharpened interval certifies.
 Table 4 (ranking): Spearman rho and recall of the 10% most negatively curved
-  edges for BF, the JL mean, and the midpoints of the prior and matching
+  edges for BF, the JL mean, and the midpoints of the prior and sharpened
   intervals.
-Table 5 (BF and sharpened intervals): mean gap of the BF lift and of the
-  combined lift, share of edges where the combined lift beats
-  Lambda(L^square), sign certification and Spearman rho of both intervals.
+Table 5 (BF and sharpened intervals): mean gap of the lower end of the BF
+  interval (Corollary 5.8) and of L^lazy, share of edges where L^lazy is
+  strictly tighter, sign certification and Spearman rho of both intervals.
 Extras quoted in the text: share of edges with B^BF >= 0 (Prop 5.1(iii)),
-  gain of Theorem 5.3 over the preliminary modulus, the active term of
-  Corollary C.3, and violations of any certified bound (must be 0).
+  gain of Theorem 5.4 over the preliminary modulus, the comparison of
+  Corollary C.2 with the inverted lift, and violations of any certified bound
+  (must be 0).
 
 The intervals are those of :mod:`curvature_transfer.intervals`, the same
 arrays that ``screening.py`` uses.
@@ -85,8 +87,9 @@ def evaluate(spec, A, seed=0):
 
     lo = {"JL": A["jl_lower"], "TLW": A["tlw_lower"], "ours": A["matching_lower"]}
     up = {"JL": A["jl_upper"], "TLW": A["tlw_dual_nonlazy"], "ours": A["envelope_upper_nonlazy"]}
-    Llo = {"JL": A["jl_lower_lazy"], "ours": iv["matching"][0], "BF": iv["bf"][0], "comb": iv["sharpened"][0]}
-    Lup = {"prior": A["prior_upper"], "ours": A["envelope_upper"], "BF": iv["bf"][1]}
+    Llo = {"JL": A["jl_lower_lazy"], "ours": A["lazy_lower"], "BF": iv["bf"][0], "comb": iv["sharpened"][0],
+           "BFmod": A["bf_lower_modulus"]}
+    Lup = {"prior": A["prior_upper"], "ours": A["lazy_upper"], "BF": iv["bf"][1]}
     up_match, up_sharp = iv["matching"][1], iv["sharpened"][1]
 
     out = dict(graph=spec.name, tag=spec.tag, group=spec.group, E=M, n=int(A["num_nodes"]))
@@ -131,7 +134,7 @@ def evaluate(spec, A, seed=0):
         return _mean((wl > 0) | (wu < 0))
 
     out["cert_prior"] = cert(Llo["JL"], Lup["prior"])
-    out["cert_ours"] = cert(*iv["matching"])
+    out["cert_ours"] = cert(*iv["sharpened"])
     out["cert_bf"] = cert(*iv["bf"])
     out["cert_sharp"] = cert(*iv["sharpened"])
     out["comb_tighter"] = _mean(Llo["comb"] > Llo["ours"] + TOL)
@@ -144,12 +147,13 @@ def evaluate(spec, A, seed=0):
     m2 = np.minimum(di, dj) >= 2
     out["frac_Bdef_nonneg"] = _mean(A["bf_deficit_B"][m2] >= -TOL) if m2.any() else float("nan")
     out["frac_BF_gt_OR0"] = _mean(A["c_BF"][m2] > ex0[m2] + TOL) if m2.any() else float("nan")
-    _, t_s0, t_match = B.psi_or_to_bf(ex1, di, dj, A["C4"], A["matching"], return_parts=True)
-    out["cor62_s0_tighter"] = _mean(t_s0 < t_match - TOL)
-    out["cor62_match_tighter"] = _mean(t_match < t_s0 - TOL)
-    out["gap_cor62_s0"] = _mean(t_s0 - A["c_BF"])
-    out["gap_cor62_match"] = _mean(t_match - A["c_BF"])
-    out["gap_cor62_min"] = _mean(np.minimum(t_s0, t_match) - A["c_BF"])
+    t_first = B.psi_or_to_bf(ex1, di, dj)              # Corollary C.2
+    t_lift = B.psi_or_to_bf_via_lift(ex1, di, dj)      # inverting Lambda^tf through Lemma 3.4
+    out["corC2_first_tighter"] = _mean(t_first[m2] < t_lift[m2] - TOL) if m2.any() else float("nan")
+    out["corC2_first_looser"] = _mean(t_first[m2] > t_lift[m2] + TOL) if m2.any() else float("nan")
+    out["gap_corC2_first"] = _mean(t_first[m2] - A["c_BF"][m2]) if m2.any() else float("nan")
+    out["gap_corC2_lift"] = _mean(t_lift[m2] - A["c_BF"][m2]) if m2.any() else float("nan")
+    out["bf_int_gain"] = _mean(Llo["BF"] > Llo["BFmod"] + TOL)  # Corollary 5.8 over Theorem 5.4
 
     proxies = {
         "BF": A["c_BF"],

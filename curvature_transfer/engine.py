@@ -100,6 +100,7 @@ class CurvatureEngine:
             "Xi": raw[:, 3].astype(float),
             "varpi": raw[:, 4].astype(float),
             "matching": raw[:, 6].astype(float),
+            "xi_i": raw[:, 7].astype(float), "xi_j": (raw[:, 3] - raw[:, 7]).astype(float),
         }
         vp = raw[:, 5] if self.varpi == "legacy" else raw[:, 4]
         if self.varpi == "legacy":
@@ -180,49 +181,54 @@ class CurvatureEngine:
         di, dj, t = st["deg_i"], st["deg_j"], st["triangle"]
         S, T, Kk = B.degree_terms(di, dj)
         bf = st["c_BF"]
-        Lsq = B.matching_lower(di, dj, t, st["matching"])
+        m = st["matching"]
+        Lsq = B.matching_lower(di, dj, t, m)
         A, Bd = B.bf_deficits(di, dj, t, st["C4"])
-        const, slope = B.theta_const_slope(di, dj)
+        Llazy = B.lazy_lower(di, dj, t, m)
+        Ulazy = B.lazy_upper(di, dj, t, m, st["xi_i"], st["xi_j"])
         out = {
-            # non-lazy (c_OR-0)
+            # non-lazy (c_OR-0): Table 2
             "jl_lower": B.jl_lower(di, dj, t),
             "jl_upper": B.jl_upper(di, dj, t),
             "tlw_lower": B.tlw_lower(di, dj, t, st["nUi"], st["nUj"]),
-            "matching_lower": Lsq,
+            "matching_lower": Lsq,                                     # Theorem 4.3
             "envelope_upper_nonlazy": B.envelope_upper(di, dj, t, st["nUi"], st["nUj"], st["Xi"], 0.0, 0.0),
-            # lazy (c_OR)
-            "jl_lower_lazy": B.lift(B.jl_lower(di, dj, t), di, dj),
-            "matching_lower_lazy": B.lift(Lsq, di, dj),
-            "envelope_upper": B.envelope_upper(di, dj, t, st["nUi"], st["nUj"], st["Xi"]),
+            # lazy (c_OR): Table 3
+            "jl_lower_lazy": B.lift_mix(B.jl_lower(di, dj, t), di, dj, t),  # JL lifted by Proposition 4.1
+            "matching_lower_lazy": B.lift_mix(Lsq, di, dj, t),        # L^square lifted by Proposition 4.1
+            "lazy_lower": Llazy,                                       # Theorem 4.7
+            "lazy_upper": Ulazy,                                       # Proposition 4.10
+            "coverage_upper": B.coverage_upper(di, dj, t),             # Proposition 4.10, last inequality
+            "envelope_upper": B.envelope_upper(di, dj, t, st["nUi"], st["nUj"], st["Xi"]),  # Prop. 4.8
             "zero_cost_upper": B.zero_cost_upper(di, dj, t),
-            "theta_const": const, "theta_slope": slope, "theta_at_t": const + slope * t,
             # BF -> OR (Section 5)
-            "bf_lower": B.phi_bf_to_or(bf, di, dj),
-            "bf_upper": B.psi_bf_to_or(bf, di, dj),
+            "bf_lower": B.phi_int_bf_to_or(bf, di, dj),                # Corollary 5.8, lower end
+            "bf_lower_modulus": B.phi_bf_to_or(bf, di, dj),            # Theorem 5.4 at zeta = c_BF
+            "bf_upper": B.psi_bf_to_or(bf, di, dj),                    # Theorem 5.7 at zeta = c_BF
             "bf_lower_preliminary": B.phi_bf_to_or_preliminary(bf, di, dj, st["C4"]),
             "bf_deficit_A": A, "bf_deficit_B": Bd,
             "bf_clipped": B.bf_clipped(bf, A, Bd),
-            "sharpened_lower": B.sharpened_lower(Lsq, bf, di, dj),
+            # 2-hop interval (Proposition 5.9); the sharpened interval adds U^prior
+            "sharpened_lower": Llazy,
         }
-        out["sharpened_upper"] = np.minimum(out["envelope_upper"], out["bf_upper"])
+        out["sharpened_upper"] = Ulazy
         self._cache["bounds"] = out
         return out
 
     def intervals(self, prior_upper: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
         """Certified intervals for c_OR.
 
-        * BF interval (Corollary 5.6): depends on c_BF and the degrees only.
-        * matching interval: [Lambda(L^square), U^env] (Section 6.1).
-        * sharpened interval (Proposition 5.7): [Lambda(max(L^square, c_BF)), U^env].
-        ``prior_upper`` (e.g. the TLW dual bound) is intersected with the upper
-        ends of the matching and sharpened intervals when given.
+        * BF interval (Corollary 5.8): depends on c_BF and the degrees only.
+        * matching interval: [Lambda^mix(L^square), U^lazy].
+        * 2-hop interval (Proposition 5.9): [L^lazy, U^lazy]; with ``prior_upper``
+          (e.g. the TLW dual bound) intersected, the sharpened interval of Section 6.1.
         """
         b = self.bounds()
-        up = b["envelope_upper"] if prior_upper is None else np.minimum(b["envelope_upper"], prior_upper)
+        up = b["lazy_upper"] if prior_upper is None else np.minimum(b["lazy_upper"], prior_upper)
         return {
             "bf_lower": b["bf_lower"], "bf_upper": b["bf_upper"],
             "matching_lower": b["matching_lower_lazy"], "matching_upper": up,
-            "sharpened_lower": b["sharpened_lower"], "sharpened_upper": np.minimum(up, b["bf_upper"]),
+            "sharpened_lower": b["sharpened_lower"], "sharpened_upper": up,
         }
 
     def certified_intervals(self, prior_upper: Optional[np.ndarray] = None):
@@ -242,12 +248,12 @@ class CurvatureEngine:
                 "c_OR_upper_from_c_BF": B.psi_bf_to_or(z, st["deg_i"], st["deg_j"])}
 
     def bounds_from_OR(self, c_OR) -> Dict[str, np.ndarray]:
-        """Lower/upper bounds on c_BF from c_OR values (Corollaries C.2, C.3)."""
+        """Lower/upper bounds on c_BF from c_OR values (Corollaries C.1, C.2)."""
         st = self.stats()
         th = self._edgewise(c_OR, "c_OR")
         return {"c_OR": th,
                 "c_BF_lower_from_c_OR": B.phi_or_to_bf(th, st["deg_i"], st["deg_j"]),
-                "c_BF_upper_from_c_OR": B.psi_or_to_bf(th, st["deg_i"], st["deg_j"], st["C4"], st["matching"])}
+                "c_BF_upper_from_c_OR": B.psi_or_to_bf(th, st["deg_i"], st["deg_j"])}
 
     def _edgewise(self, x, name):
         a = np.asarray(x, dtype=float)
@@ -272,7 +278,6 @@ class CurvatureEngine:
         out["smax"] = st["matching"] / np.maximum(st["deg_i"], st["deg_j"])
         b = self.bounds()
         out.update(b)
-        out["Theta_Const"], out["Theta_Slope"] = b["theta_const"], b["theta_slope"]
         if exact:
             ex = exact_values if exact_values is not None else \
                 self.exact(("c_OR", "c_OR0", "c_LLY") if lly else ("c_OR", "c_OR0"))
@@ -296,8 +301,10 @@ class CurvatureEngine:
             "triangle": r["triangle"].astype(int), "Xi": r["Xi"].astype(int),
             "sho_max": r["sho_max"], "C4": r["C4"], "matching": r["matching"].astype(int),
             "c_BF": r["c_BF"],
-            "Theta_const": r["theta_const"], "Theta_slope": r["theta_slope"], "Theta_at_t": r["theta_at_t"],
-            "env_upper": r["envelope_upper"],
+            "Theta_at_t": r["coverage_upper"], "env_upper": r["lazy_upper"],  # Prop 4.10 (Figure 3)
+            "env_upper_prop48": r["envelope_upper"],
+            "lazy_lower": r["lazy_lower"], "lazy_upper": r["lazy_upper"],
+            "cOR_lower_from_cBF_modulus": r["bf_lower_modulus"],
             "cOR_lower_from_cBF": r["bf_lower"], "cOR_upper_from_cBF": r["bf_upper"],
             "cOR_lower_from_cBF_preliminary": r["bf_lower_preliminary"],
             "sharpened_lower": r["sharpened_lower"], "sharpened_upper": r["sharpened_upper"],

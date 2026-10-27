@@ -5,7 +5,7 @@ The package computes, for every edge of an undirected simple graph:
 
 * **exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, by optimal transport;
 * **Balanced Forman curvature** and the 2-hop statistics behind it;
-* **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the matching-augmented bound (Thm 4.8), the lazy transport envelope (Prop 4.6), the BF interval (Thms 5.3–5.4, Cor 5.6), the BF deficits (Prop 5.1), the sharpened interval (Prop 5.7), and the reverse direction (Appendix C, Cors C.2–C.3);
+* **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
 * **certify-then-solve** screening, which answers threshold and bottom-k queries exactly while solving transport problems only on undecided edges: a cascade of 2-hop bounds on every edge, then the TLW certificate and the transport problem (sharing one local structure) only where needed, with an adaptive schedule for bottom-k queries (`curvature_transfer.screen`).
 
 ```python

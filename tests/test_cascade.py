@@ -58,7 +58,8 @@ def test_stage_one_composes_into_the_sharpened_interval(case):
     assert np.array_equal(np.minimum(s["two_hop"][1], ex[:, 3]), su)
     lo, up = I.widen(*s["two_hop"])
     assert np.all(lo <= ex[:, 0]) and np.all(ex[:, 0] <= up)
-    assert np.all(s["two_hop"][0] >= bl) and np.all(s["two_hop"][1] <= bu)  # nested in the BF interval
+    # nested in the BF interval (Proposition 5.9; equality holds on many edges, so allow rounding)
+    assert np.all(s["two_hop"][0] >= bl - 1e-12) and np.all(s["two_hop"][1] <= bu + 1e-12)
 
 
 @pytest.mark.parametrize("tau", [0.0, -0.3])

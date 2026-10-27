@@ -4,10 +4,10 @@ Every experiment (the bound tables, certify-then-solve, the runtime figure)
 uses these functions, so that "the matching interval" or "the sharpened
 interval" denotes the same pair of arrays everywhere:
 
-* ``bf``        [phi(c_BF), psi(c_BF)]                         (Corollary 5.5)
-* ``matching``  [Lambda(L^square), min(U^prior, U^env)]         (Section 6.1)
-* ``sharpened`` [Lambda(max(L^square, c_BF)), min(U^prior, U^env, psi(c_BF))]
-                 (Section 6.1, i.e. Proposition 5.6 intersected with the prior 
+* ``bf``        [phi^Z(c_BF), psi(c_BF)]                     (Corollary 5.8)
+* ``matching``  [Lambda^mix(L^square), min(U^prior, U^lazy)]     (lifted Theorem 4.3)
+* ``sharpened`` [L^lazy, min(U^prior, U^lazy)]                    (Section 6.1: the
+                 2-hop interval of Proposition 5.9 intersected with the prior
                  certificate)
 
 U^prior = min(TLW dual bound, zero-cost bound). The TLW dual bound needs the
@@ -24,8 +24,8 @@ returns the BF interval and the ``two_hop`` interval, i.e. the sharpened
 interval without the TLW dual certificate (everything that needs no local
 distance matrix):
 
-* ``two_hop``   [Lambda(max(L^square, c_BF)), min(U^env, zero-cost bound, 
-                  psi(c_BF))]
+* ``two_hop``   [L^lazy, U^lazy]  (Proposition 5.9; contained in the BF interval;
+                  the upper end is capped by the zero-cost bound against rounding)
 
 so that the sharpened interval is [two_hop lower, min(two_hop upper, TLW dual)]
 (tested). The TLW dual is evaluated later, only on the edges that stage one
@@ -66,11 +66,11 @@ def needs_distances(kind: str) -> bool:
 def from_arrays(b: Dict[str, np.ndarray], prior_upper: np.ndarray) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
     """Intervals from the bound arrays of :meth:`CurvatureEngine.bounds` and
     the prior upper certificate min(TLW dual, zero-cost bound)."""
-    up_m = np.minimum(b["envelope_upper"], prior_upper)
+    up_m = np.minimum(b["lazy_upper"], prior_upper)
     return {
         "bf": (b["bf_lower"], b["bf_upper"]),
         "matching": (b["matching_lower_lazy"], up_m),
-        "sharpened": (b["sharpened_lower"], np.minimum(up_m, b["bf_upper"])),
+        "sharpened": (b["lazy_lower"], up_m),
     }
 
 
@@ -99,22 +99,22 @@ def compute(graph: Graph, kind: str, n_jobs: Optional[int] = None,
         tri = raw[:, 0].astype(float)
         C4 = B.c4_term(raw[:, 3].astype(float), raw[:, 4].astype(float), di, dj)
         bf = B.bf_curvature(di, dj, tri, C4)
-        bf_up = B.psi_bf_to_or(bf, di, dj)
         if kind == "bf":
-            return B.phi_bf_to_or(bf, di, dj), bf_up
-        Lsq = B.matching_lower(di, dj, tri, raw[:, 6].astype(float))
-        env = B.envelope_upper(di, dj, tri, raw[:, 1].astype(float), raw[:, 2].astype(float), raw[:, 3].astype(float))
+            return B.phi_int_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
+        m = raw[:, 6].astype(float)
+        Ulazy = B.lazy_upper(di, dj, tri, m, raw[:, 7].astype(float), (raw[:, 3] - raw[:, 7]).astype(float))
         tlw = K.tlw_lazy_ids(g.indptr, g.indices, g.edges, ids, 8 * numba.get_num_threads())
-        up = np.minimum(env, np.minimum(tlw, B.zero_cost_upper(di, dj, tri)))
+        up = np.minimum(Ulazy, np.minimum(tlw, B.zero_cost_upper(di, dj, tri)))
         if kind == "matching":
-            return B.lift(Lsq, di, dj), up
-        return B.sharpened_lower(Lsq, bf, di, dj), np.minimum(up, bf_up)
+            return B.lift_mix(B.matching_lower(di, dj, tri, m), di, dj, tri), up
+        return B.lazy_lower(di, dj, tri, m), up
 
 def two_hop_from_arrays(b: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
     """The ``two_hop`` interval of :func:`stage_one` from stored bound arrays
     (:meth:`CurvatureEngine.bounds`); equal to :func:`stage_one` (tested)."""
-    up = np.minimum(np.minimum(b["envelope_upper"], b["zero_cost_upper"]), b["bf_upper"])
-    return np.asarray(b["sharpened_lower"], float), up
+    # U^lazy <= zero-cost bound in exact arithmetic; the minimum only absorbs rounding,
+    # so that the sharpened interval is the two_hop interval intersected with TLW bit for bit
+    return np.asarray(b["lazy_lower"], float), np.minimum(b["lazy_upper"], b["zero_cost_upper"])
 
 
 def stage_one(graph: Graph, n_jobs: Optional[int] = None,
@@ -134,8 +134,9 @@ def stage_one(graph: Graph, n_jobs: Optional[int] = None,
     tri = raw[:, 0].astype(float)
     C4 = B.c4_term(raw[:, 3].astype(float), raw[:, 4].astype(float), di, dj)
     bf = B.bf_curvature(di, dj, tri, C4)
-    bf_lo, bf_up = B.phi_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
-    Lsq = B.matching_lower(di, dj, tri, raw[:, 6].astype(float))
-    env = B.envelope_upper(di, dj, tri, raw[:, 1].astype(float), raw[:, 2].astype(float), raw[:, 3].astype(float))
-    up = np.minimum(np.minimum(env, B.zero_cost_upper(di, dj, tri)), bf_up)
-    return {"bf": (bf_lo, bf_up), "two_hop": (B.sharpened_lower(Lsq, bf, di, dj), up)}
+    bf_lo, bf_up = B.phi_int_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
+    m = raw[:, 6].astype(float)
+    lo = B.lazy_lower(di, dj, tri, m)
+    up = B.lazy_upper(di, dj, tri, m, raw[:, 7].astype(float), (raw[:, 3] - raw[:, 7]).astype(float))
+    up = np.minimum(up, B.zero_cost_upper(di, dj, tri))  # rounding only (U^lazy <= zero-cost bound)
+    return {"bf": (bf_lo, bf_up), "two_hop": (lo, up)}

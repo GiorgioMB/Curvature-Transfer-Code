@@ -20,7 +20,7 @@ Oracles (``metric``):
   "c_BF"       Balanced Forman curvature for both (SDRF);
   "bounds"     the BF interval (Corollary 5.6): addition by the upper end
                psi(c_BF), removal by the lower end Lambda(c_BF) (S-BORF/S-SDRF);
-  "sharpened"  the sharpened interval (Proposition 5.7);
+  "sharpened"  the 2-hop interval [L^lazy, U^lazy] (Proposition 5.9; S+-BORF);
   "jl_bounds"  Jost--Liu: addition by tri/deg_max, removal by the lifted JL
                lower bound (JL-BORF).
 """

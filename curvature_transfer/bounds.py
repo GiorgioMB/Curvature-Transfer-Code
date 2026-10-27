@@ -1,45 +1,63 @@
 """Edgewise bounds, vectorized over edges.
 
 Every function takes numpy arrays of per-edge statistics (degrees, triangle
-counts, ...) and returns an array with one value per edge. Names follow the
-journal version of the paper ("What Balanced Forman Curvature Certifies About
-Ollivier--Ricci Curvature"); equation and result numbers refer to it.
+counts, ...) and returns an array with one value per edge. Names and result
+numbers follow the journal version of the paper ("What Balanced Forman
+Curvature Certifies About Ollivier--Ricci Curvature").
 
-Notation (edge (i, j), rho = degree):
-  S  = 2/rho_i + 2/rho_j - 2,   T = 2/rho_max + 1/rho_min,
-  K  = 1 - 1/rho_min - 1/rho_max,
-  Zmax = tri/rho_max, Zmin = tri/rho_min,
-  C4 = Xi / (varpi_max * rho_max)  (0 if varpi_max = 0),
-  Sm = m(i, j) / rho_max            (matching statistic, script S),
-  alpha_u = 1/(rho_u + 1), Delta = alpha_max - alpha_min.
+Notation (edge (i, j), rho = degree, a = rho_min, b = rho_max):
+  S  = 2/rho_i + 2/rho_j - 2,   T = 2/b + 1/a,   K = 1 - 1/a - 1/b,
+  Zmax = tri/b, Zmin = tri/a,
+  C4 = Xi / (varpi_max * b)  (0 if varpi_max = 0),
+  sigma = m(i, j) / b        (matching statistic),
+  w_u = alpha_u = 1/(rho_u + 1),  w_lo = 1/(a + 1) >= w_hi = 1/(b + 1),
+  Delta = w_lo - w_hi,
+  L0 = 3/(a+1) + 3/(b+1) - 2,  kappa1 = (1/(a+1) + 2/(b+1))/T,  kappa2 = b/(b+1).
+
+Lemma 4.6 (one-sided residuals): once the mass shared by the two lazy
+measures is kept in place, all residual demand sits on the unique neighbors
+of the higher-degree endpoint. The lower ends below come from explicit
+couplings and the upper ends from explicit 1-Lipschitz potentials.
+
+Triangle counts are integers. Where a bound takes a floor or ceiling of a
+quantity that is an integer in exact arithmetic, it is taken in the direction
+that can only weaken the bound (``INT_TOL``), so that rounding never produces
+an invalid certificate.
 """
 from __future__ import annotations
 
 import numpy as np
 
 __all__ = [
-    "degree_terms", "idleness", "lift", "s0", "bf_curvature", "c4_term",
+    "INT_TOL", "degree_terms", "idleness", "modulus_constants",
+    "lift", "lift_mix", "lift_tf", "lift_tf_inverse",
+    "bf_curvature", "c4_term",
     "jl_lower", "jl_upper", "matching_lower", "tlw_lower",
-    "envelope_upper", "zero_cost_upper", "theta_const_slope",
-    "phi_bf_to_or", "psi_bf_to_or", "phi_bf_to_or_preliminary",
+    "lazy_lower", "lazy_upper", "coverage_upper", "envelope_upper", "zero_cost_upper",
+    "phi_bf_to_or", "phi_int_bf_to_or", "psi_hat", "psi_bf_to_or", "phi_bf_to_or_preliminary",
     "bf_deficits", "bf_clipped", "sharpened_lower",
-    "phi_or_to_bf", "psi_or_to_bf_matching", "psi_or_to_bf",
+    "t_min", "phi_or_to_bf", "psi_or_to_bf", "psi_or_to_bf_via_lift",
 ]
 
-_EPS = 1e-15
+INT_TOL = 1e-9
 
 
 def _f(x):
     return np.asarray(x, dtype=float)
 
 
+def _ab(di, dj):
+    di, dj = _f(di), _f(dj)
+    return np.minimum(di, dj), np.maximum(di, dj)
+
+
 def degree_terms(di, dj):
     """S, T, K for each edge."""
     di, dj = _f(di), _f(dj)
-    dmin, dmax = np.minimum(di, dj), np.maximum(di, dj)
+    a, b = _ab(di, dj)
     S = 2.0 / di + 2.0 / dj - 2.0
-    T = 2.0 / dmax + 1.0 / dmin
-    K = 1.0 - 1.0 / dmin - 1.0 / dmax
+    T = 2.0 / b + 1.0 / a
+    K = 1.0 - 1.0 / a - 1.0 / b
     return S, T, K
 
 
@@ -50,25 +68,52 @@ def idleness(di, dj):
     return ai, aj, amin, amax, amax - amin
 
 
-# ------------------------------------------------------------- lifting
+def modulus_constants(di, dj):
+    """a, b, S, T, L0, kappa1, kappa2, w_lo, w_hi, Delta (Theorem 5.4)."""
+    a, b = _ab(di, dj)
+    S, T, _ = degree_terms(di, dj)
+    wlo, whi = 1.0 / (a + 1.0), 1.0 / (b + 1.0)
+    L0 = 3.0 * wlo + 3.0 * whi - 2.0
+    k1 = (wlo + 2.0 * whi) / T
+    k2 = b / (b + 1.0)
+    return a, b, S, T, L0, k1, k2, wlo, whi, wlo - whi
+
+
+# ------------------------------------------------------------- lifts
 
 
 def lift(L, di, dj):
-    """Lambda_ij(L) of Corollary 4.3(ii): the lazy lower bound obtained from a
-    lower bound L on the non-lazy curvature, or (Proposition 4.4) on the LLY
-    curvature: (1 - alpha_hat(L)) L - Delta, alpha_hat = alpha_min if L >= 0."""
+    """Lambda_ij(L) (Proposition 4.1): the lift through the triangle inequality,
+    (1 - alpha_hat(L)) L - Delta with alpha_hat = alpha_min if L >= 0 and
+    alpha_max otherwise. Dominated by :func:`lift_tf` and :func:`lift_mix`."""
     L = _f(L)
     _, _, amin, amax, D = idleness(di, dj)
     return np.where(L >= 0, (1.0 - amin) * L, (1.0 - amax) * L) - D
 
 
-def s0(theta, di, dj):
-    """s_0(theta) of Corollary 4.3(iii): c_OR <= theta implies
-    c_LLY <= s_0(theta) (Proposition 4.4(ii)) and hence c_OR-0 <= s_0(theta)."""
-    th = _f(theta)
+def lift_mix(L, di, dj, tri):
+    """Lambda^mix_ij(L) of Proposition 4.1: c_OR >= (1 - alpha_max) L - Delta (1 - q)
+    for every L <= c_LLY, with q = (2 + tri)/rho_max."""
+    _, _, _, amax, D = idleness(di, dj)
+    q = (2.0 + _f(tri)) / np.maximum(_f(di), _f(dj))
+    return (1.0 - amax) * _f(L) - D * (1.0 - q)
+
+
+def lift_tf(L, di, dj):
+    """Lambda^tf_ij(L) of Corollary 4.2: (1 - alpha_max) L - Delta (1 - max{L, 2/rho_max})."""
+    L = _f(L)
+    _, _, _, amax, D = idleness(di, dj)
+    b = np.maximum(_f(di), _f(dj))
+    return (1.0 - amax) * L - D * (1.0 - np.maximum(L, 2.0 / b))
+
+
+def lift_tf_inverse(y, di, dj):
+    """The inverse of the strictly increasing map Lambda^tf_ij."""
+    y = _f(y)
     _, _, amin, amax, D = idleness(di, dj)
-    num = th + D
-    return num / (1.0 - np.where(num >= 0, amin, amax))
+    b = np.maximum(_f(di), _f(dj))
+    knee = (1.0 - amin) * 2.0 / b - D  # Lambda^tf(2/b)
+    return np.where(y >= knee, (y + D) / (1.0 - amin), (y + D * (1.0 - 2.0 / b)) / (1.0 - amax))
 
 
 # --------------------------------------------------------------- BF
@@ -93,17 +138,17 @@ def bf_curvature(di, dj, tri, C4):
 
 def jl_lower(di, dj, tri, Sm=0.0):
     """Jost--Liu lower bound on c_OR-0 (Sm=0), or with the matching term
-    (Theorem 4.8, eq. JL-aug) when Sm = m(i,j)/rho_max."""
+    (Theorem 4.3, eq. JL-aug) when Sm = sigma = m(i,j)/rho_max."""
     _, _, K = degree_terms(di, dj)
     tri = _f(tri)
-    dmin, dmax = np.minimum(_f(di), _f(dj)), np.maximum(_f(di), _f(dj))
+    dmin, dmax = _ab(di, dj)
     zmax, zmin = tri / dmax, tri / dmin
     Sm = _f(Sm)
     return zmax - np.maximum(K - zmax - Sm, 0.0) - np.maximum(K - zmin - Sm, 0.0)
 
 
 def matching_lower(di, dj, tri, match):
-    """L^square_ij of Theorem 4.8."""
+    """L^square_ij of Theorem 4.3."""
     return jl_lower(di, dj, tri, _f(match) / np.maximum(_f(di), _f(dj)))
 
 
@@ -122,12 +167,41 @@ def tlw_lower(di, dj, tri, nUi, nUj):
     return 1.0 - nUi * mx - nUj * my - cc - np.abs(cross)
 
 
-# ------------------------------------------------------- lazy envelopes
+# ------------------------------------------------------- lazy bounds
+
+
+def lazy_lower(di, dj, tri, match):
+    """L^lazy_ij of Theorem 4.7: (3 + tri)/(a + 1) + (3 + 2 tri + 2 m)/(b + 1) - 2.
+    Equivalently Theta - tri Delta - 2 R with R = |U_lo| w_lo - m w_hi."""
+    a, b = _ab(di, dj)
+    t, m = _f(tri), _f(match)
+    return (3.0 + t) / (a + 1.0) + (3.0 + 2.0 * t + 2.0 * m) / (b + 1.0) - 2.0
+
+
+def lazy_upper(di, dj, tri, match, xi_i, xi_j):
+    """U^lazy_ij of Proposition 4.10: -1 + 2 m0 + (1 + tri) Delta + m^UU, with
+    m0 = (2 + tri) w_hi and m^UU = min{m w_lo, |xi_hi| w_hi}, where xi_hi is the set
+    of cross-edge vertices of the higher-degree endpoint (``xi_i`` and ``xi_j`` are
+    given in the orientation of ``di`` and ``dj``). For equal degrees m^UU = m w."""
+    di, dj = _f(di), _f(dj)
+    a, b, _, _, _, _, _, wlo, whi, D = modulus_constants(di, dj)
+    t, m = _f(tri), _f(match)
+    xi_hi = np.where(di <= dj, _f(xi_j), _f(xi_i))
+    mUU = np.minimum(m * wlo, xi_hi * whi)
+    return -1.0 + 2.0 * (2.0 + t) * whi + (1.0 + t) * D + mUU
+
+
+def coverage_upper(di, dj, tri):
+    """Theta_ij(tri) = (3 + tri)/(b + 1) - 1/(a + 1) = m0 - Delta, the last
+    inequality of Proposition 4.10 (degrees and triangle count only)."""
+    a, b = _ab(di, dj)
+    return (3.0 + _f(tri)) / (b + 1.0) - 1.0 / (a + 1.0)
 
 
 def envelope_upper(di, dj, tri, nUi, nUj, Xi, ai=None, aj=None):
-    """U^env_ij: Proposition 4.6 with the slacks at their upper ends.
-    Holds for any idleness alpha_i, alpha_j in [0, 1); defaults to 1/(rho+1)."""
+    """U^env_ij: Proposition 4.8 with the slacks at their upper ends.
+    Holds for any idleness alpha_i, alpha_j in [0, 1); defaults to 1/(rho+1).
+    For the lazy measure it is dominated by :func:`lazy_upper`."""
     di, dj, tri, nUi, nUj, Xi = map(_f, (di, dj, tri, nUi, nUj, Xi))
     if ai is None:
         ai, aj = 1.0 / (di + 1.0), 1.0 / (dj + 1.0)
@@ -150,75 +224,66 @@ def zero_cost_upper(di, dj, tri, ai=None, aj=None):
     return np.minimum(ai, wj) + np.minimum(aj, wi) + tri * np.minimum(wi, wj)
 
 
-def theta_const_slope(di, dj):
-    """Const_alpha and Slope_alpha of Proposition C.1 (coverage envelope)."""
-    di, dj = _f(di), _f(dj)
-    ai, aj, _, _, D = idleness(di, dj)
-    Sig = di + dj + 2.0
-    z = np.minimum(ai, aj)
-    const = -1.0 + 4.0 * z + 2.0 * D + (di + dj - 2.0) / Sig
-    slope = ai + aj - 2.0 / Sig
-    return const, slope
-
-
 # ------------------------------------------------------------- BF -> OR
 
 
-def phi_bf_to_or(zeta, di, dj, S_plus_C4=None):
-    """Lower transfer modulus of Theorem 5.3: c_BF >= zeta  =>  c_OR >= Lambda(zeta).
-    If ``S_plus_C4`` (= S + C4, valid for rho_min >= 2) is given, the free
-    strengthening Lambda(max(zeta, S + C4)) is applied on edges with rho_min >= 2."""
-    z = _f(zeta)
-    if S_plus_C4 is not None:
-        ok = np.minimum(_f(di), _f(dj)) >= 2
-        z = np.where(ok, np.maximum(z, _f(S_plus_C4)), z)
-    return lift(z, di, dj)
+def phi_bf_to_or(zeta, di, dj):
+    """Lower modulus phi_{a,b} of Theorem 5.4: c_BF >= zeta => c_OR >= L0 + kappa1 [zeta - S]_+."""
+    _, _, S, _, L0, k1, _, _, _, _ = modulus_constants(di, dj)
+    return L0 + k1 * np.maximum(_f(zeta) - S, 0.0)
+
+
+def phi_int_bf_to_or(cbf, di, dj):
+    """Lower end phi^Z_{a,b}(c_BF) of the BF interval (Corollary 5.8), valid at
+    zeta = c_BF only: the worst edge with this BF value puts the integer part
+    t* = min{a - 1, floor(z/T)}, z = [c_BF - S]_+, on triangles and the rest on
+    matched 4-cycles: L0 + kappa1 T t* + kappa2 (z - T t*) >= phi_{a,b}(c_BF).
+    t* is rounded up within INT_TOL, which can only lower the bound."""
+    a, _, S, T, L0, k1, k2, _, _, _ = modulus_constants(di, dj)
+    z = np.maximum(_f(cbf) - S, 0.0)
+    ts = np.clip(np.floor(z / T + INT_TOL), 0.0, np.maximum(a - 1.0, 0.0))
+    return L0 + k1 * T * ts + k2 * (z - T * ts)
+
+
+def psi_hat(t, zeta, di, dj):
+    """The two-piece envelope Psi_hat(t) of Theorem 5.7 at real t."""
+    a, b, S, T, _, _, _, wlo, whi, D = modulus_constants(di, dj)
+    t = _f(t)
+    bud = np.maximum(_f(zeta) - S, 0.0)
+    eta = b * (b - 1.0) / (a + b + 2.0)
+    p1 = (2.0 + t) * whi - D
+    p2 = -1.0 + 2.0 * (2.0 + t) * whi + (1.0 + t) * D + eta * (bud - T * t)
+    return np.minimum(p1, p2)
+
+
+def _t_max_int(zeta, di, dj):
+    a, _, S, T, _, _, _, _, _, _ = modulus_constants(di, dj)
+    bud = np.maximum(_f(zeta) - S, 0.0)
+    tmax = np.minimum(a - 1.0, bud / T)
+    # rounded up within INT_TOL: including one more integer can only raise the maximum
+    return np.maximum(np.floor(tmax + INT_TOL), 0.0)
 
 
 def psi_bf_to_or(zeta, di, dj, return_argmax=False):
-    """Upper transfer modulus of Theorem 5.4 (depends on zeta and degrees only):
-    the maximum of the piecewise-affine envelope Psi_hat over the knot set K."""
+    """Upper modulus psi_{a,b} of Theorem 5.7: the maximum of Psi_hat over the integers
+    0, 1, ..., floor(tri_max), attained at 0, at floor(tri_max), or at an integer
+    adjacent to the point where the two pieces of Psi_hat cross."""
     zeta = _f(zeta)
     di, dj = np.broadcast_arrays(_f(di), _f(dj))
     zeta = np.broadcast_to(zeta, di.shape)
-    S, T, _ = degree_terms(di, dj)
-    b = np.maximum(0.0, zeta - S)
-    Sig = di + dj + 2.0
-    wi, wj = 1.0 / (di + 1.0), 1.0 / (dj + 1.0)
-    wmin = np.minimum(wi, wj)
-    dmax = np.maximum(di, dj)
-    sho = dmax * (dmax - 1.0)
-    eta = sho / Sig
-    z = np.minimum(wi, wj)  # z_i = z_j = min(alpha_i, alpha_j)
-    rsum = 2.0 * np.abs(wi - wj)
-    base = -1.0 + 4.0 * z + rsum
-    t_max = np.minimum(np.minimum(di, dj) - 1.0, np.where(T > 0, b / T, np.inf))
-
-    def Psi(t):
-        Ai = (di - 1.0 - t) * wi
-        Aj = (dj - 1.0 - t) * wj
-        B = eta * (b - T * t)
-        Dd = ((di + dj - 2.0) - 2.0 * t) / Sig
-        C = np.minimum(t * np.abs(wi - wj), Ai + Aj)
-        return base + 2.0 * t * wmin + np.maximum(0.0, np.minimum(np.minimum(Ai, Aj), np.minimum(B, Dd))) + C
-
+    a, b, S, T, _, _, _, wlo, whi, D = modulus_constants(di, dj)
+    bud = np.maximum(zeta - S, 0.0)
+    eta = b * (b - 1.0) / (a + b + 2.0)
+    tmi = _t_max_int(zeta, di, dj)
+    # p2 - p1 = (-1 + 2 w_lo + eta bud) + t (w_lo - eta T)
     with np.errstate(divide="ignore", invalid="ignore"):
-        cands = [
-            np.zeros_like(di), t_max,
-            (eta * b - wi * (di - 1.0)) / (eta * T - wi),
-            (eta * b - wj * (dj - 1.0)) / (eta * T - wj),
-            (wj * (dj - 1.0) - wi * (di - 1.0)) / (wj - wi),
-            (wi * (di - 1.0) + wj * (dj - 1.0)) / (wi + wj + np.abs(wi - wj)),
-            ((di + dj - 2.0) / Sig - wi * (di - 1.0)) / (2.0 / Sig - wi),
-            ((di + dj - 2.0) / Sig - wj * (dj - 1.0)) / (2.0 / Sig - wj),
-            ((di + dj - 2.0) - sho * b) / (2.0 - sho * T),
-        ]
+        tc = (1.0 - 2.0 * wlo - eta * bud) / (wlo - eta * T)
+    tc = np.where(np.isfinite(tc), tc, 0.0)
     best = np.full(di.shape, -np.inf)
     arg = np.zeros(di.shape)
-    for t in cands:
-        t = np.where(np.isfinite(t), t, 0.0)
-        t = np.clip(t, 0.0, np.maximum(t_max, 0.0))
-        v = Psi(t)
+    for t in (np.zeros_like(tmi), tmi, np.floor(tc), np.floor(tc) + 1.0):
+        t = np.clip(t, 0.0, tmi)
+        v = psi_hat(t, zeta, di, dj)
         better = v > best
         best = np.where(better, v, best)
         arg = np.where(better, t, arg)
@@ -227,13 +292,13 @@ def psi_bf_to_or(zeta, di, dj, return_argmax=False):
 
 def phi_bf_to_or_preliminary(zeta, di, dj, C4):
     """Lower modulus of the preliminary version (arXiv:2603.13535, Thm 4.1):
-    Theorem 4.8 fed with the triangle floor and the matching floor implied by
-    c_BF >= zeta, then lifted. Dominated by phi_bf_to_or (Remark 5.5).
+    the quadrangle-augmented JL bound fed with the triangle floor and the matching
+    floor implied by c_BF >= zeta, then lifted. Dominated by phi_bf_to_or.
     NaN on edges with rho_min = 1."""
     z = _f(zeta)
     S, T, K = degree_terms(di, dj)
     C4 = _f(C4)
-    dmin, dmax = np.minimum(_f(di), _f(dj)), np.maximum(_f(di), _f(dj))
+    dmin, dmax = _ab(di, dj)
     Z = np.maximum(0.0, (z - S - C4) / T)
     zbmax, zbmin = Z / dmax, Z / dmin
     floor = np.maximum(0.5 * C4, 0.5 * np.maximum(0.0, z - S - T * (dmin - 1.0)))
@@ -244,7 +309,7 @@ def phi_bf_to_or_preliminary(zeta, di, dj, C4):
 def bf_deficits(di, dj, tri, C4):
     """BF deficits A^BF, B^BF of Proposition 5.1 (NaN where rho_min = 1)."""
     _, _, K = degree_terms(di, dj)
-    dmin, dmax = np.minimum(_f(di), _f(dj)), np.maximum(_f(di), _f(dj))
+    dmin, dmax = _ab(di, dj)
     A = K - _f(tri) / dmax - 0.5 * _f(C4)
     B = K - _f(tri) / dmin - 0.5 * _f(C4)
     ok = dmin >= 2
@@ -256,50 +321,40 @@ def bf_clipped(cbf, A, B):
     return _f(cbf) - np.maximum(-_f(A), 0.0) - np.maximum(-_f(B), 0.0)
 
 
-def sharpened_lower(Lsq, cbf, di, dj):
-    """Lower end of the sharpened interval (Proposition 5.7)."""
-    return lift(np.maximum(_f(Lsq), _f(cbf)), di, dj)
+def sharpened_lower(di, dj, tri, match):
+    """Lower end of the 2-hop and sharpened intervals: L^lazy (Proposition 5.9)."""
+    return lazy_lower(di, dj, tri, match)
 
 
 # ------------------------------------------------------------- OR -> BF
 
 
+def t_min(theta, di, dj):
+    """t_min(theta) = max{0, ceil((theta + Delta)(b + 1)) - 2} of Corollary C.1
+    (the ceiling is rounded down within INT_TOL, which can only weaken the bound)."""
+    _, b, _, _, _, _, _, _, _, D = modulus_constants(di, dj)
+    return np.maximum(0.0, np.ceil((_f(theta) + D) * (b + 1.0) - INT_TOL) - 2.0)
+
+
 def phi_or_to_bf(theta, di, dj):
-    """Corollary C.2: c_OR >= theta  =>  c_BF >= S + T t_min(theta)
-    (0 on edges with rho_min = 1, where BF is 0 by definition)."""
-    th = _f(theta)
-    S, T, _ = degree_terms(di, dj)
-    const, slope = theta_const_slope(di, dj)
-    tmin = np.minimum(np.maximum((th - const) / slope, 0.0), np.minimum(_f(di), _f(dj)) - 1.0)
-    return np.where(np.minimum(_f(di), _f(dj)) >= 2, S + T * tmin, 0.0)
+    """Corollary C.1: c_OR >= theta  =>  c_BF >= S + T t_min(theta) if rho_min >= 2;
+    NaN where t_min(theta) > rho_min - 1 (no edge with these degrees has c_OR >= theta);
+    0 on edges with rho_min = 1, where BF is 0 by definition."""
+    a, _, S, T, _, _, _, _, _, _ = modulus_constants(di, dj)
+    tm = t_min(theta, di, dj)
+    val = np.where(tm > a - 1.0, np.nan, S + T * tm)
+    return np.where(a >= 2, val, 0.0)
 
 
-def psi_or_to_bf_matching(theta, di, dj, C4, match, clip=True):
-    """The second term of Corollary C.3 (Theorem 4.4 of the preliminary
-    version): S + T u_max(theta) + C4, with u_max the closed-form inversion of
-    the quadrangle-augmented JL bound. With ``clip`` the triangle envelope is
-    also capped at rho_min - 1, which is valid and never looser."""
-    S, T, K = degree_terms(di, dj)
-    di, dj = _f(di), _f(dj)
-    dmin, dmax = np.minimum(di, dj), np.maximum(di, dj)
-    sz = s0(theta, di, dj)
-    Kb = np.maximum(K - _f(match) / dmax, 0.0)
-    su = Kb * (2.0 * dmin / dmax - 1.0)
-    u_zero = np.where(sz >= 0, dmax * sz, 0.0)
-    u = np.select(
-        [sz < -2.0 * Kb, sz <= su, sz <= Kb],
-        [0.0, (sz + 2.0 * Kb) / T, 0.5 * dmax * (sz + Kb)],
-        default=dmax * sz,
-    )
-    u = np.where(Kb > 0, u, u_zero)
-    if clip:
-        u = np.minimum(u, dmin - 1.0)
-    return S + T * u + _f(C4)
+def psi_or_to_bf(theta, di, dj):
+    """Corollary C.2: c_OR <= theta  =>  c_BF <= S + min{T (a - 1), (theta - L0)/kappa1}
+    if rho_min >= 2 (the inverse of the lower modulus); 0 on edges with rho_min = 1."""
+    a, _, S, T, L0, k1, _, _, _, _ = modulus_constants(di, dj)
+    val = S + np.minimum(T * (a - 1.0), (_f(theta) - L0) / k1)
+    return np.where(a >= 2, val, 0.0)
 
 
-def psi_or_to_bf(theta, di, dj, C4, match, return_parts=False):
-    """Corollary C.3: c_OR <= theta  =>  c_BF <= min(s_0(theta), psi_matching)."""
-    a = s0(theta, di, dj)
-    b = psi_or_to_bf_matching(theta, di, dj, C4, match)
-    out = np.minimum(a, b)
-    return (out, a, b) if return_parts else out
+def psi_or_to_bf_via_lift(theta, di, dj):
+    """The bound obtained by inverting Lambda^tf through Lemma 3.4, c_BF <= (Lambda^tf)^{-1}(theta),
+    which Corollary C.2 is never weaker than (Appendix C)."""
+    return lift_tf_inverse(theta, di, dj)
