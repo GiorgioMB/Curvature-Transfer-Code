@@ -105,13 +105,12 @@ def test_registry_matches_manuscript_file_names():
     import suite
     import main
     tags = {s.file_tag for s in suite.REGISTRY}
-    for f in main.PAPER_FIGURES:
+    for f in main.FIGURES:
         t = f.split("__", 1)[1].replace("_2d_Hist.png", "").replace(".png", "")
         assert t in tags, f"figure {f} refers to a graph that is not in the registry"
     assert all(q in suite.BY_NAME for q in suite.QUICK)
     assert {s.group for s in suite.REGISTRY} <= set(suite.GROUPS)
-    import paper_artifacts as pa
-    assert all(name in suite.BY_NAME for name in pa.FIG_GRAPHS.values())
+    assert all(name in suite.BY_NAME for name in main.FIG_GRAPHS.values())
 
 
 def test_number_formatting():
