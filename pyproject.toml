@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "curvature-transfer"
 version = "0.1.0"
@@ -5,26 +9,48 @@ description = "Experiments for comparing edgewise graph curvatures and analytic 
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11,<3.14"
+# The library (curvature_transfer) needs only these.
 dependencies = [
+    "numba==0.62.1",
+    "numpy==2.2.0",
+    "scipy==1.16.2",
+]
+
+[project.optional-dependencies]
+# Experiment pipeline, figures, and the graph generators used by the tests.
+experiments = [
     "matplotlib==3.10.7",
     "networkx==3.3",
-    "numba==0.62.1",
     "numexpr==2.13.1",
-    "numpy==2.2.0",
+    "pandas==2.3.3",
+]
+# Rewiring / GNN case study (Appendix A). With pip, install torch for your
+# platform first (CPU wheels: --index-url https://download.pytorch.org/whl/cpu)
+# and pass -f https://data.pyg.org/whl/torch-2.8.0+cpu.html for the PyG
+# extensions; with uv, both come from the sources configured below.
+gnn = [
     "ogb==1.3.6",
     "optuna==5.0.0",
     "pandas==2.3.3",
     "scikit-learn==1.9.1",
-    "scipy==1.16.2",
-    "torch==2.8.0+cpu",
-    "torch-cluster==1.6.3+pt28cpu",
+    "torch==2.8.0",
+    "torch-cluster==1.6.3",
     "torch-geometric==2.6.1",
-    "torch-scatter==2.1.2+pt28cpu",
-    "torch-sparse==0.6.18+pt28cpu",
-    "torch-spline-conv==1.2.2+pt28cpu",
-    "torchaudio==2.8.0+cpu",
-    "torchvision==0.23.0+cpu",
-    "tqdm==4.67.1",
+    "torch-scatter==2.1.2",
+    "torch-sparse==0.6.18",
+    "torch-spline-conv==1.2.2",
+]
+# Solver-level timing against POT (experiments/vs_pot_grc.py). The
+# GraphRicciCurvature part of that script needs GraphRicciCurvature 0.6.1,
+# which caps scipy<=1.13.1 and so cannot share this environment; the script
+# docstring gives the one-line isolated command.
+compare = [
+    "networkx==3.3",
+    "POT==0.9.7.post1",
+]
+dev = [
+    "hypothesis==6.168.0",
+    "pytest==8.4.2",
 ]
 
 [dependency-groups]
@@ -33,14 +59,15 @@ dev = [
     "pytest==8.4.2",
 ]
 
+[tool.setuptools]
+packages = ["curvature_transfer"]
+
 [tool.uv]
-package = false
+# CPU wheels of the PyG extensions (torch-scatter etc.), matching torch 2.8.0+cpu.
 find-links = ["https://data.pyg.org/whl/torch-2.8.0+cpu.html"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
-torchaudio = { index = "pytorch-cpu" }
-torchvision = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
