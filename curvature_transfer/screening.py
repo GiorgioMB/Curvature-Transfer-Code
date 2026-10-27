@@ -195,6 +195,16 @@ def screen(graph, tau: Optional[float] = None, k: Optional[int] = None, n_jobs: 
     return out
 
 
+def certify_threshold(lower, upper, tau: float):
+    """Return (in_mask, out_mask, undecided_mask) for the query {c_OR < tau}:
+    upper < tau is certainly in, lower >= tau is certainly out."""
+    lower = np.asarray(lower, float)
+    upper = np.asarray(upper, float)
+    cin = upper < tau
+    cout = lower >= tau
+    return cin, cout, ~(cin | cout)
+
+
 def certify_bottom_k(lower, upper, k: int):
     """Return (in_mask, out_mask, undecided_mask) for the k smallest c_OR."""
     lower = np.asarray(lower, float)
@@ -217,35 +227,3 @@ def certify_bottom_k(lower, upper, k: int):
     cin = n_le <= k - 1
     cout = n_lt >= k
     return cin, cout, ~(cin | cout)
-
-
-def certify_then_solve(lower, upper, exact_fn: Callable[[np.ndarray], np.ndarray],
-                       tau: Optional[float] = 0.0, k: Optional[int] = None) -> Dict[str, object]:
-    """Exact answer to a threshold query (``tau``) or a bottom-k query (``k``).
-
-    ``exact_fn(ids)`` must return exact c_OR values for the edge ids it is
-    given. Returns the answer mask, the number of transport problems solved,
-    and timings.
-    """
-    if (tau is None) == (k is None):
-        raise ValueError("give exactly one of tau or k")
-    t0 = time.perf_counter()
-    if k is None:
-        cin, cout, und = certify_threshold(lower, upper, tau)
-    else:
-        cin, cout, und = certify_bottom_k(lower, upper, k)
-    t1 = time.perf_counter()
-    ids = np.flatnonzero(und)
-    vals = np.asarray(exact_fn(ids), float) if ids.size else np.empty(0)
-    t2 = time.perf_counter()
-    ans = cin.copy()
-    if k is None:
-        ans[ids] = vals < tau
-    else:
-        need = k - int(cin.sum())
-        if need > 0:
-            take = ids[np.argsort(vals, kind="stable")[:need]]
-            ans[take] = True
-    return {"answer": ans, "certified_in": cin, "certified_out": cout, "undecided": und,
-            "n_solved": int(ids.size), "frac_avoided": 1.0 - ids.size / max(1, len(ans)),
-            "time_certify": t1 - t0, "time_solve": t2 - t1}
