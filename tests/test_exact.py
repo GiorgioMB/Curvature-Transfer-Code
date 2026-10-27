@@ -6,6 +6,7 @@ import pytest
 from conftest import small_graphs
 from curvature_transfer import CurvatureEngine
 from curvature_transfer import _kernels as K
+from curvature_transfer import _reference as R
 
 
 @pytest.mark.parametrize("G", small_graphs(), ids=lambda g: f"n{g.number_of_nodes()}m{g.number_of_edges()}")
@@ -36,7 +37,7 @@ def test_known_values():
 
 
 def test_closure_on_random_metric_problems():
-    """w1_closure against linprog on random graph metrics with random masses."""
+    """The reference solver (w1_closure) against linprog on random graph metrics with random masses."""
     from scipy.optimize import linprog
     rng = np.random.default_rng(0)
     for trial in range(40):
@@ -58,7 +59,7 @@ def test_closure_on_random_metric_problems():
             A[len(P) + y, y::len(N)] = 1
         bvec = np.r_[w[P], -w[N]].astype(float)
         want = linprog(c, A_eq=A, b_eq=bvec, bounds=(0, None), method="highs").fun
-        assert K.w1_closure(D.copy(), w.astype(np.int64).copy()) == pytest.approx(want, abs=1e-6)
+        assert R.w1_closure(D.copy(), w.astype(np.int64).copy()) == pytest.approx(want, abs=1e-6)
 
 
 def test_threads_do_not_change_results():
