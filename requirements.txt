@@ -1,3 +1,8 @@
+# Full pinned environment of the paper, GNN stack included (CPU builds):
+#   pip install -r requirements.txt
+# The library alone needs only numpy, scipy, numba (see pyproject.toml extras).
+--extra-index-url https://download.pytorch.org/whl/cpu
+--find-links https://data.pyg.org/whl/torch-2.8.0+cpu.html
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.0
 aiosignal==1.4.0
@@ -47,8 +52,6 @@ torch-geometric==2.6.1
 torch-scatter==2.1.2+pt28cpu
 torch-sparse==0.6.18+pt28cpu
 torch-spline-conv==1.2.2+pt28cpu
-torchaudio==2.8.0+cpu
-torchvision==0.23.0+cpu
 tqdm==4.67.1
 typing-extensions==4.15.0
 tzdata==2025.2
