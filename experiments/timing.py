@@ -98,7 +98,7 @@ def warmup():
         f(g); f(g, np.array([0, 2], dtype=np.int64))
     from curvature_transfer import screen  # the kernels of the certify-then-solve cascade
     exact_all(g)
-    screen(g, tau=0.0); screen(g, k=2)
+    screen(g, tau=0.0)
     _WARM = True
 
 

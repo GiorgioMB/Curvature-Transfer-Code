@@ -11,11 +11,11 @@ The package computes, for every edge of an undirected simple graph:
   package [`orcut`](https://github.com/GiorgioMB/orcut), pinned to 1.0.0 (the solver behind every exact value of the paper);
 * **Balanced Forman curvature** and the 2-hop statistics behind it;
 * **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
-* **certify-then-solve** screening, which answers threshold and bottom-k queries exactly while solving transport problems only on undecided edges: a cascade of 2-hop bounds on every edge, then the TLW certificate (one more 2-hop pass) and the transport problem only where needed, with an adaptive schedule for bottom-k queries (`curvature_transfer.screen`).
+* **certify-then-solve** screening, which answers threshold queries exactly while solving transport problems only on undecided edges: a cascade of 2-hop bounds on every edge, then the TLW certificate (one more 2-hop pass) and the transport problem only where needed (`curvature_transfer.screen`).
 
 ```python
 from curvature_transfer import CurvatureEngine
-eng = CurvatureEngine.from_edges([(0, 1), (1, 2), (2, 0), (2, 3)])  # or a PyG Data / networkx graph
+eng = CurvatureEngine.from_edges([(0, 1), (1, 2), (2, 0), (2, 3)])  # or a networkx graph
 eng.bf()                          # Balanced Forman curvature, aligned with eng.edges (u < v)
 eng.exact()["c_OR"]               # exact lazy OR curvature (also "c_OR0", "c_LLY")
 iv = eng.intervals()              # BF, matching, and sharpened intervals for c_OR
@@ -30,8 +30,6 @@ The Lean 4 formalization of the paper is in a separate repository, [BF-OR-Lean](
 ```bash
 pip install -e .                      # core: numpy, scipy, numba, orcut
 pip install -e ".[experiments,dev]"   # experiments + tests
-pip install -e ".[gnn]" -f https://data.pyg.org/whl/torch-2.8.0+cpu.html
-                                      # rewiring / GNN case study (install torch for your platform first)
 pytest -q
 ```
 
@@ -42,14 +40,12 @@ The exact solver, [`orcut`](https://github.com/GiorgioMB/orcut), is not on PyPI:
 
 | Path                                                                                                | Contents                                                                                                                  |
 | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `curvature_transfer/graph.py`                                                                     | CSR graph, canonical undirected edges, PyG/networkx/edge-list constructors                                                |
+| `curvature_transfer/graph.py`                                                                     | CSR graph, canonical undirected edges, networkx/edge-list constructors                                                    |
 | `curvature_transfer/_kernels.py`                                                                  | Numba kernels: 2-hop statistics and TLW certificate (one stamp-based pass), Hopcroft–Karp; re-exports the exact drivers of `orcut._kernels` |
 | `curvature_transfer/bounds.py`                                                                    | all bounds, vectorized over edges                                                        |
 | `curvature_transfer/intervals.py`                                                                 | definition of the BF, matching, and sharpened intervals                                        |
 | `curvature_transfer/engine.py`                                                                    | `CurvatureEngine`: caching, threading, intervals, edge tables                                                           |
 | `curvature_transfer/screening.py`                                                                 | certify-then-solve                                                                                                        |
-| `curvature_transfer/rewiring.py`                                                                  | SDRF / BORF / FoSR on edge arrays, resumable per iteration                                                     |
-| `curvature_transfer/pyg.py`                                                                       | PyG `BaseTransform` wrappers used by the GNN experiments                                                                |
 | `curvature_transfer/_io.py`                                                                       | atomic writes and chunked, resumable computations                                                                         |
 | `experiments/suite.py`                                                                            | graph registry: every graph of every table and figure                                                                     |
 | `experiments/edges.py`                                                                            | per-edge statistics, bounds, exact curvatures of every registry graph                                  |
@@ -59,15 +55,13 @@ The exact solver, [`orcut`](https://github.com/GiorgioMB/orcut), is not on PyPI:
 | `experiments/distributions.py`                                                                    | Figures 2–4 from the per-edge store (`make_paper_figures.py` draws them)                                               |
 | `experiments/timing.py`                                                                           | timing code shared by the screening table and the runtime figure                                                          |
 | `experiments/benchmark.py`                                                                        | runtime scaling, Figure 5 (Section 6.4)                                                                                   |
-| `experiments/gnn_experiments.py`, `merge_results.py`, `stats.py`, `tree_neighbors_match.py` | Appendix A                                                                                                                |
 | `experiments/generators.py`                                                                       | graph generators, unchanged so that seeded graphs reproduce                                                               |
 
 ## Reproducing the paper
 
 ```bash
 pip install -e ".[experiments,dev]"
-python main.py                       # every result except the GNN case study
-python main.py --gnn --delta 0.01    # + Appendix A (needs the [gnn] extra; the margin must be fixed in advance)
+python main.py                       # every result
 python main.py --quick               # smoke run of the whole pipeline (not the paper's numbers)
 python main.py --list                # the steps and what each one produces
 ```
@@ -128,6 +122,3 @@ repository. `curvature_transfer._kernels` re-exports its drivers (`exact_ids`, `
   solver (`timing.exact_all`); both the baseline and the cascade process the edges in one fixed random order, so that
   the expensive edges at hubs are spread over the threads. Every answer is checked against the exact curvatures.
   On the small registry graphs exact evaluation takes milliseconds, so only their avoided fractions are reported.
-* GNNs: GCN uses `GCNConv`, GIN `GINEConv`, GAT `GATConv`; every topology carries one edge feature (1 = added
-  by rewiring), and TreeNeighborsMatch is read out at the root node. Every CV fold is seeded from (seed, fold), so
-  restored and recomputed folds give the same results.

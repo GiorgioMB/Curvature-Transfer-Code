@@ -51,7 +51,7 @@ class CurvatureEngine:
 
     Parameters
     ----------
-    graph : Graph, PyG ``Data``, networkx graph, or (M, 2) edge array.
+    graph : Graph, networkx graph, or (M, 2) edge array.
     n_jobs : number of threads for the Numba kernels (None = Numba default,
         -1 = all, k > 0 = k threads, k < -1 = all but |k| - 1).
     varpi : ``"paper"`` (default) uses the 4-cycle normalization of Topping et
@@ -326,8 +326,6 @@ class CurvatureEngine:
 def _as_graph(obj) -> Graph:
     if isinstance(obj, Graph):
         return obj
-    if hasattr(obj, "edge_index") and hasattr(obj, "num_nodes"):  # PyG Data
-        return Graph.from_edge_index(obj.edge_index, int(obj.num_nodes))
     if hasattr(obj, "nodes") and hasattr(obj, "edges") and callable(getattr(obj, "edges")):
         n = obj.number_of_nodes()
         if set(obj.nodes()) != set(range(n)):

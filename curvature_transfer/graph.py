@@ -60,17 +60,6 @@ class Graph:
         return cls._from_canonical(int(num_nodes), und)
 
     @classmethod
-    def from_edge_index(cls, edge_index, num_nodes: Optional[int] = None) -> "Graph":
-        """Build from a PyG-style ``(2, E)`` edge_index (torch tensor or array)."""
-        ei = edge_index
-        if hasattr(ei, "detach"):
-            ei = ei.detach().cpu().numpy()
-        ei = np.asarray(ei, dtype=np.int64)
-        if ei.ndim != 2 or ei.shape[0] != 2:
-            raise ValueError("edge_index must have shape (2, E)")
-        return cls.from_edges(ei.T, num_nodes)
-
-    @classmethod
     def from_networkx(cls, G) -> Tuple["Graph", np.ndarray]:
         """Build from a networkx graph. Returns ``(graph, nodes)`` where
         ``nodes[k]`` is the original label of internal node ``k``."""
@@ -125,7 +114,7 @@ class Graph:
 
     def directed_to_undirected(self, values, edge_index, agg: str = "mean") -> np.ndarray:
         """Aggregate per-directed-edge values onto ``self.edges`` order."""
-        ei = edge_index.detach().cpu().numpy() if hasattr(edge_index, "detach") else np.asarray(edge_index)
+        ei = np.asarray(edge_index)
         vals = np.asarray(values, dtype=float)
         ids = self.edge_ids(ei.T)
         ok = ids >= 0

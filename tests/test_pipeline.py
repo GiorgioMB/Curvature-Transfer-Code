@@ -2,7 +2,6 @@
 resumable computations that give the same result as uninterrupted ones, and a
 graph registry that agrees with the file names used by the manuscript."""
 import os
-import random
 import sys
 
 import networkx as nx
@@ -14,7 +13,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "experiments"))
 
 from conftest import random_graphs  # noqa: E402
-from curvature_transfer import CurvatureEngine, Graph, _io, intervals, rewiring  # noqa: E402
+from curvature_transfer import CurvatureEngine, Graph, _io, intervals  # noqa: E402
 from curvature_transfer import _kernels as K  # noqa: E402
 
 
@@ -62,43 +61,6 @@ def test_chunk_store_resumes(tmp_path):
     out = store.run(ids, counting)
     assert recomputed["n"] == -(-g.num_edges // 37) - saved
     assert np.array_equal(out, full, equal_nan=True)
-
-
-class _Kill(Exception):
-    pass
-
-
-@pytest.mark.parametrize("algo", ["sdrf", "borf", "fosr"])
-def test_rewiring_resume_equals_uninterrupted(tmp_path, monkeypatch, algo):
-    G = nx.convert_node_labels_to_integers(nx.barabasi_albert_graph(70, 2, seed=4))
-    E = np.array(G.edges())
-
-    def call(checkpoint=None, info=None):
-        if algo == "sdrf":
-            return rewiring.sdrf(70, E, "bounds", max_iters=6, rng=random.Random(3), checkpoint=checkpoint, info=info)
-        if algo == "borf":
-            return rewiring.borf(70, E, "bounds", max_iters=4, checkpoint=checkpoint, info=info)
-        return rewiring.fosr(70, E, max_iters=5, checkpoint=checkpoint, info=info)
-
-    ref = call()
-    ck = str(tmp_path / "state.pkl")
-    orig = rewiring._IterCheckpoint.save
-    n = {"k": 0}
-
-    def save_then_kill(self, *a, **kw):
-        orig(self, *a, **kw)
-        n["k"] += 1
-        if n["k"] == 2:
-            raise _Kill
-
-    monkeypatch.setattr(rewiring._IterCheckpoint, "save", save_then_kill)
-    with pytest.raises(_Kill):
-        call(checkpoint=ck)
-    monkeypatch.setattr(rewiring._IterCheckpoint, "save", orig)
-    info = {}  # for SDRF the RNG state comes from the checkpoint, not from the fresh Random(3)
-    resumed = call(checkpoint=ck, info=info)
-    assert np.array_equal(resumed, ref)
-    assert info["compute_time"] >= 0
 
 
 def test_registry_matches_manuscript_file_names():

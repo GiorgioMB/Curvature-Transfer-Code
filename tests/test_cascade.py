@@ -3,7 +3,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from curvature_transfer import Graph, certify_then_solve, certify_threshold, screen
+from curvature_transfer import Graph, certify_threshold, screen
 from curvature_transfer import _kernels as K
 from curvature_transfer import intervals as I
 
@@ -72,32 +72,6 @@ def test_screen_threshold_is_exact_and_decides_like_the_sharpened_interval(case,
     _, _, und = certify_threshold(lo, up, tau)
     assert r["n_solved"] == int(und.sum())
     assert r["n_bf"] <= r["n_two_hop"] <= r["n_two_hop"] + r["n_tlw"] == r["M"] - r["n_solved"]
-
-
-@pytest.mark.parametrize("schedule", ["static", "adaptive"])
-@pytest.mark.parametrize("frac", [0.01, 0.1, 0.5])
-def test_screen_bottom_k_is_exact(case, schedule, frac):
-    g, ex = case
-    c = ex[:, 0]
-    k = max(1, int(frac * g.num_edges))
-    r = screen(g, k=k, schedule=schedule, batch=7)  # tiny batches: many rounds
-    ans = np.flatnonzero(r["answer"])
-    kth = np.sort(c)[k - 1]
-    assert len(ans) == k and np.all(c[ans] <= kth + 1e-12)
-    assert np.all(np.isin(np.flatnonzero(c < kth - 1e-12), ans))
-
-
-def test_adaptive_never_solves_more_than_static(case):
-    g, ex = case
-    c = ex[:, 0]
-    lo, up = I.widen(*I.stage_one(g)["two_hop"])
-    for frac in (0.01, 0.1, 0.5):
-        k = max(1, int(frac * g.num_edges))
-        kw = dict(tau=None, k=k, tol=I.ROUNDING_TOL)
-        a = certify_then_solve(lo, up, lambda ids: c[ids], schedule="adaptive", batch=5, **kw)
-        s = certify_then_solve(lo, up, lambda ids: c[ids], schedule="static", **kw)
-        assert a["n_solved"] <= s["n_solved"]
-        assert a["answer"].sum() == s["answer"].sum() == k
 
 
 def test_two_hop_from_stored_arrays_equals_stage_one(case):

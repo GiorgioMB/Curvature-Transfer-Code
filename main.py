@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Reproduce every experimental table, figure, and statistic with one command.
 
-    python main.py                       # everything except the GNN case study
-    python main.py --gnn --delta 0.01    # also the rewiring case study (needs the [gnn] extra)
+    python main.py                       # everything
     python main.py --quick               # small smoke run of the whole pipeline (minutes)
     python main.py --steps bounds        # selected steps only
     python main.py --list                # show the steps and what each one produces
@@ -11,9 +10,8 @@ All outputs go to ``results/`` (``--out``). Every step writes a log to
 ``results/logs/<step>.log``.
 
 Resuming. Every step saves what it computes as soon as it is computed (per
-graph, per chunk of edges, per graph size, per rewiring iteration, per Optuna
-trial, per CV fold, and, while a fold trains, every --ckpt-seconds), using
-atomic writes (tmp file + rename). After a kill (e.g. a wall-time limit) just
+graph, per chunk of edges, and per graph size), using atomic writes (tmp
+file + rename). After a kill (e.g. a wall-time limit) just
 run the same command again: finished steps are skipped through their stamp in
 ``results/.stamps``, and the interrupted step continues from its last saved
 unit. ``--force`` ignores the stamps (the per-unit checkpoints are still
@@ -48,7 +46,6 @@ import subprocess
 import sys
 import time
 
-import numpy as np
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 EXP = os.path.join(ROOT, "experiments")
@@ -87,33 +84,6 @@ FIG_GRAPHS = OrderedDict([
     ("Yeast", "Yeast"),
 ])
 
-GNN_DATASETS = [
-    "ZINC",
-    "QM9",
-    "ogbg-molhiv",
-    "minesweeper",
-    "Tree-NeighborsMatch",
-]
-GNN_DATASET_SPECS = [
-    ("minesweeper", "Minesweeper", "rocauc"),
-    ("ZINC", "ZINC", "mae"),
-    ("QM9", "QM9", "mae"),
-    ("Tree-NeighborsMatch", "TNM", "acc"),
-    ("ogbg-molhiv", "ogbg-molhiv", "rocauc"),
-]
-GNN_ARCHS = ["GCN", "GIN", "GAT"]
-GNN_PIPES = [
-    ("Original", "Original"),
-    ("FoSR", "FoSR"),
-    ("SDRF (BF)", "SDRF (BF)"),
-    ("SDRF (OR)", "OR-SDRF"),
-    ("SDRF (Bounds)", "S-SDRF"),
-    ("BORF (OR)", "BORF"),
-    ("BORF (JL)", "JL-BORF"),
-    ("BORF (Bounds)", "S-BORF"),
-    ("BORF (Sharpened)", "S+-BORF"),
-]
-
 STEPS = {
     "environment": "software/hardware record -> environment.json",
     "tests": "pytest suite: exact OT vs LP, theoretical bounds on random graphs",
@@ -125,8 +95,6 @@ STEPS = {
     "distributions": "per-edge CSVs + distribution figures, from edges/ -> edges/csv/",
     "benchmark": "runtime scaling, one figure per family -> benchmark/",
     "figures": "collect key figures into one directory -> figures/",
-    "gnn": "rewiring case study (needs torch) -> gnn/",
-    "gnn_stats": "GNN summary tables (downstream, runtime/topology, non-inferiority) -> tables/",
     "consistency": "cross-checks across bounds, screening, figures, and benchmarks -> CONSISTENCY.md",
     "report": "REPORT.md mapping experimental artifacts to files",
 }
@@ -197,137 +165,6 @@ def _benchmark_files(bdir):
     return {k: v[1] for k, v in out.items()}
 
 
-def compute_gnn_tables(res, cfg):
-    """Compute downstream scores, runtime/topology averages, and non-inferiority tests."""
-    import stats as st
-
-    archs = cfg.get("archs", GNN_ARCHS)
-    down_rows, conn_rows, test_rows = [], [], []
-
-    for ds, name, metric in GNN_DATASET_SPECS:
-        # 1. Downstream scores per (dataset, arch)
-        for arch in archs:
-            entry = res.get(f"{ds}_{arch}", {})
-            vals = [
-                (entry.get(p, {}).get("avg"), entry.get(p, {}).get("std"))
-                for p, _ in GNN_PIPES
-            ]
-            have = [v[0] for v in vals if v[0] is not None]
-            best = (min if metric == "mae" else max)(have) if have else None
-            row = {
-                "dataset": name,
-                "arch": arch,
-                "metric": metric,
-                "best_pipeline": "",
-            }
-            best_pipes = []
-            for (p, pname), (avg, std) in zip(GNN_PIPES, vals):
-                if avg is not None:
-                    row[f"{pname}_avg"] = (
-                        f"{avg:.4f}" if metric == "mae" else f"{100 * avg:.2f}"
-                    )
-                    row[f"{pname}_std"] = (
-                        f"{(std or 0.0):.4f}"
-                        if metric == "mae"
-                        else f"{100 * (std or 0.0):.2f}"
-                    )
-                    if best is not None and abs(avg - best) < 1e-12:
-                        best_pipes.append(pname)
-                else:
-                    row[f"{pname}_avg"] = ""
-                    row[f"{pname}_std"] = ""
-            row["best_pipeline"] = ";".join(best_pipes)
-            down_rows.append(row)
-
-        # 2. Rewiring runtime and graph connectivity averaged across architectures
-        for p, pname in GNN_PIPES:
-            ents = [res.get(f"{ds}_{arch}", {}).get(p) for arch in archs]
-            ents = [e for e in ents if e]
-            if not ents:
-                continue
-            t = float(np.mean([e.get("rewire_time") or 0.0 for e in ents]))
-            topo = ents[0].get("topology") or {}
-            fied = topo.get("Fiedler", float("nan"))
-            diam = topo.get("Diameter", float("nan"))
-            avg_sp = topo.get("Avg_SP", float("nan"))
-            conn_rows.append({
-                "dataset": name,
-                "pipeline": pname,
-                "rewire_time_s": "" if p == "Original" else f"{t:.2f}",
-                "diameter": f"{diam:.2f}" if _fin(diam) else "",
-                "avg_shortest_path": f"{avg_sp:.2f}" if _fin(avg_sp) else "",
-                "fiedler": f"{fied:.4e}" if _fin(fied) and fied > 0 else "",
-            })
-
-    # 3. Statistical tests (stats.case_study_tests): non-inferiority of the surrogates and of the
-    #    uncertified controls to their exact counterparts (needs delta), and two-sided tests of the
-    #    exact methods against the original graph; Holm-corrected within each family.
-    delta = cfg.get("delta")
-    summary = {"non_inferiority": {}, "two_sided": {}, "speedup_ratios": {}, "config": cfg}
-    tests = st.case_study_tests(res, GNN_DATASET_SPECS, archs, delta)
-    for t in tests:
-        test_rows.append({
-            "dataset": t["dataset"],
-            "arch": t["arch"],
-            "test": t["kind"],
-            "comparison": t["label"],
-            "mean_diff": f"{t['mean']:+.4f}",
-            "lower_conf_bound": f"{t['lcb']:+.4f}" if _fin(t["lcb"]) else "",
-            "p_raw": f"{t['p']:.4f}",
-            "p_holm": f"{t['p_holm']:.4f}",
-            "verdict": st.verdict(t),
-        })
-    for kind, pairs, field, count in (("noninferiority", st.NONINF, "non_inferiority", "passed"),
-                                      ("two-sided", st.TWO_SIDED, "two_sided", "differs")):
-        for sur, ref, lab, _, _ in pairs:
-            sel = [t for t in tests if t["kind"] == kind and t["surrogate"] == sur and t["reference"] == ref]
-            if sel:
-                summary[field][lab] = {count: int(sum(t["significant"] for t in sel)), "total": len(sel)}
-
-    # 4. Rewiring speedup ratios (exact OR vs surrogate bounds)
-    ratios = []
-    for ds, name, _ in GNN_DATASET_SPECS:
-        for sur, key in (
-            ("BORF (Bounds)", "S-BORF"),
-            ("SDRF (Bounds)", "S-SDRF"),
-        ):
-            ref = {
-                "BORF (Bounds)": "BORF (OR)",
-                "SDRF (Bounds)": "SDRF (OR)",
-            }[sur]
-            ts = [
-                (
-                    res.get(f"{ds}_{a}", {}).get(sur, {}).get("rewire_time"),
-                    res.get(f"{ds}_{a}", {}).get(ref, {}).get("rewire_time"),
-                )
-                for a in archs
-            ]
-            ts = [(x, y) for x, y in ts if x and y]
-            if ts:
-                ratios.append((
-                    key,
-                    name,
-                    float(
-                        np.mean([y for _, y in ts])
-                        / np.mean([x for x, _ in ts])
-                    ),
-                ))
-    for key in ("S-BORF", "S-SDRF"):
-        r = [v for k, _, v in ratios if k == key]
-        if r:
-            summary["speedup_ratios"][key] = {
-                "min": round(min(r), 2),
-                "max": round(max(r), 2),
-                "per_dataset": {
-                    ds_name: round(v, 2)
-                    for k, ds_name, v in ratios
-                    if k == key
-                },
-            }
-
-    return down_rows, conn_rows, test_rows, summary
-
-
 def run_consistency_checks(results_dir):
     """Cross-checks between raw files, bound tables, screening, figures, and benchmarks."""
     import compare_bounds as cb
@@ -390,18 +227,10 @@ def run_consistency_checks(results_dir):
                 not bad,
                 "; ".join(bad),
             )
-        add(
-            "certify-then-solve on the stored intervals returned the exact bottom-10% answer on every graph",
-            all(str(r["correct"]) == "True" for r in screen_rows),
-        )
     if large_rows:
-        bad = [
-            r["graph"]
-            for r in large_rows
-            if not (str(r.get("sign_correct")) == "True" and str(r.get("bottom_correct")) == "True")
-        ]
+        bad = [r["graph"] for r in large_rows if str(r.get("sign_correct")) != "True"]
         add(
-            "certify-then-solve on the large networks returned the exact answer for both queries",
+            "certify-then-solve on the large networks returned the exact answer",
             not bad,
             f"wrong on {bad}",
         )
@@ -577,10 +406,6 @@ class Runner:
             "networkx",
             "pandas",
             "matplotlib",
-            "torch",
-            "torch_geometric",
-            "optuna",
-            "sklearn",
         ):
             try:
                 info[mod] = __import__(mod).__version__
@@ -745,132 +570,6 @@ class Runner:
         )
         return True
 
-    def gnn(self):
-        if self.a.delta is None:
-            print(
-                "[FAIL] gnn requires --delta (the non-inferiority margin, fixed before the experiments)"
-            )
-            self.status["gnn"] = "FAILED (no --delta)"
-            return False
-        ok = True
-        cfg = (
-            {"reps": 2, "cv_split": 3, "trials": 2, "epochs": 5}
-            if self.a.quick
-            else {"reps": 50, "cv_split": 5, "trials": 50, "epochs": 200}
-        )
-        archs = ["GCN"] if self.a.quick else GNN_ARCHS
-        datasets = ["Tree-NeighborsMatch"] if self.a.quick else GNN_DATASETS
-        cfg.update({
-            "archs": archs,
-            "datasets": datasets,
-            "delta": self.a.delta,
-            "seed": self.a.seed,
-            "max_iters_rewiring": {
-                "minesweeper": 40,
-                "other": 2 if self.a.quick else 5,
-            },
-        })
-        os.makedirs(self.path("gnn"), exist_ok=True)
-        _io.atomic_json(cfg, self.path("gnn", "config.json"))
-        for ds in datasets:
-            for arch in archs:
-                its = cfg["max_iters_rewiring"][
-                    "minesweeper" if ds == "minesweeper" else "other"
-                ]
-                cmd = [
-                    PY,
-                    "gnn_experiments.py",
-                    "--dataset",
-                    ds,
-                    "--arch",
-                    arch,
-                    "--seed",
-                    str(self.a.seed),
-                    "--out-dir",
-                    self.path("gnn"),
-                    "--workers",
-                    str(self.a.gnn_workers),
-                    "--max-iters-rewiring",
-                    str(its),
-                    "--trials",
-                    str(cfg["trials"]),
-                    "--epochs",
-                    str(cfg["epochs"]),
-                    "--reps",
-                    str(cfg["reps"]),
-                    "--cv-split",
-                    str(cfg["cv_split"]),
-                    "--ckpt-seconds",
-                    str(self.a.ckpt_seconds),
-                    "--save-seconds",
-                    str(self.a.ckpt_seconds),
-                ]
-                ok &= self.run(f"gnn_{ds}_{arch}", cmd)
-                if not ok and not self.a.keep_going:
-                    return False
-        return ok
-
-    def gnn_stats(self):
-        gdir = self.path("gnn")
-        if os.path.isdir(os.path.join(gdir, "parts")):
-            import merge_results
-            merge_results.merge(gdir)
-        res_path = os.path.join(gdir, "gnn_results.json")
-        if not os.path.exists(res_path):
-            print("[skip] gnn_stats: no gnn results")
-            self.status["gnn_stats"] = "skipped (no results)"
-            return True
-        if self.a.delta is None:
-            print("[FAIL] gnn_stats requires --delta")
-            self.status["gnn_stats"] = "FAILED (no --delta)"
-            return False
-
-        with open(res_path, "rb") as fh:
-            raw_bytes = fh.read()
-        digest = hashlib.sha256(raw_bytes).hexdigest()[:16]
-        ok = self.run(
-            "gnn_stats",
-            [PY, "stats.py", res_path, "--delta", str(self.a.delta)],
-            cfg={"results": digest, "delta": self.a.delta},
-        )
-        if ok:
-            shutil.copy2(
-                self.path("logs", "gnn_stats.log"),
-                self.path("tables", "gnn_stats.txt"),
-            )
-
-        # Compute structured CSV tables & summary JSON (formerly in paper_artifacts.py)
-        res = json.loads(raw_bytes.decode("utf-8"))
-        cfgp = os.path.join(gdir, "config.json")
-        cfg = json.load(open(cfgp)) if os.path.exists(cfgp) else {}
-        if self.a.delta is not None:
-            cfg["delta"] = self.a.delta
-
-        down_rows, conn_rows, test_rows, summary = compute_gnn_tables(res, cfg)
-        if down_rows:
-            _atomic_csv(
-                down_rows,
-                list(down_rows[0].keys()),
-                self.path("tables", "gnn_downstream.csv"),
-            )
-        if conn_rows:
-            _atomic_csv(
-                conn_rows,
-                list(conn_rows[0].keys()),
-                self.path("tables", "gnn_time_and_connectivity.csv"),
-            )
-        if test_rows:
-            _atomic_csv(
-                test_rows,
-                list(test_rows[0].keys()),
-                self.path("tables", "gnn_tests.csv"),
-            )
-        _io.atomic_json(summary, self.path("tables", "gnn_summary.json"))
-        print(
-            f"[ ok ] gnn tables -> {self.path('tables', 'gnn_*.csv')} ({len(test_rows)} non-inferiority tests)"
-        )
-        return ok
-
     def consistency(self):
         checks = run_consistency_checks(self.out)
         failed = [c for c in checks if not c[1]]
@@ -969,31 +668,6 @@ class Runner:
                 rel("tables", "bounds_legacy", "bound_comparison.csv"),
                 "optional (--legacy-check)",
             ),
-            (
-                "GNN raw results",
-                rel("gnn", "gnn_results.json"),
-                "optional (--gnn)",
-            ),
-            (
-                "GNN downstream scores table",
-                rel("tables", "gnn_downstream.csv"),
-                "optional (--gnn)",
-            ),
-            (
-                "GNN rewiring time & connectivity table",
-                rel("tables", "gnn_time_and_connectivity.csv"),
-                "optional (--gnn)",
-            ),
-            (
-                "GNN non-inferiority tests (Holm-adjusted)",
-                rel("tables", "gnn_tests.csv"),
-                "optional (--gnn)",
-            ),
-            (
-                "GNN statistical log & speedup summary",
-                rel("tables", "gnn_summary.json"),
-                "optional (--gnn)",
-            ),
         ]
         lines = [
             "# Reproduction report",
@@ -1046,11 +720,6 @@ def main():
         help="small graphs and sizes: checks the pipeline, not the numbers",
     )
     ap.add_argument(
-        "--gnn",
-        action="store_true",
-        help="also run the rewiring case study and its statistics",
-    )
-    ap.add_argument(
         "--legacy-check",
         action="store_true",
         help="also recompute the tables with the preliminary BF",
@@ -1092,19 +761,6 @@ def main():
         help="preliminary repository, to add the old solver to the benchmark",
     )
     ap.add_argument(
-        "--delta",
-        type=float,
-        default=None,
-        help="non-inferiority margin for the GNN statistics",
-    )
-    ap.add_argument("--gnn-workers", type=int, default=4)
-    ap.add_argument(
-        "--ckpt-seconds",
-        type=float,
-        default=600,
-        help="GNN: seconds between training / rewiring checkpoints (lower = less lost work on a kill)",
-    )
-    ap.add_argument(
         "--chunk",
         type=int,
         default=10000,
@@ -1136,14 +792,13 @@ def main():
     a = ap.parse_args()
     if a.list:
         for k, v in STEPS.items():
-            opt = k in ("bounds_legacy", "gnn", "gnn_stats")
+            opt = k == "bounds_legacy"
             print(f"{k:14s} {v}{'  [optional]' if opt else ''}")
         return
     steps = a.steps or (
         CORE[:5]
         + (["bounds_legacy"] if a.legacy_check else [])
         + CORE[5:]
-        + (["gnn", "gnn_stats"] if a.gnn else [])
         + ["consistency", "report"]
     )
     r = Runner(a)

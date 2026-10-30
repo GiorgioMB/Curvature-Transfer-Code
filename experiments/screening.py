@@ -7,21 +7,19 @@ benchmark  every graph of the registry (``suite.py``), from the stored per-edge
            arrays (``edges.py``), no timing: the fraction of transport problems
            avoided for the query {c_OR < 0} with the BF, matching, and sharpened
            intervals (the arrays of the bound tables, so the fraction is never
-           below the certified-sign fraction of Tables 3 and 5), and for the 10%
-           most negatively curved edges with the static and the adaptive
-           schedule on the two-hop interval (the schedule of the cascade,
-           simulated with the stored exact values; the answer is checked).
+           below the certified-sign fraction of Tables 3 and 5), and with the
+           two-hop interval of the first stage of the cascade.
            -> <out>/screening_benchmark.csv
 
 large      every graph of ``large_graphs.LARGE`` (10^5 to 10^6 edges), timed in
            one process with a fixed number of threads, after JIT compilation:
            exact evaluation of every edge (``timing.exact_all``, the baseline),
            and the cascade ``curvature_transfer.screen`` from scratch for
-           {c_OR < 0} and for the bottom 10%. Each phase is repeated until
-           ``--min-total`` seconds or ``--max-reps`` runs (median reported).
-           Every answer is checked against the exact curvatures (the step fails
-           otherwise). -> <out>/screening_large.csv (Table 6), one JSON per graph
-           in <out>/per_graph_large/ (a restarted run skips finished graphs).
+           {c_OR < 0}. Each phase is repeated until ``--min-total`` seconds or
+           ``--max-reps`` runs (median reported). Every answer is checked
+           against the exact curvatures (the step fails otherwise).
+           -> <out>/screening_large.csv (Table 6), one JSON per graph in
+           <out>/per_graph_large/ (a restarted run skips finished graphs).
 
 Usage: python screening.py --results ../results --out ../results/tables/screening [--part all] [--jobs N]
 """
@@ -30,7 +28,6 @@ from __future__ import annotations
 import argparse
 import csv
 import io
-import math
 import os
 import sys
 import time
@@ -41,7 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 
-from curvature_transfer import Graph, certify_then_solve, certify_threshold, screen  # noqa: E402
+from curvature_transfer import Graph, certify_threshold, screen  # noqa: E402
 from curvature_transfer import _io  # noqa: E402
 from curvature_transfer import intervals as I  # noqa: E402
 import edges as E  # noqa: E402
@@ -50,17 +47,6 @@ import suite  # noqa: E402
 import timing  # noqa: E402
 
 RESULT_VERSION = 4  # 4: 2-hop kernel, TLW stage, and the denser large networks
-
-
-def bottom_k(M, frac):
-    return max(1, int(math.ceil(frac * M)))
-
-
-def bottom_ok(ans_mask, c, k):
-    ans = np.flatnonzero(ans_mask)
-    kth = np.sort(c)[k - 1]
-    return bool(len(ans) == k and np.all(c[ans] <= kth + 1e-12)
-                and np.all(np.isin(np.flatnonzero(c < kth - 1e-12), ans)))
 
 
 # ------------------------------------------------------------------ benchmark
@@ -79,19 +65,9 @@ def benchmark_rows(specs, a):
         lo, up = I.widen(*I.two_hop_from_arrays(A))
         _, _, und = certify_threshold(lo, up, 0.0)
         r["sign_avoided_two_hop"] = 1.0 - float(und.mean())
-        k = bottom_k(M, a.frac)
-        ok = True
-        for sched in ("static", "adaptive"):
-            rr = certify_then_solve(lo, up, lambda ids: c[ids], tau=None, k=k, schedule=sched, tol=I.ROUNDING_TOL)
-            r[f"bottom_avoided_{sched}"] = rr["frac_avoided"]
-            r[f"bottom_rounds_{sched}"] = rr["rounds"]
-            ok &= bottom_ok(rr["answer"], c, k)
-        r["correct"] = ok
         rows.append(r)
         print(f"[screening/benchmark] {spec.name:26s} sign: BF {100 * r['sign_avoided_bf']:5.1f}% "
-              f"sharpened {100 * r['sign_avoided_sharpened']:5.1f}% | bottom: static "
-              f"{100 * r['bottom_avoided_static']:5.1f}% adaptive {100 * r['bottom_avoided_adaptive']:5.1f}% "
-              f"correct={ok}", flush=True)
+              f"sharpened {100 * r['sign_avoided_sharpened']:5.1f}%", flush=True)
     return rows
 
 
@@ -108,17 +84,15 @@ def run_large(spec, a, threads):
     row = dict(graph=spec.name, tag=spec.tag, n=n, E=M, max_deg=int(deg.max()), mean_deg=float(deg.mean()),
                raw_nodes=info["raw_nodes"], raw_edges=info["raw_edges"], threads=threads,
                time_exact=t_exact, reps_exact=reps_exact, frac_negative=float((c < 0).mean()))
-    k = bottom_k(M, a.frac)
-    for q, kw in (("sign", {"tau": 0.0}), ("bottom", {"k": k})):
-        t, r, reps = timing.repeat(lambda: screen(g, n_jobs=a.jobs, seed=a.seed, **kw), **rep)
-        ok = bool(np.array_equal(r["answer"], c < 0.0)) if q == "sign" else bottom_ok(r["answer"], c, k)
-        row.update({f"{q}_{x}": r[x] for x in ("n_bf", "n_two_hop", "n_tlw", "n_solved", "rounds")})
-        row.update({f"{q}_avoided": r["frac_avoided"], f"{q}_time": t, f"{q}_time_stage1": r["time_stage1"],
-                    f"{q}_reps": reps, f"{q}_speedup": t_exact / max(t, 1e-12), f"{q}_correct": ok})
-        print(f"[screening/large] {spec.name}: {q:6s} avoided={100 * r['frac_avoided']:5.1f}% "
-              f"(BF {100 * r['n_bf'] / M:.1f}%, two-hop {100 * r['n_two_hop'] / M:.1f}%, TLW {100 * r['n_tlw'] / M:.1f}%) "
-              f"time={t:.2f}s (stage one {r['time_stage1']:.2f}s, {r['rounds']} rounds) "
-              f"speedup={t_exact / max(t, 1e-12):.2f}x correct={ok}", flush=True)
+    t, r, reps = timing.repeat(lambda: screen(g, tau=0.0, n_jobs=a.jobs, seed=a.seed), **rep)
+    ok = bool(np.array_equal(r["answer"], c < 0.0))
+    row.update({f"sign_{x}": r[x] for x in ("n_bf", "n_two_hop", "n_tlw", "n_solved")})
+    row.update({"sign_avoided": r["frac_avoided"], "sign_time": t, "sign_time_stage1": r["time_stage1"],
+                "sign_reps": reps, "sign_speedup": t_exact / max(t, 1e-12), "sign_correct": ok})
+    print(f"[screening/large] {spec.name}: sign avoided={100 * r['frac_avoided']:5.1f}% "
+          f"(BF {100 * r['n_bf'] / M:.1f}%, two-hop {100 * r['n_two_hop'] / M:.1f}%, "
+          f"TLW {100 * r['n_tlw'] / M:.1f}%) time={t:.2f}s (stage one {r['time_stage1']:.2f}s) "
+          f"speedup={t_exact / max(t, 1e-12):.2f}x correct={ok}", flush=True)
     return row
 
 
@@ -144,7 +118,6 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--chunk", type=int, default=10000)
-    ap.add_argument("--frac", type=float, default=0.1)
     ap.add_argument("--min-total", type=float, default=2.0, help="repeat each timed phase until this many seconds")
     ap.add_argument("--max-reps", type=int, default=3)
     a = ap.parse_args()
@@ -160,8 +133,6 @@ def main():
     if a.part in ("benchmark", "all") and (only is None or b_only):
         rows = benchmark_rows(suite.specs(b_only, quick=a.quick), a)
         write_csv(rows, os.path.join(a.out, "screening_benchmark.csv"))
-        if not all(r["correct"] for r in rows):
-            raise SystemExit("certify-then-solve returned a wrong answer (benchmark part)")
     if a.part in ("large", "all") and (only is None or l_only):
         import numba
         timing.warmup()
@@ -171,7 +142,7 @@ def main():
         rows = []
         for spec in LG.specs(l_only, quick=a.quick):
             pg = os.path.join(pg_dir, f"{spec.tag}.json")
-            key = {"version": RESULT_VERSION, "frac": a.frac, "threads": threads, "seed": a.seed,
+            key = {"version": RESULT_VERSION, "threads": threads, "seed": a.seed,
                    "min_total": a.min_total, "max_reps": a.max_reps}
             cached = _io.read_json(pg)
             if cached and cached.get("key") == key:
@@ -183,7 +154,7 @@ def main():
                 print(f"[screening/large] {spec.name} done ({time.time() - t0:.0f}s)", flush=True)
             rows.append(row)
             write_csv(rows, os.path.join(a.out, "screening_large.csv"))
-        if not all(r["sign_correct"] and r["bottom_correct"] for r in rows):
+        if not all(r["sign_correct"] for r in rows):
             raise SystemExit("certify-then-solve returned a wrong answer (large part)")
 
 
