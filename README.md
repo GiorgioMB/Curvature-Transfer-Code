@@ -7,10 +7,10 @@ Code for the experiments of
 
 The package computes, for every edge of an undirected simple graph:
 
-* **exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, from the solver
+* **Exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, from the solver
   package [`orcut`](https://github.com/GiorgioMB/orcut), pinned to 1.0.0 (the solver behind every exact value of the paper);
 * **Balanced Forman curvature** and the 2-hop statistics behind it;
-* **every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
+* **Every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
 * **certify-then-solve** screening, which answers threshold queries exactly while solving transport problems only on undecided edges: a cascade of 2-hop bounds on every edge, then the TLW certificate (one more 2-hop pass) and the transport problem only where needed (`curvature_transfer.screen`).
 
 ```python
@@ -32,9 +32,6 @@ pip install -e .                      # core: numpy, scipy, numba, orcut
 pip install -e ".[experiments,dev]"   # experiments + tests
 pytest -q
 ```
-
-The exact solver, [`orcut`](https://github.com/GiorgioMB/orcut), is not on PyPI: pip installs it from its GitHub tag
-`v1.0.0` (a direct reference in `pyproject.toml`), so git must be available.
 
 ## Layout
 
