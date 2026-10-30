@@ -18,8 +18,8 @@ tables, which are kept unchanged in generators.py.)
 Phases (``timing.PHASES``, the same code as the speedup column of the screening
 table): exact (exact lazy OR, min-cut), bf, prior (JL and TLW lower bounds),
 bf_interval, matching_interval, sharpened_interval (the intervals of Section 6.1;
-the last two include the TLW dual certificate, which needs the local distance
-matrix). Cheap phases run first.
+the last two include the TLW dual certificate, evaluated by the 2-hop kernel in
+the same pass as the statistics). Cheap phases run first.
 
 How a phase is timed. Graphs with at most ``--chunk-above`` edges: the median of
 repeated runs on all edges (``--min-total``, ``--max-reps``). Larger graphs: the
@@ -37,10 +37,11 @@ phase stays skipped for every larger n:
 * time: the phase's time is extrapolated from the last measured sizes of the
   same family (log-log fit on the last 3 points, slope >= 1); if the prediction
   exceeds ``--budget-hours``, the phase is not run;
-* memory: the transport problem of an edge (i, j) holds dense |S| x |S| arrays,
-  |S| <= deg(i) + deg(j). If threads x c x |S|_max^2 bytes (c = 4 for exact OR,
-  1.2 for the TLW certificate; a rough lower estimate) exceeds 80% of
-  ``--mem-gb``, the phase is not run;
+* memory: the exact solver holds per-edge bitsets of order |S|^2 / 8 bytes,
+  |S| <= deg(i) + deg(j). If threads x 4 x |S|_max^2 bytes (a rough estimate)
+  exceeds 80% of ``--mem-gb``, exact OR is not run. The other phases need O(n)
+  stamps per thread and O(deg) scratch per edge (plus the cross edges of the
+  edge), and are not guarded;
 * kills: if the same chunk was started ``--max-attempts`` times without finishing
   (out of memory, or a wall-time kill that hit the same long chunk twice), the
   phase is not run for this and larger sizes.
@@ -84,7 +85,7 @@ PHASE_LABELS = {"exact": "Exact OR (min-cut)", "sharpened_interval": "Sharpened 
                 "bf": "Balanced Forman", "prior": "JL / TLW lower bounds"}
 PHASE_STYLE = {"exact": ("o", "-"), "sharpened_interval": ("s", "--"), "matching_interval": ("P", "--"),
                "bf_interval": ("D", "-."), "bf": ("^", ":"), "prior": ("v", "-.")}
-MEM_FACTOR = {"exact": 4.0, "matching_interval": 1.2, "sharpened_interval": 1.2}  # bytes per |S|^2 per thread
+MEM_FACTOR = {"exact": 4.0}  # bytes per |S|^2 per thread (the intervals need no |S|^2 structure)
 FAMILY_CODE = {"ER": 1, "BA": 2, "RGG": 3, "WS": 4}
 GEN_VERSION = 1
 COLS = (["family", "n", "param", "num_edges", "avg_deg", "max_deg", "s_max", "threads", "chunked", "chunk",
@@ -350,7 +351,7 @@ def run_family(family, a):
     mem_gb = mem_budget_gb(a.mem_gb)
     cfg = _io.fingerprint({"threads": threads, "min_total": a.min_total, "max_reps": a.max_reps, "seed": a.seed,
                            "legacy": bool(a.legacy_dir), "chunk": a.chunk, "chunk_above": a.chunk_above,
-                           "gen": GEN_VERSION, "version": 3}, length=8)
+                           "gen": GEN_VERSION, "version": 4}, length=8)  # 4: 2-hop kernel with the TLW certificate
     rows_dir = os.path.join(out_dir, f"rows_{family}_{a.min_n}_{a.max_n}_{cfg}")
     os.makedirs(rows_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, f"benchmark_{family}_{a.min_n}_{a.max_n}.csv")

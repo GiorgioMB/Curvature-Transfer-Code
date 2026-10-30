@@ -1,6 +1,7 @@
 # Full pinned environment of the paper, GNN stack included (CPU builds):
 #   pip install -r requirements.txt
-# The library alone needs only numpy, scipy, numba (see pyproject.toml extras).
+# The library alone needs only numpy, scipy, numba, and orcut (the exact solver,
+# installed from its GitHub tag; it is not on PyPI). See pyproject.toml extras.
 --extra-index-url https://download.pytorch.org/whl/cpu
 --find-links https://data.pyg.org/whl/torch-2.8.0+cpu.html
 aiohappyeyeballs==2.6.1
@@ -29,6 +30,7 @@ networkx==3.3
 numba==0.62.1
 numexpr==2.13.1
 numpy==2.2.0
+orcut @ git+https://github.com/GiorgioMB/orcut.git@v1.0.0
 optuna==5.0.0
 packaging==25.0
 pandas==2.3.3

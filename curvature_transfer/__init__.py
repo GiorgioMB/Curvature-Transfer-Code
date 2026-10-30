@@ -1,5 +1,5 @@
 """curvature_transfer: certified bounds between Balanced Forman and
-Ollivier--Ricci curvature, and exact OR curvature by min-cut.
+Ollivier--Ricci curvature. Exact OR curvature comes from ``orcut`` (1.0.0).
 
 Core dependencies are numpy, scipy, and numba; torch / torch_geometric are
 only needed for :mod:`curvature_transfer.pyg`.
@@ -12,4 +12,4 @@ from .screening import certify_threshold, certify_bottom_k, certify_then_solve, 
 
 __all__ = ["Graph", "CurvatureEngine", "bounds", "intervals",
            "certify_threshold", "certify_bottom_k", "certify_then_solve", "screen"]
-__version__ = "1.0.0"
+__version__ = "1.1.0"

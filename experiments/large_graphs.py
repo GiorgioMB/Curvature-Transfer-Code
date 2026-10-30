@@ -9,8 +9,13 @@ to its largest connected component by :func:`suite.largest_component`, as every
 graph of the paper.
 
 All graphs were chosen so that exact evaluation of every edge stays feasible
-(maximum degree at most a few thousand): the speedup is measured against it,
-and the certified answers are checked against it.
+(maximum degree at most about 10^4): the speedup is measured against it, and
+the certified answers are checked against it. The list spans two regimes: sparse
+networks (average degree below ~20; an exact solve takes microseconds, so exact
+evaluation of every edge takes seconds) and denser ones (average degree 15 to
+76 with hubs; Amazon-Photo, Twitch-DE, Crocodile, Squirrel, Amazon-Computers,
+GitHub), where the local transport problems are large and exact evaluation of
+every edge is minutes of CPU time.
 
 Download integrity: gzip/zip/npz files are checked by decompressing them, and
 the parsed graph must have at least ``min_edges`` edges (well below the size
@@ -68,8 +73,20 @@ LARGE: List[LargeSpec] = [
               "leskovec_graph_2007"),                                             # 18,772 nodes, 198,110 edges
     LargeSpec("Brightkite", "loc_brightkite", SNAP + "loc-brightkite_edges.txt.gz", "snap", 210_000,
               "cho_friendship_2011"),                                             # 58,228 nodes, 214,078 edges
+    LargeSpec("Amazon-Photo", "amazon_photo", GH + "shchur/gnn-benchmark/master/data/npz/amazon_electronics_photo.npz",
+              "npz", 115_000, "shchur_pitfalls_2018"),                          # 7,650 nodes, 119,081 edges
+    LargeSpec("Twitch-DE", "twitch_de", GH + "benedekrozemberczki/MUSAE/master/input/edges/DE_edges.csv",
+              "csv", 150_000, "rozemberczki_multiscale_2021"),                  # 9,498 nodes, 153,138 edges
+    LargeSpec("Crocodile", "wiki_crocodile", GH + "benedekrozemberczki/MUSAE/master/input/edges/crocodile_edges.csv",
+              "csv", 165_000, "rozemberczki_multiscale_2021", "Wikipedia-Crocodile"),  # 11,631 nodes, ~171,000 edges
+    LargeSpec("Squirrel", "wiki_squirrel", GH + "benedekrozemberczki/MUSAE/master/input/edges/squirrel_edges.csv",
+              "csv", 195_000, "rozemberczki_multiscale_2021", "Wikipedia-Squirrel"),   # 5,201 nodes, ~198,000 edges
+    LargeSpec("Amazon-Comp.", "amazon_computers", GH + "shchur/gnn-benchmark/master/data/npz/amazon_electronics_computers.npz",
+              "npz", 240_000, "shchur_pitfalls_2018", "Amazon-Computers"),      # 13,752 nodes, 245,861 edges
     LargeSpec("Coauthor-Phys.", "coauthor_physics", GH + "shchur/gnn-benchmark/master/data/npz/ms_academic_phy.npz",
               "npz", 240_000, "shchur_pitfalls_2018", "Coauthor-Physics"),       # 34,493 nodes, 247,962 edges
+    LargeSpec("GitHub", "musae_github", GH + "benedekrozemberczki/MUSAE/master/input/edges/git_edges.csv",
+              "csv", 285_000, "rozemberczki_multiscale_2021"),                  # 37,700 nodes, 289,003 edges
     LargeSpec("Epinions", "soc_epinions1", SNAP + "soc-Epinions1.txt.gz", "snap", 400_000,
               "richardson_trust_2003"),                                           # 75,879 nodes, 405,740 undirected edges
     LargeSpec("Amazon", "com_amazon", SNAP + "bigdata/communities/com-amazon.ungraph.txt.gz", "snap", 900_000,

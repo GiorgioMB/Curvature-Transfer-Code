@@ -49,7 +49,7 @@ import large_graphs as LG  # noqa: E402
 import suite  # noqa: E402
 import timing  # noqa: E402
 
-RESULT_VERSION = 3
+RESULT_VERSION = 4  # 4: 2-hop kernel, TLW stage, and the denser large networks
 
 
 def bottom_k(M, frac):

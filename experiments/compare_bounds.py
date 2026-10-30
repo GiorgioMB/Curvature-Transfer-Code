@@ -159,7 +159,7 @@ def evaluate(spec, A, seed=0):
         "BF": A["c_BF"],
         "ORCA": 0.5 * (lo["JL"] + up["JL"]),
         "midprior": 0.5 * (Llo["JL"] + Lup["prior"]),
-        "mid": 0.5 * (iv["matching"][0] + iv["matching"][1]),
+        "mid": 0.5 * (iv["sharpened"][0] + iv["sharpened"][1]),  # Table 4, "Ours": the sharpened interval
         "midbf": 0.5 * (iv["bf"][0] + iv["bf"][1]),
         "midsharp": 0.5 * (iv["sharpened"][0] + iv["sharpened"][1]),
     }
@@ -216,7 +216,7 @@ def latex_rows(o):
     gl = _bold([f(o["gap_Llo_BF"]), f(o["gap_Llo_comb"])], "min")
     cs = _bold([fpct(o["cert_bf"]), fpct(o["cert_sharp"])], "max")
     rs = _bold([r2(o["rho_midbf"]), r2(o["rho_midsharp"])], "max")
-    d = (f"{o['graph']} & {gl[0]} & {gl[1]} & {fpct(o['comb_tighter'])} & {cs[0]} & {cs[1]} & "
+    d = (f"{o['graph']} & {gl[0]} & {gl[1]} & {fpct(o['comb_gain_over_bf'])} & {cs[0]} & {cs[1]} & "  # L^lazy above phi^Z
          f"{rs[0]} & {rs[1]} \\\\")
     return a, b, c, d
 

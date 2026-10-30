@@ -10,9 +10,12 @@ interval" denotes the same pair of arrays everywhere:
                  2-hop interval of Proposition 5.9 intersected with the prior
                  certificate)
 
-U^prior = min(TLW dual bound, zero-cost bound). The TLW dual bound needs the
-local distance matrix (but no transport solve); the BF interval needs only
-c_BF and the two degrees.
+U^prior = min(TLW dual bound, zero-cost bound). The TLW dual bound needs, per
+vertex of U_i and U_j, whether it has a cross edge and whether it is within
+distance 2 of the other side; the 2-hop kernel evaluates it in the same pass as
+the statistics (``_kernels.edge_stats_all(..., tlw=True)``; no local distance
+structure and no transport solve). The BF interval needs only c_BF and the two
+degrees.
 
 :func:`from_arrays` assembles the intervals from per-edge arrays that were
 already computed; :func:`compute` computes one interval from scratch on a
@@ -29,7 +32,8 @@ distance matrix):
 
 so that the sharpened interval is [two_hop lower, min(two_hop upper, TLW dual)]
 (tested). The TLW dual is evaluated later, only on the edges that stage one
-leaves undecided, together with the exact solve (``_kernels.screen_ids``).
+leaves undecided (``_kernels.tlw_lazy_ids``), and the transport problem is
+solved only where it does not decide the edge either.
 """
 from __future__ import annotations
 
@@ -85,8 +89,6 @@ def compute(graph: Graph, kind: str, n_jobs: Optional[int] = None,
     """
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {KINDS}")
-    import numba
-
     from .engine import _threads
 
     g = graph
@@ -95,7 +97,8 @@ def compute(graph: Graph, kind: str, n_jobs: Optional[int] = None,
     with _threads(n_jobs):
         di = g.deg[E[:, 0]].astype(float)
         dj = g.deg[E[:, 1]].astype(float)
-        raw = K.edge_stats_all(g.indptr, g.indices, E, False, kind != "bf")
+        # one pass: statistics, plus the matching and the TLW certificate if needed
+        raw = K.edge_stats_all(g.indptr, g.indices, E, False, kind != "bf", kind != "bf")
         tri = raw[:, 0].astype(float)
         C4 = B.c4_term(raw[:, 3].astype(float), raw[:, 4].astype(float), di, dj)
         bf = B.bf_curvature(di, dj, tri, C4)
@@ -103,7 +106,7 @@ def compute(graph: Graph, kind: str, n_jobs: Optional[int] = None,
             return B.phi_int_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
         m = raw[:, 6].astype(float)
         Ulazy = B.lazy_upper(di, dj, tri, m, raw[:, 7].astype(float), (raw[:, 3] - raw[:, 7]).astype(float))
-        tlw = K.tlw_lazy_ids(g.indptr, g.indices, g.edges, ids, 8 * numba.get_num_threads())
+        tlw = K.tlw_lazy_from_stats(raw, di, dj)
         up = np.minimum(Ulazy, np.minimum(tlw, B.zero_cost_upper(di, dj, tri)))
         if kind == "matching":
             return B.lift_mix(B.matching_lower(di, dj, tri, m), di, dj, tri), up

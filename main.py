@@ -57,6 +57,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, EXP)
 from curvature_transfer import _io  # noqa: E402
 
+# Version of the timed computations (benchmark, screening). Their stamps include
+# it, so that a step finished with older timing code is rerun (2: the 2-hop
+# kernel, which also evaluates the TLW certificate).
+TIMING_VERSION = 2
+
 # Figures produced by the "distributions" and "benchmark" steps.
 FIGURES = [
     "fig_scatter_cBF_cOR__er_n800_p0_0100125_2d_Hist.png",
@@ -254,56 +259,30 @@ def compute_gnn_tables(res, cfg):
                 "fiedler": f"{fied:.4e}" if _fin(fied) and fied > 0 else "",
             })
 
-    # 3. Non-inferiority statistical tests with Holm-Bonferroni adjustment
+    # 3. Statistical tests (stats.case_study_tests): non-inferiority of the surrogates and of the
+    #    uncertified controls to their exact counterparts (needs delta), and two-sided tests of the
+    #    exact methods against the original graph; Holm-corrected within each family.
     delta = cfg.get("delta")
-    pairs = [
-        ("BORF (Bounds)", "BORF (OR)", "S-BORF vs BORF"),
-        ("BORF (Sharpened)", "BORF (OR)", "S+-BORF vs BORF"),
-        ("SDRF (Bounds)", "SDRF (OR)", "S-SDRF vs OR-SDRF"),
-        ("BORF (JL)", "BORF (OR)", "JL-BORF vs BORF"),
-    ]
-    raw_tests, pv = [], []
-    if delta is not None:
-        for ds, name, metric in GNN_DATASET_SPECS:
-            for arch in archs:
-                entry = res.get(f"{ds}_{arch}", {})
-                for sur, ref, lab in pairs:
-                    if sur in entry and ref in entry:
-                        try:
-                            d, K, _ = st.fold_differences(
-                                entry[sur], entry[ref], metric != "mae"
-                            )
-                        except ValueError:
-                            continue
-                        p, m, lcb = st.noninferiority(d, K, float(delta))
-                        if math.isfinite(p):
-                            raw_tests.append((name, arch, lab, m, lcb, sur, p))
-                            pv.append(p)
-
-    summary = {"non_inferiority": {}, "speedup_ratios": {}, "config": cfg}
-    if raw_tests:
-        adj = st.holm(pv)
-        for (name, arch, lab, m, lcb, sur, p_raw), pa in zip(raw_tests, adj):
-            test_rows.append({
-                "dataset": name,
-                "arch": arch,
-                "comparison": lab,
-                "mean_diff": f"{m:+.4f}",
-                "lower_conf_bound": f"{lcb:+.4f}",
-                "p_raw": f"{p_raw:.4f}",
-                "p_holm": f"{pa:.4f}",
-                "verdict": "non-inferior" if pa < 0.05 else "not shown",
-            })
-        for sur, _, lab in pairs:
-            sel = [
-                pa
-                for (_, _, _, _, _, s, _), pa in zip(raw_tests, adj)
-                if s == sur
-            ]
-            summary["non_inferiority"][lab] = {
-                "passed": int(sum(pa < 0.05 for pa in sel)),
-                "total": len(sel),
-            }
+    summary = {"non_inferiority": {}, "two_sided": {}, "speedup_ratios": {}, "config": cfg}
+    tests = st.case_study_tests(res, GNN_DATASET_SPECS, archs, delta)
+    for t in tests:
+        test_rows.append({
+            "dataset": t["dataset"],
+            "arch": t["arch"],
+            "test": t["kind"],
+            "comparison": t["label"],
+            "mean_diff": f"{t['mean']:+.4f}",
+            "lower_conf_bound": f"{t['lcb']:+.4f}" if _fin(t["lcb"]) else "",
+            "p_raw": f"{t['p']:.4f}",
+            "p_holm": f"{t['p_holm']:.4f}",
+            "verdict": st.verdict(t),
+        })
+    for kind, pairs, field, count in (("noninferiority", st.NONINF, "non_inferiority", "passed"),
+                                      ("two-sided", st.TWO_SIDED, "two_sided", "differs")):
+        for sur, ref, lab, _, _ in pairs:
+            sel = [t for t in tests if t["kind"] == kind and t["surrogate"] == sur and t["reference"] == ref]
+            if sel:
+                summary[field][lab] = {count: int(sum(t["significant"] for t in sel)), "total": len(sel)}
 
     # 4. Rewiring speedup ratios (exact OR vs surrogate bounds)
     ratios = []
@@ -360,9 +339,12 @@ def run_consistency_checks(results_dir):
         out.append((name, bool(ok), detail))
 
     bpath = os.path.join(results_dir, "tables", "bounds", "bound_comparison.csv")
-    spath = os.path.join(results_dir, "tables", "screening", "screening.csv")
+    sdir = os.path.join(results_dir, "tables", "screening")
+    spath = os.path.join(sdir, "screening_benchmark.csv")
+    lpath = os.path.join(sdir, "screening_large.csv")
     bounds_rows = _read_csv(bpath) if os.path.exists(bpath) else None
     screen_rows = _read_csv(spath) if os.path.exists(spath) else None
+    large_rows = _read_csv(lpath) if os.path.exists(lpath) else None
 
     R = _parse_bounds(bounds_rows) if bounds_rows else []
     if R:
@@ -372,7 +354,7 @@ def run_consistency_checks(results_dir):
             f"largest excess {max(o['max_violation'] for o in R):.2e}",
         )
         add(
-            "Theorem 4.8 is never below Jost-Liu (Remark 4.11)",
+            "Theorem 4.3 (quadrangle-augmented JL bound) is never below Jost-Liu",
             sum(o["n_ours_below_JL"] for o in R) == 0,
         )
         names = [
@@ -384,35 +366,23 @@ def run_consistency_checks(results_dir):
         )
 
     if R and screen_rows:
-        S = {
-            (r["graph"], r["interval"], r["query"].startswith("sign")): r
-            for r in screen_rows
-        }
         gb = {o["graph"]: o for o in R}
-        gs = {r["graph"] for r in screen_rows}
+        S = {r["graph"]: r for r in screen_rows}
         add(
             "bound and screening tables cover the same graphs",
-            set(gb) == gs,
-            f"only in bounds: {sorted(set(gb) - gs)}; only in screening: {sorted(gs - set(gb))}",
+            set(gb) == set(S),
+            f"only in bounds: {sorted(set(gb) - set(S))}; only in screening: {sorted(set(S) - set(gb))}",
         )
-        bad_e = [
-            g
-            for g in gs & set(gb)
-            if int(S[(g, "bf", True)]["E"]) != gb[g]["E"]
-        ]
+        bad_e = [g for g in set(S) & set(gb) if int(float(S[g]["E"])) != gb[g]["E"]]
         add(
             "|E| is the same in the bound and screening tables",
             not bad_e,
             f"differs on {bad_e}",
         )
-        for iv, ck in (
-            ("bf", "cert_bf"),
-            ("matching", "cert_ours"),
-            ("sharpened", "cert_sharp"),
-        ):
+        for iv, ck in (("bf", "cert_bf"), ("sharpened", "cert_sharp")):
             bad = []
-            for g in gs & set(gb):
-                av, ce = _num(S[(g, iv, True)], "frac_avoided"), gb[g][ck]
+            for g in set(S) & set(gb):
+                av, ce = _num(S[g], f"sign_avoided_{iv}"), gb[g][ck]
                 if av < ce - 1e-12 or float(_pct(av)) < float(_pct(ce)):
                     bad.append(f"{g} ({_pct(av)} < {_pct(ce)})")
             add(
@@ -421,8 +391,19 @@ def run_consistency_checks(results_dir):
                 "; ".join(bad),
             )
         add(
-            "certify-then-solve returned the exact answer on every run",
+            "certify-then-solve on the stored intervals returned the exact bottom-10% answer on every graph",
             all(str(r["correct"]) == "True" for r in screen_rows),
+        )
+    if large_rows:
+        bad = [
+            r["graph"]
+            for r in large_rows
+            if not (str(r.get("sign_correct")) == "True" and str(r.get("bottom_correct")) == "True")
+        ]
+        add(
+            "certify-then-solve on the large networks returned the exact answer for both queries",
+            not bad,
+            f"wrong on {bad}",
         )
 
     if R:
@@ -684,8 +665,8 @@ class Runner:
         return self.run("screening", 
                         [PY, "screening.py", "--results", 
                              self.out, "--out", self.path("tables", "screening"),
-                            "--data-dir", self.path("data", "large")] + self.common()
-                       )
+                            "--data-dir", self.path("data", "large")] + self.common(),
+                        cfg={"timing_version": TIMING_VERSION})
 
     def distributions(self):
         return self.run(
@@ -727,7 +708,7 @@ class Runner:
             )
             if self.a.legacy_dir:
                 cmd += ["--legacy-dir", os.path.abspath(self.a.legacy_dir)]
-            ok &= self.run(f"benchmark_{fam}", cmd)
+            ok &= self.run(f"benchmark_{fam}", cmd, cfg={"timing_version": TIMING_VERSION})
         return ok
 
     def figures(self):
@@ -939,8 +920,13 @@ class Runner:
                 "",
             ),
             (
-                "Certify-then-solve evaluation",
-                rel("tables", "screening", "screening.csv"),
+                "Certify-then-solve on the registry graphs (stored intervals)",
+                rel("tables", "screening", "screening_benchmark.csv"),
+                "",
+            ),
+            (
+                "Certify-then-solve on large real networks (Table 7, timed)",
+                rel("tables", "screening", "screening_large.csv"),
                 "",
             ),
             (

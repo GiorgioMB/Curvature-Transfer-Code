@@ -4,15 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "curvature-transfer"
-version = "0.1.0"
+version = "1.1.0"
 description = "Experiments for comparing edgewise graph curvatures and analytic envelopes"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11,<3.14"
-# The library (curvature_transfer) needs only these.
+# The library (curvature_transfer) needs only these. Exact curvatures come from
+# orcut, pinned to 1.0.0: the solver that produced every exact value of the paper.
 dependencies = [
     "numba==0.62.1",
     "numpy==2.2.0",
+    "orcut @ git+https://github.com/GiorgioMB/orcut.git@v1.0.0",
     "scipy==1.16.2",
 ]
 
@@ -40,14 +42,6 @@ gnn = [
     "torch-sparse==0.6.18",
     "torch-spline-conv==1.2.2",
 ]
-# Solver-level timing against POT (experiments/vs_pot_grc.py). The
-# GraphRicciCurvature part of that script needs GraphRicciCurvature 0.6.1,
-# which caps scipy<=1.13.1 and so cannot share this environment; the script
-# docstring gives the one-line isolated command.
-compare = [
-    "networkx==3.3",
-    "POT==0.9.7.post1",
-]
 dev = [
     "hypothesis==6.168.0",
     "pytest==8.4.2",
@@ -68,6 +62,7 @@ find-links = ["https://data.pyg.org/whl/torch-2.8.0+cpu.html"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+orcut = { git = "https://github.com/GiorgioMB/orcut", tag = "v1.0.0" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

@@ -29,11 +29,11 @@ with certificates of increasing cost:
 1. stage one (:func:`curvature_transfer.intervals.stage_one`): 2-hop statistics
    and one cardinality matching per edge give the BF interval and the two-hop
    interval (the sharpened interval without the TLW dual certificate);
-2. threshold queries: on the edges that stage one leaves undecided, one kernel
-   builds the local distance matrix, evaluates the TLW dual certificate on it,
-   and solves the transport problem only if the certificate does not decide
-   the edge (``_kernels.screen_ids``); the edges are thus decided by exactly the
-   sharpened interval of the paper, and no distance matrix is built twice;
+2. threshold queries: on the edges that stage one leaves undecided, the TLW
+   dual certificate (``_kernels.tlw_lazy_ids``: a 2-hop pass, no local distance
+   structure), and the transport problem only on the edges that the
+   certificate does not decide either; the edges are thus decided by exactly
+   the sharpened interval of the paper;
    bottom-k queries: adaptive exact solves on the two-hop intervals.
 
 Every decision uses the intervals widened by ``intervals.ROUNDING_TOL``.
@@ -167,12 +167,14 @@ def screen(graph, tau: Optional[float] = None, k: Optional[int] = None, n_jobs: 
             _, _, und_bf = certify_threshold(blo, bup, tau)
             ids = np.flatnonzero(und)
             ids = ids[rng.permutation(ids.size)]
-            r = K.screen_ids(g.indptr, g.indices, g.edges, ids, float(tau), tol, nch)
-            by_tlw = np.isnan(r[:, 0])
+            # an edge undecided by the two-hop interval is decided by the sharpened
+            # one iff its TLW certificate (widened) is below tau
+            by_tlw = K.tlw_lazy_ids(g.indptr, g.indices, g.edges, ids, nch) + tol < tau
+            rest = ids[~by_tlw]
             ans = cin.copy()
             ans[ids[by_tlw]] = True
-            ans[ids[~by_tlw]] = r[~by_tlw, 0] < tau
-            n_solved = int((~by_tlw).sum())
+            ans[rest] = K.exact_or_ids(g.indptr, g.indices, g.edges, rest, nch) < tau
+            n_solved = int(rest.size)
             out.update(n_bf=int(M - und_bf.sum()), n_two_hop=int(M - und.sum()), n_tlw=int(by_tlw.sum()),
                        rounds=int(ids.size > 0), time_certify=0.0)
         else:

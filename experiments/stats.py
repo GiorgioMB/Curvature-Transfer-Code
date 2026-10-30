@@ -18,7 +18,11 @@ Bengio (2003) to the r*K paired fold-level differences d_{r,k}:
 with H0: the surrogate is worse than the exact method by at least delta. The
 reported one-sided lower confidence bound uses the same corrected variance, so
 "non-inferior at level alpha" <=> lower bound > -delta. p-values are Holm-
-corrected across all (dataset, architecture, pair) comparisons.
+corrected across all (dataset, architecture, pair) comparisons. The pairs are
+the surrogates S-BORF, S+-BORF, and S-SDRF and the uncertified controls JL-BORF
+and SDRF with BF (``NONINF``). The exact methods BORF and OR-SDRF are compared
+with the original graph by the two-sided version of the same test, with Holm
+correction across their own comparisons (``TWO_SIDED``).
 
 ``--test paired`` is the uncorrected paired t-test on fold-level differences.
 It is too liberal here, because training sets overlap across folds and
@@ -44,8 +48,16 @@ import math
 import numpy as np
 from scipy import stats
 
-PAIRS = [("BORF (Bounds)", "BORF (OR)"), ("SDRF (Bounds)", "SDRF (OR)"),
-         ("BORF (Sharpened)", "BORF (OR)"), ("BORF (JL)", "BORF (OR)")]
+# (surrogate or uncertified control, exact counterpart, label, LaTeX label, short key)
+NONINF = [("BORF (Bounds)", "BORF (OR)", "S-BORF vs BORF", "S-BORF vs BORF", "SBORF"),
+          ("BORF (Sharpened)", "BORF (OR)", "S+-BORF vs BORF", "S$^{+}$-BORF vs BORF", "SplusBORF"),
+          ("SDRF (Bounds)", "SDRF (OR)", "S-SDRF vs OR-SDRF", "S-SDRF vs OR-SDRF", "SSDRF"),
+          ("BORF (JL)", "BORF (OR)", "JL-BORF vs BORF", "JL-BORF vs BORF", "JLBORF"),
+          ("SDRF (BF)", "SDRF (OR)", "SDRF (BF) vs OR-SDRF", "SDRF (BF) vs OR-SDRF", "SDRFBF")]
+# exact methods against the original graph: two-sided version of the same test
+TWO_SIDED = [("BORF (OR)", "Original", "BORF vs Original", "BORF vs Original", "BORFOriginal"),
+             ("SDRF (OR)", "Original", "OR-SDRF vs Original", "OR-SDRF vs Original", "ORSDRFOriginal")]
+PAIRS = [(s, r) for s, r, *_ in NONINF]
 LOWER_IS_BETTER_DATASETS = {"ZINC", "QM9"}  # MAE; all other metrics are maximized
 
 
@@ -98,6 +110,77 @@ def noninferiority(d, K, delta, alpha=0.05, test="corrected"):
     return p, m, lcb
 
 
+def two_sided(d, K, test="corrected"):
+    """Two-sided test of a zero mean fold-level difference, with the variance of
+    :func:`noninferiority`. Returns (p, mean difference)."""
+    n = len(d)
+    if n < 2:
+        return float("nan"), float("nan")
+    var = d.var(ddof=1)
+    if test == "corrected":
+        if K is None or K < 2:
+            raise ValueError("the corrected test needs K >= 2 folds")
+        se = math.sqrt((1.0 / n + 1.0 / (K - 1)) * var)
+    elif test == "paired":
+        se = math.sqrt(var / n)
+    else:
+        raise ValueError(test)
+    m = float(d.mean())
+    if se == 0:
+        return (0.0 if m != 0 else 1.0), m
+    return float(2 * (1 - stats.t.cdf(abs(m) / se, n - 1))), m
+
+
+def case_study_tests(res, datasets, archs, delta=None, alpha=0.05, test="corrected"):
+    """Every test of Appendix A.
+
+    ``datasets`` is a list of (key, name, metric) with metric "mae" for the data
+    sets where lower is better. Non-inferiority tests (``NONINF``, needs
+    ``delta``) and two-sided tests (``TWO_SIDED``) are Holm-corrected within
+    their own family. Returns one dict per test: dataset, arch, kind
+    ("noninferiority" or "two-sided"), label, tex, key, surrogate, reference,
+    r (repetitions), K, mean, lcb (NaN for two-sided tests), p, p_holm,
+    significant.
+    """
+    fams = {"noninferiority": [], "two-sided": []}
+    for ds, name, metric in datasets:
+        hb = metric != "mae"
+        for arch in archs:
+            entry = res.get(f"{ds}_{arch}", {})
+            for kind, pairs in (("noninferiority", NONINF), ("two-sided", TWO_SIDED)):
+                if kind == "noninferiority" and delta is None:
+                    continue
+                for sur, ref, lab, tex, key in pairs:
+                    if sur not in entry or ref not in entry:
+                        continue
+                    try:
+                        d, K, r = fold_differences(entry[sur], entry[ref], hb)
+                    except ValueError:
+                        continue
+                    if kind == "noninferiority":
+                        p, m, lcb = noninferiority(d, K, float(delta), alpha, test)
+                    else:
+                        (p, m), lcb = two_sided(d, K, test), float("nan")
+                    if math.isfinite(p):
+                        fams[kind].append(dict(dataset=name, arch=arch, kind=kind, label=lab, tex=tex, key=key,
+                                               surrogate=sur, reference=ref, r=r, K=K, mean=m, lcb=lcb, p=p))
+    out = []
+    for kind in ("noninferiority", "two-sided"):
+        rows = fams[kind]
+        if rows:
+            for row, pa in zip(rows, holm([x["p"] for x in rows])):
+                row["p_holm"] = float(pa)
+                row["significant"] = bool(pa < alpha)
+                out.append(row)
+    return out
+
+
+def verdict(row):
+    if row["kind"] == "noninferiority":
+        return "non-inferior" if row["significant"] else "not shown"
+    return "differs" if row["significant"] else "no difference shown"
+
+
 def holm(pvals):
     pvals = np.asarray(pvals, float)
     order = np.argsort(pvals)
@@ -118,27 +201,23 @@ def main():
     ap.add_argument("--test", choices=["corrected", "paired"], default="corrected")
     a = ap.parse_args()
     res = json.load(open(a.results))
-    rows = []
-    for key, pipes in res.items():
-        hb = key.split("_")[0] not in LOWER_IS_BETTER_DATASETS
-        for sur, ref in PAIRS:
-            if sur not in pipes or ref not in pipes:
-                continue
-            try:
-                d, K, r = fold_differences(pipes[sur], pipes[ref], hb)
-            except ValueError as err:
-                print(f"[skip] {key}: {sur} vs {ref}: {err}")
-                continue
-            p, m, lcb = noninferiority(d, K, a.delta, a.alpha, a.test)
-            rows.append((key, sur, ref, r, K, m, lcb, p))
+    keys = sorted(res)
+    dsets = list(dict.fromkeys(k.rsplit("_", 1)[0] for k in keys))
+    archs = list(dict.fromkeys(k.rsplit("_", 1)[1] for k in keys if "_" in k))
+    datasets = [(ds, ds, "mae" if ds in LOWER_IS_BETTER_DATASETS else "max") for ds in dsets]
+    rows = case_study_tests(res, datasets, archs, a.delta, a.alpha, a.test)
     if not rows:
         print("no testable pairs"); return
-    adj = holm([x[-1] for x in rows])
     print(f"test={a.test}  delta={a.delta}  alpha={a.alpha}  (positive difference = surrogate better)")
-    for (key, sur, ref, r, K, m, lcb, p), pa in zip(rows, adj):
-        verdict = "non-inferior" if pa < a.alpha else "not shown"
-        print(f"{key:28s} {sur:17s} vs {ref:10s} r={r:3d} K={K} diff={m:+.4f} "
-              f"LCB{int(100 * (1 - a.alpha))}={lcb:+.4f} p={p:.4f} p_holm={pa:.4f} {verdict}")
+    for kind in ("noninferiority", "two-sided"):
+        sel = [x for x in rows if x["kind"] == kind]
+        if not sel:
+            continue
+        print(f"\n{kind} tests (Holm across {len(sel)} comparisons)")
+        for x in sel:
+            lcb = f"LCB{int(100 * (1 - a.alpha))}={x['lcb']:+.4f} " if kind == "noninferiority" else ""
+            print(f"{x['dataset'] + '_' + x['arch']:28s} {x['surrogate']:17s} vs {x['reference']:10s} r={x['r']:3d} "
+                  f"K={x['K']} diff={x['mean']:+.4f} {lcb}p={x['p']:.4f} p_holm={x['p_holm']:.4f} {verdict(x)}")
 
 
 if __name__ == "__main__":

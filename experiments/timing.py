@@ -11,8 +11,9 @@ edge), listed in :data:`PHASES`:
 * ``bf_interval``, ``matching_interval``, ``sharpened_interval``:
   :func:`curvature_transfer.intervals.compute`, the intervals of Section 6.1
   computed from scratch with only the work each needs (the matching and
-  sharpened intervals include the TLW dual certificate, which needs the local
-  distance matrix but no transport solve).
+  sharpened intervals include the TLW dual certificate, which the 2-hop kernel
+  evaluates in the same pass as the statistics: no transport solve and no local
+  distance structure).
 
 Every phase is edgewise, so it can be timed either
 
@@ -148,7 +149,8 @@ def time_interval(g: Graph, kind: str, n_jobs=None, **kw):
 
 def exact_all(g: Graph, n_jobs=None, seed: int = 0) -> np.ndarray:
     """Exact lazy c_OR on every edge, the baseline of the certify-then-solve
-    experiment: the min-cut solver without the TLW dual (``K.exact_or_ids``),
+    experiment: the min-cut solver (``K.exact_or_ids``; it also evaluates the
+    TLW certificate on its local structure, a small share of a solve),
     edges in a fixed random order so that expensive edges (hubs) are spread
     over the parallel chunks, exactly as in :func:`curvature_transfer.screen`.
     Returns the values in edge order."""
