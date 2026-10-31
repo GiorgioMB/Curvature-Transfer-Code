@@ -2,7 +2,7 @@
 
 Code for the experiments of 
 
-> Giorgio Micaletto and Tebe Nigrelli. *What Balanced Forman Curvature Certifies About Ollivier–Ricci Curvature.* 2026.
+> Giorgio Micaletto and Tebe Nigrelli. *From Proxy to Certificate: Two-Sided Ollivier--Ricci Bounds from Balanced Forman Curvature.* 2026.
 
 
 The package computes, for every edge of an undirected simple graph:
@@ -10,7 +10,7 @@ The package computes, for every edge of an undirected simple graph:
 * **Exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, from the solver
   package [`orcut`](https://github.com/GiorgioMB/orcut), pinned to 1.0.0 (the solver behind every exact value of the paper);
 * **Balanced Forman curvature** and the 2-hop statistics behind it;
-* **Every certified bound in the paper**: Jost–Liu (JL) and Tian–Lubberts–Weber (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
+* **Every certified bound in the paper**: [Jost–Liu](https://arxiv.org/abs/1103.4037) (JL) and [Tian–Lubberts–Weber](https://www.jmlr.org/papers/v26/24-0781.html) (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
 * **certify-then-solve** screening, which answers threshold queries exactly while solving transport problems only on undecided edges: a cascade of 2-hop bounds on every edge, then the TLW certificate (one more 2-hop pass) and the transport problem only where needed (`curvature_transfer.screen`).
 
 ```python
@@ -90,17 +90,15 @@ are not memory-guarded. Families write to separate folders and can run as parall
 `python experiments/benchmark.py --family BA --max-n 200000 --jobs 32 --out results/benchmark`.
 
 **Cost.** The full run is dominated by the runtime benchmark. Expect a few days on a workstation at the default
-sizes.
+sizes. 
 
 ## Exact Ollivier–Ricci curvature
 
-Exact curvatures (`CurvatureEngine.exact`, the per-edge store of `edges.py`, the exact baseline of the screening
-table and of the runtime figure, and the last stage of certify-then-solve) come from
-[`orcut`](https://github.com/GiorgioMB/orcut) 1.0.0, which reduces the edgewise transport problem to one minimum
-cut in exact integer arithmetic, without a distance matrix. The solver, its tests (against an independent oracle
-and against linear programming), and its comparison with POT and GraphRicciCurvature are in the orcut
-repository. `curvature_transfer._kernels` re-exports its drivers (`exact_ids`, `exact_or_ids`, `screen_ids`,
-`tlw_lazy_ids_local`).
+Exact curvatures come from [`orcut`](https://github.com/GiorgioMB/orcut) 1.0.0, which reduces the edgewise 
+transport problem to one minimum cut in exact integer arithmetic, without a distance matrix. The solver, its 
+tests (against an independent oracle and against linear programming), and its comparison with POT and 
+GraphRicciCurvature are in the orcut repository. `curvature_transfer._kernels` re-exports its drivers 
+(`exact_ids`, `exact_or_ids`, `screen_ids`, `tlw_lazy_ids_local`).
 
 ## Notes on the experiments
 
