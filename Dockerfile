@@ -1,7 +1,7 @@
 # Reproducible environment for the curvature experiments (Sections 6.1-6.4).
 #   docker build -t curvature-transfer .
-#   docker run --rm -v "$PWD/results:/repo/results" curvature-transfer            # full reproduction
-#   docker run --rm -v "$PWD/results:/repo/results" curvature-transfer --quick    # smoke run
+#   docker run --rm -v "$PWD/results:/repo/results" -v "$PWD/logs:/repo/logs" curvature-transfer            # full reproduction
+#   docker run --rm -v "$PWD/results:/repo/results" -v "$PWD/logs:/repo/logs" curvature-transfer --quick    # smoke run
 FROM python:3.12-slim
 ENV PYTHONHASHSEED=0 MPLBACKEND=Agg PIP_NO_CACHE_DIR=1
 WORKDIR /repo

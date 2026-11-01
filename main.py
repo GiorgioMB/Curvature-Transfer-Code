@@ -6,8 +6,8 @@
     python main.py --steps bounds        # selected steps only
     python main.py --list                # show the steps and what each one produces
 
-All outputs go to ``results/`` (``--out``). Every step writes a log to
-``results/logs/<step>.log``.
+All outputs go to ``results/`` (``--out``); every step writes its log to
+``logs/<step>.log`` (``--logs``).
 
 Resuming. Every step saves what it computes as soon as it is computed (per
 graph, per chunk of edges, and per graph size), using atomic writes (tmp
@@ -319,7 +319,9 @@ class Runner:
     def __init__(self, a):
         self.a = a
         self.out = os.path.abspath(a.out)
-        for d in ("logs", ".stamps", "tables", "figures"):
+        self.logs = os.path.abspath(a.logs)
+        os.makedirs(self.logs, exist_ok=True)
+        for d in (".stamps", "tables", "figures"):
             os.makedirs(os.path.join(self.out, d), exist_ok=True)
         self.env = dict(os.environ, PYTHONHASHSEED="0", MPLBACKEND="Agg")
         self.env["PYTHONPATH"] = (
@@ -352,7 +354,7 @@ class Runner:
             print(f"[skip] {step} (already done; --force to redo)")
             self.status[step] = "skipped (done)"
             return True
-        log = self.path("logs", f"{step}.log")
+        log = os.path.join(self.logs, f"{step}.log")
         print(f"[run ] {step}: {' '.join(cmd)}\n       log: {log}", flush=True)
         t0 = time.time()
         with open(log, "a") as fh:
@@ -379,7 +381,7 @@ class Runner:
             print(
                 f"[FAIL] {step} after {dt:.0f}s (exit {p.returncode}); see {log}"
             )
-            self.status[step] = f"FAILED (see logs/{step}.log)"
+            self.status[step] = f"FAILED (see {log})"
             return False
         _io.atomic_text(datetime.now(timezone.utc).isoformat(), st)
         print(f"[ ok ] {step} ({dt:.0f}s)")
@@ -699,7 +701,7 @@ class Runner:
                 ]
         lines += [
             "",
-            "Software and hardware: `environment.json`. Logs: `logs/`.",
+            f"Software and hardware: `environment.json`. Logs: `{self.logs}`.",
         ]
         _io.atomic_text("\n".join(lines) + "\n", self.path("REPORT.md"))
         self.status["report"] = "ok"
@@ -713,6 +715,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--out", default=os.path.join(ROOT, "results"))
+    ap.add_argument(
+        "--logs",
+        default=os.path.join(ROOT, "logs"),
+        help="directory of the per-step logs (default: logs/ next to main.py)",
+    )
     ap.add_argument("--steps", nargs="+", choices=list(STEPS), default=None)
     ap.add_argument(
         "--quick",

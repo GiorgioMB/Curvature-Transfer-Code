@@ -17,6 +17,7 @@ dist/
 *.nbc
 experiments/out/
 results/
+/logs/
 /data/
 
 # LaTeX / Paper Artifacts

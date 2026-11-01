@@ -82,6 +82,7 @@ at most the unit of work in progress:
 Every checkpoint name contains a fingerprint of its inputs, so a stale partial result from a different
 graph or configuration is never reused. Finished steps are skipped through stamps in `results/.stamps`;
 `--force` ignores the stamps but still reuses checkpoints. To recompute from scratch, delete `results/`.
+Each step writes its log to `logs/<step>.log`, next to `main.py` (`--logs` to change the directory).
 
 **Runtime benchmark.** Four families (ER, BA, RGG, WS; `--bench-families`) with scaling law of the average 
 degree ~ 2.1 n^0.4. `--bench-max-n` sets the largest graph (default 200000). Above 2×10^6 edges a phase is 
