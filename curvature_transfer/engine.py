@@ -55,10 +55,11 @@ class CurvatureEngine:
     n_jobs : number of threads for the Numba kernels (None = Numba default,
         -1 = all, k > 0 = k threads, k < -1 = all but |k| - 1).
     varpi : ``"paper"`` (default) uses the 4-cycle normalization of Topping et
-        al. / the paper (closers of k in U_i inside U_j). ``"legacy"``
-        reproduces the preliminary code, which maximized over all of
-        N(i)\\{j} into N(j)\\{i}; this underestimates the 4-cycle term on some
-        edges (the bounds stay valid, but the BF values are not Topping's BF).
+        al. / the paper, gamma_max = the maximum degree of the cross-edge graph
+        H_ij between U_i and U_j. ``"legacy"`` reproduces the preliminary code,
+        which maximized over all of N(i)\\{j} into N(j)\\{i}; this underestimates
+        the 4-cycle term on some edges (the bounds stay valid, but the BF values
+        are not Topping's BF).
     """
 
     def __init__(self, graph, n_jobs: Optional[int] = None, varpi: str = "paper"):
@@ -85,7 +86,8 @@ class CurvatureEngine:
     # --------------------------------------------------------- statistics
     def stats(self) -> Dict[str, np.ndarray]:
         """2-hop statistics (cached): deg_i, deg_j, triangle, nUi, nUj, Xi,
-        varpi, varpi_legacy (if requested), matching, C4, and c_BF."""
+        varpi, varpi_legacy (if requested), matching, C4, and c_BF; the paper's
+        symbols for these names are listed in the notation of :mod:`.bounds`."""
         if "stats" in self._cache:
             return self._cache["stats"]  # type: ignore[return-value]
         g = self.graph

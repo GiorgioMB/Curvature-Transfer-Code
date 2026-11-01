@@ -2,13 +2,13 @@
 """Runtime scaling of exact OR curvature versus the certified bounds (Section 6.4).
 
 Families. Four random graph families with the same scaling law: the average
-degree grows as d(n) = 0.2 (50/n)^0.6 n ~ 2.1 n^0.4 (the law of the ER example
+degree grows as dbar(n) = 0.2 (50/n)^0.6 n ~ 2.1 n^0.4 (the law of the ER example
 of the paper), so that graph size and density grow together:
 
-  ER   Erdos-Renyi G(n, p),          p = d / (n - 1)          homogeneous degrees
-  BA   Barabasi-Albert,              m = round(d / 2)         heavy-tailed degrees (hubs)
-  RGG  random geometric, unit square, r = sqrt(d / (pi (n-1)))  clustered, many triangles
-  WS   Watts-Strogatz, beta = 0.2,   k = 2 round(d / 2)       clustered ring lattice
+  ER   Erdos-Renyi G(n, p),            p = dbar / (n - 1)             homogeneous degrees
+  BA   Barabasi-Albert,                m = round(dbar / 2)            heavy-tailed degrees (hubs)
+  RGG  random geometric, unit square,  r = sqrt(dbar / (pi (n-1)))    clustered, many triangles
+  WS   Watts-Strogatz, rewiring p=0.2, k = 2 round(dbar / 2)          clustered ring lattice
 
 The generators here are vectorized (numpy / a k-d tree), so a graph with 10^5-10^6
 nodes is generated in seconds; they are seeded per (seed, family, n), so a restart
@@ -38,7 +38,7 @@ phase stays skipped for every larger n:
   same family (log-log fit on the last 3 points, slope >= 1); if the prediction
   exceeds ``--budget-hours``, the phase is not run;
 * memory: the exact solver holds per-edge bitsets of order |S|^2 / 8 bytes,
-  |S| <= deg(i) + deg(j). If threads x 4 x |S|_max^2 bytes (a rough estimate)
+  |S| <= d_i + d_j. If threads x 4 x |S|_max^2 bytes (a rough estimate)
   exceeds 80% of ``--mem-gb``, exact OR is not run. The other phases need O(n)
   stamps per thread and O(deg) scratch per edge (plus the cross edges of the
   edge), and are not guarded;
@@ -78,7 +78,7 @@ import timing  # noqa: E402
 
 FAMILIES = ("ER", "BA", "RGG", "WS")
 FAMILY_TITLES = {"ER": "Erdős-Rényi", "BA": "Barabási-Albert", "RGG": "Random geometric",
-                 "WS": r"Watts-Strogatz ($\beta=0.2$)"}
+                 "WS": r"Watts-Strogatz ($p=0.2$)"}
 PHASE_ORDER = ["bf", "prior", "bf_interval", "matching_interval", "sharpened_interval", "exact"]
 PHASE_LABELS = {"exact": "Exact OR (min-cut)", "sharpened_interval": "Sharpened interval",
                 "matching_interval": "Matching interval", "bf_interval": "BF interval",

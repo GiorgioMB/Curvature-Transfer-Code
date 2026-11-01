@@ -98,9 +98,9 @@ def _apply_style():
 # ==============================
 
 DISPLAY = {
-    "c_OR":    r"$\mathfrak{c}_{\mathrm{OR}}$",
-    "c_BF":    r"$\mathfrak{c}_{\mathrm{BF}}$",
-    "c_OR0":   r"$\mathfrak{c}_{\mathrm{OR\text{-}0}}$",
+    "c_OR":    r"$\kappa_{\mathrm{OR}}$",
+    "c_BF":    r"$\kappa_{\mathrm{BF}}$",
+    "c_OR0":   r"$\kappa_0$",
     "env_upper":  r"transport envelope (upper)",
 }
 
@@ -201,7 +201,7 @@ def _pretty_from_tag(tag: str) -> str:
     Short, publication-friendly display name for a run tag.
     Examples:
       - "er_n2000_p0.01" -> "ER $n=2000$, $p=0.01$"
-      - "ws_n1000_k10_b0.2" -> "WS $n=1000$, $k=10$, $\\beta=0.2$"
+      - "ws_n1000_k10_b0.2" -> "WS $n=1000$, $k=10$, $p=0.2$"
       - "ba_n5000_m3" -> "BA $n=5000$, $m=3$"
       - "real_karate" -> "Real: Zachary Karate"
     """
@@ -213,11 +213,11 @@ def _pretty_from_tag(tag: str) -> str:
         n, p = m.groups()
         return rf"ER $n={int(n)}$, $p={p}$"
 
-    # WS: ws_n{n}_k{k}_b{beta}
+    # WS: ws_n{n}_k{k}_b{p}, with p the rewiring probability
     m = re.fullmatch(r"ws_n(\d+)_k(\d+)_b([0-9.]+)", t)
     if m:
         n, k, b = m.groups()
-        return rf"WS $n={int(n)}$, $k={int(k)}$, $\beta={b}$"
+        return rf"WS $n={int(n)}$, $k={int(k)}$, $p={b}$"
 
     # BA: ba_n{n}_m{m}
     m = re.fullmatch(r"ba_n(\d+)_m(\d+)", t)
@@ -445,20 +445,20 @@ def _scatter_ribbon(ax: plt.Axes,
     # Observed quantile ribbon of OR|BF
     xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
     if len(xc) > 0:
-        ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7, label=r"[median $\mathfrak{c}_{\mathrm{OR}} ] \mid \mathfrak{c}_{\mathrm{BF}}$")
+        ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7, label=r"$\mathrm{median}[\kappa_{\mathrm{OR}}\mid\kappa_{\mathrm{BF}}]$")
         ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--")
         ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--")
     # Predicted BF->OR lower (median per bin)
     if low_s is not None:
         _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
-                label=r"L. Transfer >(BF$\rightarrow$OR): median")
+                label=r"L. Transfer (BF$\rightarrow$OR): median")
     # Predicted BF->OR upper (median per bin)
     if upper_from_bf is not None:
         _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
         ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
                 label=r"U. Transfer (BF$\rightarrow$OR): median")
-    ax.set_title(r"Comparison between $\mathfrak{c}_{\mathrm{BF}}$ and $\mathfrak{c}_{\mathrm{OR}}$")
+    ax.set_title(r"Comparison between $\kappa_{\mathrm{BF}}$ and $\kappa_{\mathrm{OR}}$")
     ax.set_xlabel("Curvature " + DISPLAY["c_BF"])
     ax.set_ylabel("Curvature " + DISPLAY["c_OR"])
     ax.grid(True)
@@ -490,7 +490,7 @@ def _scatter_ribbon_hist(ax: plt.Axes,
     xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
     if len(xc) > 0:
         ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7,
-                label=r"[median $\mathfrak{c}_{\mathrm{OR}} ] \mid \mathfrak{c}_{\mathrm{BF}}$", zorder=3)
+                label=r"$\mathrm{median}[\kappa_{\mathrm{OR}}\mid\kappa_{\mathrm{BF}}]$", zorder=3)
         ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
         ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
 
@@ -504,7 +504,7 @@ def _scatter_ribbon_hist(ax: plt.Axes,
         ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
                 label=r"U. Transfer (BF$\rightarrow$OR): median", zorder=3)
 
-    ax.set_title(r"Comparison between $\mathfrak{c}_{\mathrm{BF}}$ and $\mathfrak{c}_{\mathrm{OR}}$")
+    ax.set_title(r"Comparison between $\kappa_{\mathrm{BF}}$ and $\kappa_{\mathrm{OR}}$")
     ax.set_xlabel("Curvature " + DISPLAY["c_BF"])
     ax.set_ylabel("Curvature " + DISPLAY["c_OR"])
     ax.grid(True)
@@ -517,7 +517,7 @@ def _scatter_ribbon_hist(ax: plt.Axes,
 def _quantile_lines(ax: plt.Axes,
                     arrays: Sequence[np.ndarray],
                     labels: Optional[Sequence[str]] = None,
-                    xlabel: str = r"Quantile $p$",
+                    xlabel: str = r"Quantile $q$",
                     ylabel: Optional[str] = None,
                     colors: Optional[Sequence[str]] = (COL_OBS, COL_LOWER, COL_UPPER)) -> None:
     """
@@ -627,7 +627,7 @@ def _make_run_figures(
                 r"BF$\rightarrow$OR lower (dist.)",
                 r"BF$\rightarrow$OR upper (dist.)"
             ],
-            xlabel=r"Quantile $p$",
+            xlabel=r"Quantile $q$",
             ylabel="Curvature " + DISPLAY["c_OR"],
         )
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)
@@ -660,7 +660,7 @@ def _make_run_figures(
                 r"OR$\rightarrow$BF lower (dist.)",
                 r"OR$\rightarrow$BF upper (dist.)"
             ],
-            xlabel=r"Quantile $p$",
+            xlabel=r"Quantile $q$",
             ylabel="Curvature " + DISPLAY["c_BF"],
         )
         fig.suptitle(pretty_tag, y=0.9, fontsize=12)

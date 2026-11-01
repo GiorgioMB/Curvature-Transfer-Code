@@ -191,10 +191,11 @@ def edge_stats_one(indptr, indices, i, j, legacy, matching=True):
     intersections, allocations per edge), kept as the test oracle of the
     production kernel :func:`_stats_edge` (column 8 is always 0 here).
 
-    Returns int64[8]: triangles, |U_i|, |U_j|, Xi, varpi_max (paper/Topping
-    definition: closers of k in U_i inside U_j), varpi_max as computed by the
-    preliminary code (over N(i)\\{j} into N(j)\\{i}; only if ``legacy``),
-    maximum matching of the cross-edge graph B_ij, and |xi_i|.
+    Returns int64[8]: triangles (t_ij), |U_i|, |U_j|, Xi, varpi = gamma_max (the
+    paper/Topping definition: the maximum degree of the cross-edge graph H_ij
+    between U_i and U_j), varpi as computed by the preliminary code (over
+    N(i)\\{j} into N(j)\\{i}; only if ``legacy``), the matching number M_ij of
+    H_ij, and |xi_i|.
     """
     out = np.zeros(N_STATS, np.int64)
     a0 = indptr[i]
@@ -307,20 +308,21 @@ def edge_stats_one(indptr, indices, i, j, legacy, matching=True):
 # allocated in steady state (arena scratch, as in the exact solver).
 #
 # Lazy TLW dual without the local distance structure. Orient (i, j) as the exact
-# solver does (deg i >= deg j, ties keep the stored order) and scale the masses
-# by L = (rho_i + 1)(rho_j + 1): +(rho_j + 1) on U_i, -(rho_i + 1) on U_j and
-# rho_j - rho_i <= 0 on i, j and each triangle vertex. The certificate of
+# solver does (d_i >= d_j, ties keep the stored order; the paper labels the other
+# way round) and scale the masses by L = (d_i + 1)(d_j + 1): +(d_j + 1) on U_i,
+# -(d_i + 1) on U_j and d_j - d_i <= 0 on i, j and each triangle vertex. The certificate of
 # ``_measure`` is max(sP, sN) with sP = sum_P mass * dist(x, N) and sN = sum_N
 # |mass| * dist(y, P). Every pair of S = N(i) u N(j) is within distance 2 except
 # pairs in U_i x U_j, which are at distance 1 (cross edge), 2 (a common
 # neighbour anywhere in the graph) or 3; so the certificate needs, per vertex of
 # U_i and U_j, only whether it has a cross edge and, if not, whether it has a
 # neighbour in N(U_j), respectively N(U_i):
-#   rho_i > rho_j: every x in U_i is adjacent to i in N, so sP = |U_i|(rho_j + 1);
-#     sN = (rho_i + 1) sum_{y in U_j} d(y, U_i) + (rho_i - rho_j)(1 + 2 + sum_t d_t),
-#     with d(i, U_i) = 1, d(j, U_i) = 2, d_t = 1 if t is adjacent to U_i, else 2;
-#   rho_i = rho_j: C carries no mass; sP = (rho + 1) sum_{x in U_i} d(x, U_j),
-#     sN = (rho + 1) sum_{y in U_j} d(y, U_i).
+#   d_i > d_j: every x in U_i is adjacent to i in N, so sP = |U_i|(d_j + 1);
+#     sN = (d_i + 1) sum_{y in U_j} dist(y, U_i) + (d_i - d_j)(1 + 2 + sum_t dist_t),
+#     with dist(i, U_i) = 1, dist(j, U_i) = 2, dist_t = 1 if t is adjacent to U_i,
+#     else 2;
+#   d_i = d_j = d: C carries no mass; sP = (d + 1) sum_{x in U_i} dist(x, U_j),
+#     sN = (d + 1) sum_{y in U_j} dist(y, U_i).
 # The vertices adjacent to U_i are stamped while U_i is scanned for cross edges,
 # so the certificate costs one probe per vertex of U_j and of T on top of the
 # statistics (plus one scan of U_j when the degrees are equal). Tested bit for
@@ -429,7 +431,7 @@ def _hk(nl, nr, ptr, adj, bound, bi, oi):
 def _stats_edge(indptr, indices, i0, j0, legacy, matching, tlw, ep, sO, pO, mS, mO, bi, out):
     """2-hop statistics of edge (i0, j0) written into ``out`` (the layout of
     :func:`edge_stats_one`, in the orientation (i0, j0)), plus out[8] = the
-    numerator of the lazy TLW dual certificate (over (rho_i + 1)(rho_j + 1)) if
+    numerator of the lazy TLW dual certificate (over (d_i + 1)(d_j + 1)) if
     ``tlw``. ``sO``/``pO`` (membership in and position on the side that is not
     scanned) and ``mS``/``mO`` (vertices adjacent to the scanned / the other
     side) are O(n) per-thread stamps, valid where they equal ``ep``. Returns the
@@ -696,7 +698,7 @@ def edge_stats_all(indptr, indices, edges, legacy, matching=True, tlw=False, nch
 def tlw_lazy_from_stats(raw, di, dj):
     """TLW dual upper bound on the lazy curvature from column 8 of
     :func:`edge_stats_all` (``tlw=True``) and the degrees: the same arithmetic
-    as the exact solver, 1 - numerator / ((rho_i + 1)(rho_j + 1))."""
+    as the exact solver, 1 - numerator / ((d_i + 1)(d_j + 1))."""
     return 1.0 - np.asarray(raw)[:, 8] / ((np.asarray(di, float) + 1.0) * (np.asarray(dj, float) + 1.0))
 
 

@@ -130,7 +130,7 @@ def test_deficit_identities():
 
 
 def test_lift_tf_closed_form_and_inverse():
-    """Corollary 4.2: the closed form equals max{Lambda, (1-alpha_max)L - Delta(1 - 2/b)}."""
+    """Corollary 4.2: the closed form equals max{Lambda, a/(a+1) L - Delta(1 - 2/b)}."""
     a, b = np.meshgrid(np.arange(1, 16.0), np.arange(1, 16.0))
     a, b = a[a <= b], b[a <= b]
     for L in np.linspace(-2, 2, 81):
@@ -158,7 +158,7 @@ def test_reverse_corollaries(results):
 
 def _classes(G, edges):
     """(a) edges on no cycle of length <= 5; (b) equal degrees and a perfect matching
-    between U_i and U_j; (c) equal degrees and B_ij itself a perfect matching."""
+    between U_i and U_j; (c) equal degrees and H_ij itself a perfect matching."""
     ca, cb, cc = [], [], []
     for u, v in edges:
         Nu, Nv = set(G[u]), set(G[v])

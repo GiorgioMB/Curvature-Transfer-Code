@@ -7,7 +7,7 @@ Code for the experiments of
 
 The package computes, for every edge of an undirected simple graph:
 
-* **Exact curvatures**: lazy Ollivier–Ricci (idleness 1/(deg+1)), non-lazy OR, and Lin–Lu–Yau, from the solver
+* **Exact curvatures**: lazy Ollivier–Ricci (idleness 1/(d_u+1) at a vertex u of degree d_u), non-lazy OR, and Lin–Lu–Yau, from the solver
   package [`orcut`](https://github.com/GiorgioMB/orcut), pinned to 1.0.0 (the solver behind every exact value of the paper);
 * **Balanced Forman curvature** and the 2-hop statistics behind it;
 * **Every certified bound in the paper**: [Jost–Liu](https://arxiv.org/abs/1103.4037) (JL) and [Tian–Lubberts–Weber](https://www.jmlr.org/papers/v26/24-0781.html) (TLW), the mixing lift (Prop 4.1, Cor 4.2), the quadrangle-augmented JL bound (Thm 4.3), the lazy quadrangle bound (Thm 4.7), the envelope for arbitrary idleness (Prop 4.8), the lazy transport envelope (Prop 4.10), the BF deficits (Prop 5.1), the BF interval (Thms 5.4 and 5.7, Cor 5.8), the 2-hop interval (Prop 5.9), and the reverse direction (Appendix C, Cors C.1–C.2);
@@ -21,6 +21,10 @@ eng.exact()["c_OR"]               # exact lazy OR curvature (also "c_OR0", "c_LL
 iv = eng.intervals()              # BF, matching, and sharpened intervals for c_OR
 eng.edge_table()                  # everything as a pandas DataFrame
 ```
+
+Names in the code and in the CSV columns are not always the paper's symbols: `c_BF`, `c_OR`, `c_OR0`, `c_LLY` are
+κ_BF, κ_OR, κ_0, κ_LLY, and `triangle`, `matching`, `varpi`, `C4` are t_ij, M_ij, γ_max, □_ij. The full list is
+in the docstring of `curvature_transfer/bounds.py`.
 
 
 The Lean 4 formalization of the paper is in a separate repository, [BF-OR-Lean](https://github.com/GiorgioMB/BF-OR-Lean/).
@@ -84,7 +88,7 @@ degree ~ 2.1 n^0.4. `--bench-max-n` sets the largest graph (default 200000). Abo
 timed as the sum of chunk times (marked in the figure). A phase that is predicted to exceed 
 `--bench-budget-hours`, or the memory of the allocation, or whose chunk was killed twice, is not run from 
 that size on: its extrapolated time is drawn as "predicted, not run" and the reason is in the CSV.
-Exact OR keeps per-edge bitsets whose size grows like deg(i)·deg(j)/64 words, so edges between two hubs remain
+Exact OR keeps per-edge bitsets whose size grows like d_i·d_j/64 words, so edges between two hubs remain
 its most expensive case; the intervals, TLW certificate included, need only O(n) vertex stamps per thread and
 are not memory-guarded. Families write to separate folders and can run as parallel jobs, e.g.
 `python experiments/benchmark.py --family BA --max-n 200000 --jobs 32 --out results/benchmark`.
