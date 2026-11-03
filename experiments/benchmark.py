@@ -351,7 +351,7 @@ def run_family(family, a):
     mem_gb = mem_budget_gb(a.mem_gb)
     cfg = _io.fingerprint({"threads": threads, "min_total": a.min_total, "max_reps": a.max_reps, "seed": a.seed,
                            "legacy": bool(a.legacy_dir), "chunk": a.chunk, "chunk_above": a.chunk_above,
-                           "gen": GEN_VERSION, "version": 4}, length=8)  # 4: 2-hop kernel with the TLW certificate
+                           "gen": GEN_VERSION, "version": 4}, length=8)  # 4: 2-hop kernel and TLW of v10
     rows_dir = os.path.join(out_dir, f"rows_{family}_{a.min_n}_{a.max_n}_{cfg}")
     os.makedirs(rows_dir, exist_ok=True)
     csv_path = os.path.join(out_dir, f"benchmark_{family}_{a.min_n}_{a.max_n}.csv")
@@ -386,68 +386,113 @@ def _f(r, k):
         return np.nan
 
 
+# Figure 4 of the paper: one panel per family, drawn at its printed size (the manuscript includes each
+# panel at width=.49\textwidth of JMLR's 6-in text width) with the axes in the same rectangle in every
+# panel, so that fonts print at the sizes below and the four panels line up. Same fonts and palette as
+# Figures 2-3 (experiments/make_paper_figures.py). Only the ER panel, the first one in the figure,
+# carries a legend; the caption describes the vertical line where chunked timing starts.
+PANEL_W, PANEL_H = 2.94, 2.13
+AXES_RECT = (0.17, 0.175, 0.80, 0.715)
+LEGEND_FAMILY = "ER"
+# Phases drawn, in legend order. The matching (2-hop) interval is in the CSV but not drawn: its times
+# coincide with those of the sharpened interval at the scale of the figure, and the caption does not list it.
+FIGURE_PHASES = ["exact", "sharpened_interval", "bf_interval", "bf", "prior"]
+PHASE_COLORS = {"exact": "#000000", "sharpened_interval": "#0072B2", "matching_interval": "#56B4E9",
+                "bf_interval": "#D55E00", "bf": "#CC79A7", "prior": "#009E73"}
+_PLOT_RC = {
+    # Computer Modern as bundled with matplotlib (cmr10) has no accented letters or en dash (Erdős–Rényi):
+    # matplotlib takes those glyphs, and only those, from the next family in the list
+    "font.family": ["cmr10", "STIXGeneral"],
+    "mathtext.fontset": "cm", "axes.formatter.use_mathtext": True,
+    "font.size": 7.5, "axes.titlesize": 8.0, "axes.labelsize": 7.5, "xtick.labelsize": 6.5,
+    "ytick.labelsize": 6.5, "legend.fontsize": 6.2, "axes.linewidth": 0.6, "axes.edgecolor": "#333333",
+    "axes.spines.top": False, "axes.spines.right": False, "axes.titlepad": 3.5, "axes.labelpad": 2.0,
+    "xtick.major.width": 0.6, "ytick.major.width": 0.6, "xtick.major.size": 2.5, "ytick.major.size": 2.5,
+    "xtick.minor.size": 1.4, "ytick.minor.size": 1.4, "xtick.minor.width": 0.4, "ytick.minor.width": 0.4,
+    "xtick.major.pad": 1.5, "ytick.major.pad": 1.5, "legend.frameon": False, "legend.handlelength": 2.0,
+    "legend.handletextpad": 0.5, "legend.labelspacing": 0.25, "legend.borderaxespad": 0.3,
+    "savefig.dpi": 300, "pdf.fonttype": 42,
+}
+FIGURE_LABELS = {"exact": "Exact OR (min-cut)", "sharpened_interval": "Sharpened interval",
+                 "matching_interval": "2-hop interval", "bf_interval": "BF interval", "bf": "BF",
+                 "prior": "JL / TLW lower bounds"}
+FIGURE_TITLES = {"ER": "Erdős–Rényi", "BA": "Barabási–Albert", "RGG": "Random geometric",
+                 "WS": r"Watts$\endash$Strogatz ($p=0.2$)"}  # a title with math is set by mathtext, which has no fallback
+
+
 def _draw(ax, rows, family, predicted=True, legend=True):
+    from matplotlib import ticker
+    from matplotlib.lines import Line2D
     rows = sorted(rows, key=lambda r: int(r["n"]))
     ns = np.array([int(r["n"]) for r in rows], float)
+    every = max(1, int(round(len(ns) / 10)))  # about ten markers per series, enough to tell them apart
     shown_pred = False
-    for ph in ["exact", "sharpened_interval", "matching_interval", "bf_interval", "bf", "prior"]:
+    for ph in FIGURE_PHASES:
         mk, ls = PHASE_STYLE[ph]
         y = np.array([_f(r, f"{ph}_s") for r in rows])
         if not np.isfinite(y).any():
             continue
-        line, = ax.plot(ns, y, marker=mk, markersize=3, linewidth=1.2, linestyle=ls, label=PHASE_LABELS[ph])
+        lw = 1.3 if ph == "exact" else 1.0
+        line, = ax.plot(ns, y, marker=mk, markersize=2.6, markevery=every, linewidth=lw, linestyle=ls,
+                        color=PHASE_COLORS[ph], label=FIGURE_LABELS[ph], zorder=3 if ph == "exact" else 2)
         if predicted:
             yp = np.array([_f(r, f"{ph}_pred_s") for r in rows])
             if np.isfinite(yp).any():
                 last = np.flatnonzero(np.isfinite(y))[-1]
                 xs, ys = np.r_[ns[last], ns[np.isfinite(yp)]], np.r_[y[last], yp[np.isfinite(yp)]]
                 ax.plot(xs, ys, linestyle=":", color=line.get_color(), alpha=0.6, linewidth=1)
-                ax.plot(ns[np.isfinite(yp)], yp[np.isfinite(yp)], linestyle="none", marker=mk, markersize=3,
-                        markerfacecolor="none", color=line.get_color(), alpha=0.6)
+                ax.plot(ns[np.isfinite(yp)], yp[np.isfinite(yp)], linestyle="none", marker=mk, markersize=2.6,
+                        markevery=every, markerfacecolor="none", color=line.get_color(), alpha=0.6)
                 shown_pred = True
     ch = [int(r["n"]) for r in rows if str(r.get("chunked")) in ("True", "true", "1")]
     if ch:
-        ax.axvline(min(ch), color="gray", linestyle=":", linewidth=0.8)
-        ax.text(min(ch), 0.02, " chunked", transform=ax.get_xaxis_transform(), fontsize=7, color="gray")
+        ax.axvline(min(ch), color="#9a9a9a", linestyle=":", linewidth=0.8, zorder=1)
     ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel("Number of nodes $n$"); ax.set_ylabel("Execution time (s)")
-    ax.set_title(FAMILY_TITLES.get(family, family), fontsize=10)
-    ax.grid(True, which="both", linestyle="--", alpha=0.4)
+    ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=7))
+    ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1, numticks=12))
+    ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+    ax.set_xlabel("number of nodes $n$"); ax.set_ylabel("execution time (s)")
+    ax.set_title(FIGURE_TITLES.get(family, family))
+    ax.grid(True, which="major", color="#e6e6e6", linewidth=0.5, zorder=0)
+    ax.set_axisbelow(True)
     if legend:
         h, l = ax.get_legend_handles_labels()
         if shown_pred:
-            from matplotlib.lines import Line2D
             h.append(Line2D([], [], color="gray", linestyle=":", marker="o", markerfacecolor="none", alpha=0.6))
             l.append("predicted, not run")
-        ax.legend(h, l, frameon=False, fontsize=7, loc="upper left", handlelength=2.2)
+        ax.legend(h, l, loc="upper left")
 
 
-def _save(fig, out_pdf):
+def _save(fig, out_pdf, tight=True):
     for path, kw in ((out_pdf, {}), (out_pdf[:-4] + ".png", {"dpi": 300})):
         tmp = path[:-4] + ".tmp" + path[-4:]
-        fig.savefig(tmp, bbox_inches="tight", **kw)
+        fig.savefig(tmp, bbox_inches="tight" if tight else None, **kw)
         os.replace(tmp, path)
 
 
-def plot_family(csv_path, out_pdf, family, predicted=True):
+def plot_family(csv_path, out_pdf, family, predicted=True, legend=None):
+    """Panel of Figure 4 for one family; ``legend`` defaults to the ER panel only."""
     import matplotlib
+    import logging
+    logging.getLogger("fontTools").setLevel(logging.ERROR)  # timestamp notices when embedding cmr10
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     rows = list(csv.DictReader(open(csv_path)))
     if not rows:
         return
-    # drawn at the size it is printed (half the text width), so fonts stay legible
-    plt.rcParams.update({"font.size": 9, "font.family": "serif", "pdf.fonttype": 42})
-    fig, ax = plt.subplots(figsize=(4.6, 3.4))
-    _draw(ax, rows, family, predicted)
-    fig.tight_layout()
-    _save(fig, out_pdf)
+    plt.rcParams.update(_PLOT_RC)
+    fig = plt.figure(figsize=(PANEL_W, PANEL_H))
+    ax = fig.add_axes(AXES_RECT)
+    _draw(ax, rows, family, predicted, legend=(family == LEGEND_FAMILY) if legend is None else legend)
+    _save(fig, out_pdf, tight=False)  # fixed axes rectangle, so that the panels line up in the manuscript
     plt.close(fig)
 
 
 def plot_all(out_dir, predicted=True):
     """One figure per family (runtime_scaling_loglog_<family>.pdf) and a 2x2 panel."""
     import matplotlib
+    import logging
+    logging.getLogger("fontTools").setLevel(logging.ERROR)  # timestamp notices when embedding cmr10
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     found = {}
@@ -459,10 +504,10 @@ def plot_all(out_dir, predicted=True):
             plot_family(cands[-1], os.path.join(out_dir, f"runtime_scaling_loglog_{fam.lower()}.pdf"), fam, predicted)
     if not found:
         return
-    plt.rcParams.update({"font.size": 9, "font.family": "serif", "pdf.fonttype": 42})
+    plt.rcParams.update(_PLOT_RC)
     k = len(found)
     cols = 2 if k > 1 else 1
-    fig, axes = plt.subplots((k + cols - 1) // cols, cols, figsize=(4.6 * cols, 3.4 * ((k + cols - 1) // cols)), squeeze=False)
+    fig, axes = plt.subplots((k + cols - 1) // cols, cols, figsize=(PANEL_W * cols, PANEL_H * ((k + cols - 1) // cols)), squeeze=False)
     for ax, (fam, path) in zip(axes.ravel(), found.items()):
         _draw(ax, list(csv.DictReader(open(path))), fam, predicted, legend=(ax is axes.ravel()[0]))
     for ax in axes.ravel()[k:]:
