@@ -1,717 +1,535 @@
 """
-Paper-ready figure generator for curvature experiments.
+Figures of the BF interval (Figures 2 and 3 of the paper) from the per-edge CSVs.
 
-This module scans experiment output folders created by experiments/distributions.py (via edges.py --csv)
-and saves a small set of high-resolution, publication-ready figures into a dedicated subfolder
-figures_paper/ inside each run directory.
+Reads the run directories written by ``experiments/distributions.py`` (through ``edges.py --csv``):
+``manifest.json``, which lists the graphs under ``"runs"`` (each with its registry ``"name"`` and
+``"tag"``), and one ``{tag}_edges.csv`` per graph. For every graph it writes, into
+``<run>/figures_paper/``,
 
-What this script expects to find
-- A run directory containing:
-  * manifest.json with a list of runs under the key "runs". Each run item
-    should include at least a "tag" or "name" that identifies a graph/model
-    instance (e.g., "er_n2000_p0.01"). Optionally, a pretty display name can
-    be provided under "title" or "pretty".
-  * One edge-level CSV per tag, typically named {tag}_edges.csv (dots are
-    normalized to underscores). These CSVs are produced by edges.py --csv
-    and contain columns describing per-edge curvatures, bounds, and metadata.
+  fig_scatter_cBF_cOR__{tag}_2d_Hist.png   density of the edges in the (kappa_BF, kappa_OR) plane, with
+                                           the conditional medians of kappa_OR and of the two ends of
+                                           the BF interval (Figure 2)
+  fig_cOR_hist__{tag}.png                  distributions of kappa_OR and of the two ends, on shared bins
+                                           (Figure 3, left)
+  fig_cOR_quantile__{tag}.png              quantile profiles of kappa_OR and of the two ends; the shaded
+                                           band is the certified range of every quantile, and the bar
+                                           at q = 0.1 the certified range of the lowest decile
+                                           (Figure 3, right)
+  fig_scatter_cBF_cOR__{tag}.png,          the same views as a point cloud, and for the reverse
+  fig_cBF_hist__{tag}.png,                 direction (bounds on kappa_BF from kappa_OR, Appendix C);
+  fig_cBF_quantile__{tag}.png              not used by the paper
 
-Figures produced per tag (when the required columns exist)
-- A histogram of observed Ollivier--Ricci curvature (c_OR) with optional
-  overlays for the two ends of the BF interval and the transport envelope.
-- A histogram of observed Balanced Forman curvature (c_BF) with optional
-  overlays for OR->BF transfer bounds.
-- A scatter plot of c_BF vs c_OR including an observed quantile ribbon and
-  the median of the BF->OR lower-transfer across binned c_BF.
+under the file names that ``main.py`` (``FIGURES``) and the manuscript expect.
 
-Key columns used from the CSV (if present)
-- c_OR, c_BF, c_OR0: observed curvatures (edgewise).
-- cOR_lower_from_cBF, cOR_upper_from_cBF: BF->OR transfer bounds (edgewise).
-- cBF_lower_from_cOR, cBF_upper_from_cOR: OR->BF transfer bounds (edgewise).
-- env_upper: transport envelope upper value (edgewise).
-The reader is robust to variations in column letter case.
+Style. Every panel is drawn at its printed size, PANEL_W x PANEL_H inches: the manuscript includes
+each panel at ``width=0.49\\textwidth`` and JMLR's ``\\textwidth`` is 6 in, so 8-pt labels print at
+8 pt. The axes occupy the same rectangle in every panel, so that panels placed side by side line up.
+Text uses Computer Modern (matplotlib's mathtext ``cm``), the font of the paper. Colors are from
+the Okabe-Ito palette (distinguishable with color-vision deficiencies and in grayscale): exact
+curvature black, lower end blue, upper end vermillion, edge density in gray. Only the first panel
+of each paper figure carries a legend (the captions describe the encodings); every other graph gets
+a legend on every panel.
 
-Usage (CLI)
-- Generate figures for all run directories under a root folder:
-    python experiments/make_paper_figures.py --out-root experiments/out
-- Generate figures only for a specific run folder name:
-    python experiments/make_paper_figures.py --out-root experiments/out --run-name my_run
+Conditional medians (Figure 2) are computed on bins of kappa_BF that hold about equally many edges
+and never split edges with the same BF value, so every point of a median line summarizes at least
+MIN_PER_BIN edges; histograms of different quantities share their bins.
 
-Rendering details
-- The script selects the non-interactive Matplotlib backend (Agg) and applies a
-  consistent set of rcParams for paper-friendly styling. All figures are saved
-  as PNG files inside figures_paper/ under each run directory.
+Usage
+  python experiments/make_paper_figures.py --out-root results/edges --run-name csv
+  (``python main.py --steps distributions`` runs it as part of the pipeline.)
 """
+from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
-import glob
+import re
 import shutil
-from typing import Dict, Optional, Tuple, Sequence
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib import ticker
-from matplotlib.patches import Patch
-import re
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.patheffects as pe  # noqa: E402
+from matplotlib import colors as mcolors  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
 
 # ==============================
 # Style
 # ==============================
 
+PANEL_W, PANEL_H = 2.94, 2.25           # inches; 0.49 x JMLR's 6-in text width
+AXES_RECT = (0.175, 0.17, 0.79, 0.715)  # left, bottom, width, height (figure fractions), every panel
+
 _PAPER_RC = {
-    "figure.dpi": 220,
-    "savefig.dpi": 320,
-    "font.size": 12.0,
-    "axes.titlesize": 14,
-    "axes.labelsize": 12.5,
-    "legend.fontsize": 11.0,
-    "xtick.labelsize": 11.0,
-    "ytick.labelsize": 11.0,
+    "font.family": "serif",
+    "font.serif": ["cmr10", "Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.formatter.use_mathtext": True,   # cmr10 has no minus sign; mathtext draws it
+    "font.size": 8.0,
+    "axes.titlesize": 8.5,
+    "axes.labelsize": 8.0,
+    "xtick.labelsize": 7.0,
+    "ytick.labelsize": 7.0,
+    "legend.fontsize": 6.6,
+    "axes.linewidth": 0.6,
+    "axes.edgecolor": "#333333",
+    "axes.labelcolor": "#1a1a1a",
+    "axes.titlepad": 3.5,
+    "axes.labelpad": 2.0,
     "axes.spines.top": False,
     "axes.spines.right": False,
-    "grid.linestyle": ":",
-    "grid.alpha": 0.28,
+    "xtick.color": "#333333",
+    "ytick.color": "#333333",
+    "xtick.major.width": 0.6,
+    "ytick.major.width": 0.6,
+    "xtick.major.size": 2.5,
+    "ytick.major.size": 2.5,
+    "xtick.major.pad": 1.5,
+    "ytick.major.pad": 1.5,
+    "lines.linewidth": 1.1,
+    "lines.solid_capstyle": "round",
+    "legend.frameon": False,
+    "legend.handlelength": 1.6,
+    "legend.handletextpad": 0.5,
+    "legend.borderaxespad": 0.3,
+    "legend.labelspacing": 0.25,
+    "figure.dpi": 150,
+    "savefig.dpi": 600,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
 }
-# Neutral palette
-COL_OBS   = "#4C78A8"
-COL_LOWER = "#54A24B"
-COL_UPPER = "#E45756"
-COL_ENV   = "#F58518"
-COL_QRIB  = "#333333"  # almost black
+
+C_OR = "#1a1a1a"      # exact kappa_OR
+C_LO = "#0072B2"      # lower end of the BF interval
+C_UP = "#D55E00"      # upper end of the BF interval
+C_FILL = "#c9c9c9"    # histogram of kappa_OR
+C_BAND = "#a6bddb"    # certified band of the quantile profiles
+C_GRID = "#e6e6e6"
+DENSITY_CMAP = mcolors.LinearSegmentedColormap.from_list(
+    "density", [plt.get_cmap("Greys")(x) for x in np.linspace(0.16, 0.78, 64)])
+
+MIN_PER_BIN = 25      # edges behind every point of a conditional median
+MEDIAN_BINS = 16      # target number of bins for the conditional medians
+CORE = (0.001, 0.999)  # Figure 2 axes show the edges between these quantiles of each coordinate
+DENSITY_BINS = 56     # cells per axis of the 2D histogram
+
+# Panels of the paper's Figures 2 and 3, in the order of the manuscript: only the first panel of
+# each figure carries a legend. File tags as written by edges.py (dots replaced by underscores).
+FIG2_TAGS = ["er_n800_p0_0100125", "ws_n800_k10_b0_2", "ba_n1600_m2", "rg_n1600_r0_039894",
+             "hrg_n800_R5_0_a1_0_T0_5", "sbm2_n1000_pin0_012018_pout0_004006"]
+FIG3_TAGS = ["er_n800_p0_0100125", "hrg_n800_R5_0_a1_0_T0_0", "real_yeast"]
+
+K_BF = r"$\kappa_{\mathrm{BF}}$"
+K_OR = r"$\kappa_{\mathrm{OR}}$"
+
 
 def _apply_style():
-    """
-    Apply a consistent, paper-friendly Matplotlib style via rcParams.
+    """Apply the paper style (fonts, sizes, line widths) to all figures created afterwards."""
+    matplotlib.rcParams.update(_PAPER_RC)
 
-    This sets DPI, font sizes, spines visibility, and a light grid. It should be
-    called before creating any figures to ensure consistent styling.
-    """
-    for k, v in _PAPER_RC.items():
-        matplotlib.rcParams[k] = v
+
+def _legend_on(tag: str, paper_tags: Sequence[str]) -> bool:
+    return tag not in paper_tags or tag == paper_tags[0]
+
+
+def _halo(lw: float):
+    """White outline that separates a line from the density underneath."""
+    return [pe.Stroke(linewidth=lw + 1.4, foreground="white", alpha=0.9), pe.Normal()]
+
+
+def _new_panel():
+    fig = plt.figure(figsize=(PANEL_W, PANEL_H))
+    ax = fig.add_axes(AXES_RECT)
+    return fig, ax
+
+
+def _save(fig, path: str, keep_existing: bool) -> None:
+    if not keep_existing or not os.path.exists(path):
+        fig.savefig(path)  # fixed axes rectangle: no tight bbox, so panels align when placed side by side
+    plt.close(fig)
+
 
 # ==============================
-# Notation and display names (LaTeX-friendly via mathtext)
+# CSV columns and I/O
 # ==============================
 
-DISPLAY = {
-    "c_OR":    r"$\kappa_{\mathrm{OR}}$",
-    "c_BF":    r"$\kappa_{\mathrm{BF}}$",
-    "c_OR0":   r"$\kappa_0$",
-    "env_upper":  r"transport envelope (upper)",
-}
-
-# CSV columns expected from edges.py (CurvatureEngine.edge_table)
+# CSV columns written by edges.py (CurvatureEngine.edge_table) that this module uses.
 EXPECTED_COLS = [
-    "u","v","deg_i","deg_j","triangle","Xi","sho_max",
-    "c_BF","c_OR","c_OR0","env_upper",
-    "cOR_lower_from_cBF","cOR_upper_from_cBF","cBF_lower_from_cOR","cBF_upper_from_cOR",
+    "u", "v", "deg_i", "deg_j", "triangle", "Xi", "sho_max",
+    "c_BF", "c_OR", "c_OR0", "env_upper",
+    "cOR_lower_from_cBF", "cOR_upper_from_cBF", "cBF_lower_from_cOR", "cBF_upper_from_cOR",
 ]
 
-# ==============================
-# I/O helpers
-# ==============================
 
-def _load_manifest(
-        run_root: str
-        ) -> Dict:
-    """
-    Load and parse the manifest.json that describes available runs.
-
-    Parameters
-    - run_root: Path to a run directory containing manifest.json.
-
-    Returns
-    - A Python dict parsed from the JSON file.
-
-    Raises
-    - FileNotFoundError if the manifest file does not exist.
-    """
+def _load_manifest(run_root: str) -> Dict:
+    """Parse ``<run_root>/manifest.json``; FileNotFoundError if it is missing."""
     man_path = os.path.join(run_root, "manifest.json")
     if not os.path.exists(man_path):
         raise FileNotFoundError(f"No manifest.json in {run_root}")
     with open(man_path, "r") as f:
         return json.load(f)
 
-def _edge_csv_for_tag(
-        run_root: str,
-        tag: str
-        ) -> Optional[str]:
-    """
-    Return the path to the edge CSV for a given run tag, if present.
 
-    Files are normally named {tag}_edges.csv where periods in tag are
-    replaced with underscores. As a fallback, the function returns the first
-    file in the directory that starts with the normalized base and ends with
-    edges.csv.
-
-    Parameters
-    - run_root: Run directory that should contain CSVs.
-    - tag: Identifier string for a graph/model instance.
-
-    Returns
-    - The absolute path to the CSV file if found, else None.
-    """
-    # edges.py writes {base_name}_edges.csv in the run folder.
-    base = tag.replace('.', '_')
+def _edge_csv_for_tag(run_root: str, tag: str) -> Optional[str]:
+    """Path of ``{tag}_edges.csv`` (dots in the tag replaced by underscores), or of the first
+    ``{tag}*edges.csv``; None if there is none."""
+    base = tag.replace(".", "_")
     cand = os.path.join(run_root, f"{base}_edges.csv")
     if os.path.exists(cand):
         return cand
-    # fallback: pick the first *edges.csv that starts with base
     gl = glob.glob(os.path.join(run_root, f"{base}*edges.csv"))
     return gl[0] if gl else None
 
-def _read_edges(
-        path_csv: str
-        ) -> pd.DataFrame:
-    """
-    Read a per-edge CSV and normalize column names when possible.
 
-    The reader is tolerant to letter-casing differences by attempting to map
-    lower-cased versions of known column names back to the expected names.
-
-    Parameters
-    - path_csv: Path to the edge-level CSV file.
-
-    Returns
-    - A pandas DataFrame with original or normalized column names.
-    """
+def _read_edges(path_csv: str) -> pd.DataFrame:
+    """Read a per-edge CSV, mapping differently-cased headers to the expected names."""
     df = pd.read_csv(path_csv)
-    # Be robust to lower-cased headers
     missing = [c for c in EXPECTED_COLS if c not in df.columns]
     if missing:
         lower_map = {c.lower(): c for c in df.columns}
-        new_cols = {}
-        for c in missing:
-            if c.lower() in lower_map:
-                new_cols[lower_map[c.lower()]] = c
+        new_cols = {lower_map[c.lower()]: c for c in missing if c.lower() in lower_map}
         if new_cols:
             df = df.rename(columns=new_cols)
     return df
 
+
 # ==============================
-# Pretty naming for tags (for titles and file names)
+# Titles
 # ==============================
+
+def _title(name: Optional[str], tag: str) -> str:
+    """Panel title: the registry name, as in the tables (``2x500`` printed as 2 x 500)."""
+    t = name or _pretty_from_tag(tag)
+    return re.sub(r"(\d)x(\d)", r"\1$\\times$\2", t)
+
 
 def _pretty_from_tag(tag: str) -> str:
-    """
-    Short, publication-friendly display name for a run tag.
-    Examples:
-      - "er_n2000_p0.01" -> "ER $n=2000$, $p=0.01$"
-      - "ws_n1000_k10_b0.2" -> "WS $n=1000$, $k=10$, $p=0.2$"
-      - "ba_n5000_m3" -> "BA $n=5000$, $m=3$"
-      - "real_karate" -> "Real: Zachary Karate"
-    """
-    t = tag
-
-    # ER: er_n{n}_p{p}
-    m = re.fullmatch(r"er_n(\d+)_p([0-9.]+)", t)
-    if m:
-        n, p = m.groups()
-        return rf"ER $n={int(n)}$, $p={p}$"
-
-    # WS: ws_n{n}_k{k}_b{p}, with p the rewiring probability
-    m = re.fullmatch(r"ws_n(\d+)_k(\d+)_b([0-9.]+)", t)
-    if m:
-        n, k, b = m.groups()
-        return rf"WS $n={int(n)}$, $k={int(k)}$, $p={b}$"
-
-    # BA: ba_n{n}_m{m}
-    m = re.fullmatch(r"ba_n(\d+)_m(\d+)", t)
-    if m:
-        n, m2 = m.groups()
-        return rf"BA $n={int(n)}$, $m={int(m2)}$"
-
-    # RG: rg_n{n}_r{r}
-    m = re.fullmatch(r"rg_n(\d+)_r([0-9.]+)", t)
-    if m:
-        n, r = m.groups()
-        return rf"RG $n={int(n)}$, $r={r}$"
-
-
-    # 2-block SBM: sbm2_n{n}_pin{p_in}_pout{p_out}
-    m = re.fullmatch(r"sbm2_n(\d+)_pin([0-9.]+)_pout([0-9.]+)", t)
-    if m:
-        n, pin, pout = m.groups()
-        return rf"SBM2 $n={int(n)}$, $p_{{\mathrm{{in}}}}={pin}$, $p_{{\mathrm{{out}}}}={pout}$"
-
-    # HRG: hrg_n{n}_R{R}_a{alpha}_T{T}
-    m = re.fullmatch(r"hrg_n(\d+)_R([0-9.]+)_a([0-9.]+)_T([0-9.]+)", t)
-    if m:
-        n, R, a, T = m.groups()
-        return rf"HRG $n={int(n)}$, $R={R}$, $\alpha={a}$, $T={T}$"
-
-    # Canonical families
-    m = re.fullmatch(r"cycle_n(\d+)", t)
-    if m:
-        (n,) = m.groups()
-        return rf"Cycle $C_{{{int(n)}}}$"
-
-    m = re.fullmatch(r"torus_(\d+)x(\d+)", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Torus $C_{{{int(m1)}}}\times C_{{{int(n1)}}}$"
-    m = re.fullmatch(r"torus_(\d+)x(\d+)_edges", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Torus $C_{{{int(m1)}}}\times C_{{{int(n1)}}}$"
-
-    m = re.fullmatch(r"rreg_n(\d+)_d(\d+)", t)
-    if m:
-        n, d = m.groups()
-        return rf"d-Reg $n={int(n)}$, $d={int(d)}$"
-
-    m = re.fullmatch(r"grid_(\d+)x(\d+)", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Grid ${{{int(m1)}\times {int(n1)}}}$"
-
-    m = re.fullmatch(r"grid_(\d+)x(\d+)_edges", t)
-    if m:
-        m1, n1 = m.groups()
-        return rf"Grid ${{{int(m1)}\times {int(n1)}}}$"
-
-    m = re.fullmatch(r"tree_d(\d+)_h(\d+)", t)
-    if m:
-        d, h = m.groups()
-        return rf"{int(d)}-ary Tree ($h={int(h)}$)"
-
-    m = re.fullmatch(r"complete_n(\d+)", t)
-    if m:
-        (n,) = m.groups()
-        return rf"Complete $K_{{{int(n)}}}$"
-
-    # Real networks (remove/avoid Wikipedia mention)
-    m = re.fullmatch(r"real_(.+)", t)
-    if m:
-        name = m.group(1)
-        # Any 'wiki' variant maps to a generic label; no Wikipedia mention
-        if re.search(r"wiki", name, flags=re.IGNORECASE):
-            return "Real network"
-
-        pretty_map = {
-            "karate": "Zachary Karate",
-            "jazz": "Jazz Musicians",
-            "power_grid": "US Power Grid",
-            "yeast": "Yeast TF",
-            "arxiv": "arXiv hep-ph citations",
-        }
-        return f"Real: {pretty_map.get(name, name.replace('_', ' '))}"
-
-    # Fallback
-    return t
+    """Fallback title for a run without a registry name in the manifest."""
+    pats = [
+        (r"er_n(\d+)_p([0-9._]+)", lambda m: f"ER({m[1]}, {m[2].replace('_', '.')})"),
+        (r"ws_n(\d+)_k(\d+)_b([0-9._]+)", lambda m: f"WS({m[1]}, {m[2]}, {m[3].replace('_', '.')})"),
+        (r"ba_n(\d+)_m(\d+)", lambda m: f"BA({m[1]}, {m[2]})"),
+        (r"rg_n(\d+)_r([0-9._]+)", lambda m: f"RGG({m[1]}, {m[2].replace('_', '.')})"),
+        (r"real_(.+)", lambda m: m[1].replace("_", " ").title()),
+    ]
+    for pat, f in pats:
+        m = re.fullmatch(pat, tag)
+        if m:
+            return f(m)
+    return tag
 
 
 # ==============================
-# Plot primitives
+# Statistics
 # ==============================
 
-def _hist_with_bands(
-        ax: plt.Axes,
-        obs: np.ndarray,
-        lower: Optional[np.ndarray] = None,
-        upper: Optional[np.ndarray] = None,
-        env: Optional[np.ndarray] = None,
-        lower_label: Optional[str] = None,
-        upper_label: Optional[str] = None,
-        bins: int | str = "auto",
-        title: str = "",
-        xlabel: str = ""
-        ) -> None:
-    """
-    Plot a histogram of observed values with optional overlay distributions.
+def _finite(*arrays):
+    """The arrays restricted to the entries where all of them are finite."""
+    m = np.ones(len(arrays[0]), dtype=bool)
+    for a in arrays:
+        m &= np.isfinite(a)
+    return [a[m] for a in arrays]
 
-    Parameters
-    - ax: A Matplotlib Axes to draw on.
-    - obs: Observed values (e.g., edgewise c_OR or c_BF).
-    - lower, upper: Optional arrays for lower/upper transfer distributions
-      (e.g., BF->OR or OR->BF bounds per edge). Each is plotted as a step outline.
-    - env: Optional transport envelope values (edgewise) drawn as a step outline.
-    - lower_label, upper_label: Legend labels for the overlay distributions.
-    - bins: Number of histogram bins or plt bins option.
-    - title: Axes title.
-    - xlabel: X-axis label.
-    """
-    # Observed distribution
-    ax.hist(obs, bins=bins, density=True, alpha=0.5, color=COL_OBS, label="Observed")
-    # Lower/upper transfer distributions (edgewise)
-    if lower is not None and len(lower) > 0:
-        ax.hist(lower, bins=bins, density=True, histtype="step", linewidth=1.6, color=COL_LOWER,
-                label=(lower_label or "L. Transfer Dist."))
-    if upper is not None and len(upper) > 0:
-        ax.hist(upper, bins=bins, density=True, histtype="step", linewidth=1.6, color=COL_UPPER,
-                label=(upper_label or "U. Transfer Dist."))
-    # Transport envelope distribution (Proposition 4.5)
-    if env is not None and len(env) > 0:
-        ax.hist(env, bins=bins, density=True, histtype="step", linewidth=1.3, color=COL_ENV, alpha=0.5,
-                label="Transport Envelope Dist.")
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Density")  # the histograms are drawn with density=True
-    ax.grid(True)
-    ax.legend(frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5,
-                loc='best')
 
-def _binned_quantiles(
-        x: np.ndarray,
-        y: np.ndarray,
-        nbins: int = 28,
-        qs=(0.1, 0.5, 0.9)
-        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Compute per-bin quantiles of y after binning by x.
+def _cond_medians(x: np.ndarray, ys: Sequence[np.ndarray], nbins: int = MEDIAN_BINS,
+                  min_count: int = MIN_PER_BIN) -> Tuple[np.ndarray, list]:
+    """Medians of x and of every y on bins of x that hold about equally many points.
 
-    This function masks non-finite values, bins x into nbins equal-width
-    bins (or a single tiny bin in degenerate cases), and computes quantiles of
-    y in each bin. If no data remain after masking, it returns four empty
-    arrays to simplify downstream handling.
-
-    Parameters
-    - x: Values to bin on (e.g., c_BF).
-    - y: Values whose quantiles are computed per bin (e.g., c_OR).
-    - nbins: Target number of bins.
-    - qs: Quantiles to compute per bin.
-
-    Returns
-    - (centers, qL, qM, qH): Bin centers and the requested lower/median/upper
-      quantiles arrays (NaN for bins with no data).
-    """
-    mask = np.isfinite(x) & np.isfinite(y)
-    x, y = x[mask], y[mask]
+    Bin edges are quantiles of x; equal values of x always fall in the same bin, and bins with
+    fewer than ``min_count`` points are merged into their left neighbor (or dropped if they
+    are the only one), so that every point of the curves summarizes at least ``min_count``
+    points."""
+    data = _finite(x, *ys)
+    x, ys = data[0], data[1:]
     if len(x) == 0:
-        # No data: return empty arrays consistently
-        return (np.array([]),) * 4
-
-    lo, hi = float(np.min(x)), float(np.max(x))
-    if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
-        # Degenerate: single bin
-        bins = np.array([lo, lo + 1e-6])
+        return np.array([]), [np.array([]) for _ in ys]
+    nb = int(max(1, min(nbins, len(x) // max(1, min_count))))
+    edges = np.unique(np.quantile(x, np.linspace(0.0, 1.0, nb + 1)))
+    if len(edges) < 2:
+        groups = [np.arange(len(x))]
     else:
-        bins = np.linspace(lo, hi, nbins + 1)
+        idx = np.clip(np.searchsorted(edges, x, side="right") - 1, 0, len(edges) - 2)
+        groups = [np.flatnonzero(idx == b) for b in range(len(edges) - 1)]
+        groups = [g for g in groups if len(g)]
+        merged = []
+        for g in groups:
+            if merged and len(g) < min_count:
+                merged[-1] = np.concatenate([merged[-1], g])
+            else:
+                merged.append(g)
+        if len(merged) > 1 and len(merged[0]) < min_count:
+            merged[1] = np.concatenate([merged[0], merged[1]])
+            merged = merged[1:]
+        groups = [g for g in merged if len(g) >= min(min_count, len(x))]
+    cx = np.array([np.median(x[g]) for g in groups])
+    cy = [np.array([np.median(y[g]) for g in groups]) for y in ys]
+    return cx, cy
 
-    nb = len(bins) - 1                 # <-- ACTUAL number of bins
-    idx = np.clip(np.digitize(x, bins) - 1, 0, nb - 1)
-    centers = 0.5 * (bins[:-1] + bins[1:])
 
-    qL = np.full(nb, np.nan)
-    qM = np.full(nb, np.nan)
-    qH = np.full(nb, np.nan)
-    for b in range(nb):
-        vals = y[idx == b]
-        if len(vals) > 0:
-            qL[b], qM[b], qH[b] = np.quantile(vals, qs)
+def _limits(*arrays, pad: float = 0.04) -> Tuple[float, float]:
+    """Common axis limits of the finite values of the arrays, padded on both sides."""
+    vals = [a[np.isfinite(a)] for a in arrays if a is not None and len(a)]
+    vals = [v for v in vals if len(v)]
+    if not vals:
+        return -1.0, 1.0
+    lo, hi = min(float(v.min()) for v in vals), max(float(v.max()) for v in vals)
+    if hi <= lo:
+        lo, hi = lo - 0.5, hi + 0.5
+    span = hi - lo
+    return lo - pad * span, hi + pad * span
 
-    return centers, qL, qM, qH
+
+def _n_bins(bins, n: int):
+    """An integer ``bins`` is a maximum: below it, the Rice rule 2 n^(1/3) (at least 12) sets the
+    number of bins for n values, so that small graphs do not get noisy histograms. A numpy rule
+    name is passed through."""
+    if isinstance(bins, (int, np.integer)):
+        return int(min(int(bins), max(12, round(2.0 * max(n, 1) ** (1.0 / 3.0)))))
+    return bins
 
 
-def _scatter_ribbon(ax: plt.Axes,
-                    bf: np.ndarray,
-                    orv: np.ndarray,
-                    lower_from_bf: Optional[np.ndarray] = None,
-                    upper_from_bf: Optional[np.ndarray] = None,
-                    nbins: int | str = "auto",
-                    ) -> None:
-    """
-    Scatter plot of bf vs or with an observed quantile ribbon.
+def _core_limits(a: np.ndarray, pad: float) -> Tuple[float, float]:
+    """Limits covering the edges between the CORE quantiles of ``a`` (a few extreme edges, such as
+    the edges at a degree-one vertex, would otherwise squeeze the bulk of the data)."""
+    a = a[np.isfinite(a)]
+    if len(a) == 0:
+        return -1.0, 1.0
+    lo, hi = np.quantile(a, CORE)
+    return _limits(np.array([lo, hi]), pad=pad)
 
-    The function optionally overlays the median of the predicted lower and/or
-    upper transfer (BF->OR) after binning by bf. If the dataset is very large, a
-    fixed-size random subsample is used for the scatter for clarity.
 
-    Parameters
-    - ax: A Matplotlib Axes to draw on.
-    - bf: Edgewise Balanced Forman curvature values.
-    - orv: Edgewise Ollivier--Ricci curvature values.
-    - lower_from_bf: Optional edgewise BF->OR lower transfer predictions.
-    - upper_from_bf: Optional edgewise BF->OR upper transfer predictions.
-    - nbins: Number of bins to use for computing the quantile ribbon or plt bins option.
-    """
-    # Subsample if large for visual clarity
-    n = len(bf)
-    if n > 25000:
-        rng = np.random.default_rng(1234)
-        sel = rng.choice(n, size=25000, replace=False)
-        bf_s, or_s = bf[sel], orv[sel]
-        low_s = lower_from_bf[sel] if lower_from_bf is not None else None
+def _shared_bins(lim: Tuple[float, float], ref: np.ndarray, bins) -> np.ndarray:
+    """Bin edges covering ``lim``: ``bins`` equal bins if an integer, otherwise the width that
+    numpy's rule ``bins`` gives for the reference sample, so that every series uses the same bins."""
+    if isinstance(bins, (int, np.integer)):
+        return np.linspace(lim[0], lim[1], int(bins) + 1)
+    ref = ref[np.isfinite(ref)]
+    w = np.diff(np.histogram_bin_edges(ref, bins=bins))[0] if len(ref) > 1 else 0.0
+    if not np.isfinite(w) or w <= 0:
+        return np.linspace(lim[0], lim[1], 61)
+    n = min(max(int(np.ceil((lim[1] - lim[0]) / w)), 10), 400)
+    return np.linspace(lim[0], lim[1], n + 1)
+
+
+def _quantile_profile(a: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """Empirical quantiles F^{-1}(q) = min{x : F(x) >= q} of the finite values of a."""
+    a = a[np.isfinite(a)]
+    if len(a) == 0:
+        return np.full_like(q, np.nan)
+    return np.quantile(a, q, method="inverted_cdf")
+
+
+# ==============================
+# Panels
+# ==============================
+
+def _density_panel(ax, bf, orv, lo=None, up=None, title="", legend=True, points=False):
+    """Edges in the (kappa_BF, kappa_OR) plane, with conditional medians of kappa_OR and of the
+    two ends of the BF interval (``lo``, ``up``) given kappa_BF."""
+    bf, orv = np.asarray(bf, float), np.asarray(orv, float)
+    xb, yb = _finite(bf, orv)
+    ys = [orv] + [a for a in (lo, up) if a is not None]
+    cx, cy = _cond_medians(bf, ys)
+    med_or = cy[0]
+    med_lo = cy[1] if lo is not None else None
+    med_up = cy[1 + (lo is not None)] if up is not None else None
+
+    xlim = _core_limits(xb, pad=0.03)
+    ylim = _limits(np.array(_core_limits(yb, pad=0.0)), *(m for m in (med_lo, med_up) if m is not None), pad=0.05)
+    if points:
+        n = len(xb)
+        sel = np.random.default_rng(1234).choice(n, size=25000, replace=False) if n > 25000 else slice(None)
+        ax.scatter(xb[sel], yb[sel], s=1.6, color="#7a7a7a", alpha=0.35, linewidths=0, rasterized=True)
     else:
-        bf_s, or_s, low_s = bf, orv, lower_from_bf
+        xe = np.linspace(*xlim, DENSITY_BINS + 1)
+        ye = np.linspace(*ylim, DENSITY_BINS + 1)
+        h, _, _ = np.histogram2d(xb, yb, bins=[xe, ye])
+        hmax = max(1.0, float(h.max()))
+        ax.hist2d(xb, yb, bins=[xe, ye], cmap=DENSITY_CMAP, cmin=1,
+                  norm=mcolors.LogNorm(vmin=1, vmax=hmax), rasterized=True, zorder=1)
 
-    nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
-    ax.scatter(bf_s, or_s, s=6, alpha=0.28, color=COL_OBS, linewidth=0,
-               label="Edges (sample)" if n > 25000 else "Edges")
-    # Observed quantile ribbon of OR|BF
-    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
-    if len(xc) > 0:
-        ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7, label=r"$\mathrm{median}[\kappa_{\mathrm{OR}}\mid\kappa_{\mathrm{BF}}]$")
-        ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--")
-        ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--")
-    # Predicted BF->OR lower (median per bin)
-    if low_s is not None:
-        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
-                label=r"L. Transfer (BF$\rightarrow$OR): median")
-    # Predicted BF->OR upper (median per bin)
-    if upper_from_bf is not None:
-        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
-                label=r"U. Transfer (BF$\rightarrow$OR): median")
-    ax.set_title(r"Comparison between $\kappa_{\mathrm{BF}}$ and $\kappa_{\mathrm{OR}}$")
-    ax.set_xlabel("Curvature " + DISPLAY["c_BF"])
-    ax.set_ylabel("Curvature " + DISPLAY["c_OR"])
-    ax.grid(True)
-    ax.legend(frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5,
-                loc='best')
+    if len(cx):
+        if med_up is not None and med_lo is not None:
+            ax.fill_between(cx, med_lo, med_up, color=C_BAND, alpha=0.18, linewidth=0, zorder=2)
+        ax.plot(cx, med_or, color=C_OR, lw=1.35, zorder=3, path_effects=_halo(1.35))
+        # the ends are dashed and drawn on top, so that a median of kappa_OR that coincides with
+        # one of them (e.g. the upper end on clustered graphs) stays visible between the dashes
+        if med_lo is not None:
+            ax.plot(cx, med_lo, color=C_LO, lw=1.2, ls=(0, (3.2, 1.8)), zorder=4)
+        if med_up is not None:
+            ax.plot(cx, med_up, color=C_UP, lw=1.2, ls=(0, (3.2, 1.8)), zorder=4)
 
-
-def _scatter_ribbon_hist(ax: plt.Axes,
-                    bf: np.ndarray,
-                    orv: np.ndarray,
-                    lower_from_bf: Optional[np.ndarray] = None,
-                    upper_from_bf: Optional[np.ndarray] = None,
-                    nbins: int | str = "auto") -> None:
-
-    h, _, _, quad = ax.hist2d(bf, orv, bins=30, cmap="Blues")
-    quad.set_zorder(0)
-
-    cbar = ax.figure.colorbar(quad, ax=ax)
-    hmax = int(np.nanmax(h)) if np.isfinite(np.nanmax(h)) else 0
-    quad.set_clim(0, hmax)
-    cbar.ax.yaxis.set_major_locator(ticker.MultipleLocator(1 if hmax <= 10 else 10))
-    cbar.ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
-    cbar.update_normal(quad)
-
-    nbins_num = len(np.histogram_bin_edges(bf, bins=nbins)) - 1
-
-    sample_proxy = Patch(facecolor=plt.get_cmap("Blues")(0.6), edgecolor="none", label="Edges")
-
-    xc, qL, qM, qH = _binned_quantiles(bf, orv, nbins=nbins_num)
-    if len(xc) > 0:
-        ax.plot(xc, qM, color=COL_QRIB, linewidth=1.7,
-                label=r"$\mathrm{median}[\kappa_{\mathrm{OR}}\mid\kappa_{\mathrm{BF}}]$", zorder=3)
-        ax.plot(xc, qL, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
-        ax.plot(xc, qH, color=COL_QRIB, linewidth=1.1, linestyle="--", zorder=3)
-
-    if lower_from_bf is not None:
-        _, _, pM, _ = _binned_quantiles(bf, lower_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM, color=COL_LOWER, linewidth=1.8, linestyle="-.",
-                label=r"L. Transfer (BF$\rightarrow$OR): median", zorder=3)
-
-    if upper_from_bf is not None:
-        _, _, pM_up, _ = _binned_quantiles(bf, upper_from_bf, nbins=nbins_num, qs=(0.5, 0.5, 0.5))
-        ax.plot(xc, pM_up, color=COL_UPPER, linewidth=1.8, linestyle="--",
-                label=r"U. Transfer (BF$\rightarrow$OR): median", zorder=3)
-
-    ax.set_title(r"Comparison between $\kappa_{\mathrm{BF}}$ and $\kappa_{\mathrm{OR}}$")
-    ax.set_xlabel("Curvature " + DISPLAY["c_BF"])
-    ax.set_ylabel("Curvature " + DISPLAY["c_OR"])
-    ax.grid(True)
-    ax.relim(); ax.autoscale()
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend([sample_proxy] + handles, ["Edges"] + labels,
-              frameon=False, ncol=1, handlelength=1.0, handletextpad=0.5, loc='best')
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_xlabel(K_BF)
+    ax.set_ylabel(K_OR)
+    ax.set_title(title)
+    ax.grid(True, color=C_GRID, lw=0.5, zorder=0)
+    ax.set_axisbelow(True)
+    if legend:
+        handles = [Patch(facecolor=DENSITY_CMAP(0.55), edgecolor="none", label="edges (log density)"),
+                   Line2D([], [], color=C_OR, lw=1.35, label=r"median of " + K_OR)]
+        if med_lo is not None:
+            handles.append(Line2D([], [], color=C_LO, lw=1.2, ls=(0, (3.2, 1.8)), label="median lower end"))
+        if med_up is not None:
+            handles.append(Line2D([], [], color=C_UP, lw=1.2, ls=(0, (3.2, 1.8)), label="median upper end"))
+        curves = [(cx, m) for m in (med_or, med_lo, med_up) if m is not None]
+        _legend(ax, handles, xb, yb, xlim, ylim, curves)
 
 
-def _quantile_lines(ax: plt.Axes,
-                    arrays: Sequence[np.ndarray],
-                    labels: Optional[Sequence[str]] = None,
-                    xlabel: str = r"Quantile $q$",
-                    ylabel: Optional[str] = None,
-                    colors: Optional[Sequence[str]] = (COL_OBS, COL_LOWER, COL_UPPER)) -> None:
-    """
-    Plot sorted values of each array against quantile p on a shared y-scale.
-    """
-    arrs = [np.asarray(a).ravel() for a in arrays if a is not None]
-    if len(arrs) == 0:
-        return
+def _legend(ax, handles, xb, yb, xlim, ylim, curves=()):
+    """Legend in the corner where it covers the fewest edges and median-curve points (a curve point
+    weighs as much as 2% of the edges), measured with the legend's actual extent."""
+    pts = [(np.asarray(xb), np.asarray(yb), 1.0)] + [(np.asarray(x), np.asarray(y), 0.02 * len(xb)) for x, y in curves]
+    fig = ax.figure
+    best, best_cost = "upper left", None
+    for loc in ("upper left", "lower right", "upper right", "lower left"):
+        leg = ax.legend(handles=handles, loc=loc)
+        fig.canvas.draw()
+        bb = leg.get_window_extent().transformed(ax.transAxes.inverted())
+        cost = 0.0
+        for x, y, w in pts:
+            fx = (x - xlim[0]) / (xlim[1] - xlim[0])
+            fy = (y - ylim[0]) / (ylim[1] - ylim[0])
+            cost += w * float(np.sum((fx >= bb.x0) & (fx <= bb.x1) & (fy >= bb.y0) & (fy <= bb.y1)))
+        leg.remove()
+        if best_cost is None or cost < best_cost:
+            best, best_cost = loc, cost
+    leg = ax.legend(handles=handles, loc=best)
+    leg.set_zorder(6)
 
-    # Shared y-scale across all lines
-    ymin = min(np.nanmin(a) for a in arrs)
-    ymax = max(np.nanmax(a) for a in arrs)
-    if ymax <= ymin:  # constant curvature (e.g. cycles, complete graphs)
-        ymin, ymax = ymin - 0.5, ymax + 0.5
-    ax.set_ylim(ymin, ymax)
 
-    # Quantile lines
-    for i, a in enumerate(arrs):
-        p = np.linspace(0.0, 1.0, len(a), endpoint=True)
-        lab = labels[i] if (labels is not None and i < len(labels)) else f"Series {i+1}"
-        col = colors[i] if (colors is not None and i < len(colors)) else None
-        ax.plot(p, np.sort(a), linewidth=1.6, zorder=3, label=lab, color=col)
-
-    # Axes/legend styling (mirror helper style)
-    ax.set_xlim(0.0, 1.0)
-    ax.set_title(r"Quantile profiles across series")
+def _hist_panel(ax, obs, lo, up, lim, bins, title="", legend=True,
+                labels=(K_OR, "lower end", "upper end"), xlabel="curvature", ylabel="density"):
+    """Distributions of the exact values and of the two ends, on shared bins. Descriptive only:
+    the histograms of the ends do not bound that of the exact values pointwise."""
+    obs = np.asarray(obs, float)
+    edges = _shared_bins(lim, obs, _n_bins(bins, int(np.isfinite(obs).sum())))
+    ax.hist(obs[np.isfinite(obs)], bins=edges, density=True, color=C_FILL, edgecolor="none",
+            label=labels[0], zorder=2)
+    for a, c, lab in ((lo, C_LO, labels[1]), (up, C_UP, labels[2])):
+        if a is not None:
+            a = np.asarray(a, float)
+            ax.hist(a[np.isfinite(a)], bins=edges, density=True, histtype="step", color=c, lw=1.0,
+                    label=lab, zorder=3)
+    ax.set_xlim(*lim)
+    top = ax.get_ylim()[1]
+    ax.set_ylim(0, top * (1.42 if legend else 1.04))   # headroom above the bars for the legend
     ax.set_xlabel(xlabel)
-    if ylabel:
-        ax.set_ylabel(ylabel)
-    ax.grid(True)
-    ax.relim(); ax.autoscale(axis="x", tight=True)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, axis="y", color=C_GRID, lw=0.5, zorder=0)
+    ax.set_axisbelow(True)
+    if legend:
+        h, lab = ax.get_legend_handles_labels()
+        # step histograms are listed as patches; show them as lines
+        h = [Patch(facecolor=C_FILL, edgecolor="none") if i == 0 else Line2D([], [], color=hh.get_edgecolor(), lw=1.0)
+             for i, hh in enumerate(h)]
+        ax.legend(h, lab, loc="upper left", ncol=3, columnspacing=0.9, handlelength=1.3)
 
-    handles, labs = ax.get_legend_handles_labels()
-    ax.legend(handles, labs, frameon=False, ncol=1, handlelength=1.0,
-              handletextpad=0.5, loc="best")
+
+def _quantile_panel(ax, obs, lo, up, lim, title="", legend=True, q_mark=0.1,
+                    labels=(K_OR, "lower end", "upper end"), ylabel="curvature"):
+    """Quantile profiles of the exact values and of the two ends. Since lo <= obs <= up on every
+    edge, F_lo^{-1}(q) <= F_obs^{-1}(q) <= F_up^{-1}(q) for every q: the shaded band is a certified
+    range for every quantile, and the bar at ``q_mark`` the one quoted in the text."""
+    q = np.linspace(1.0 / 2000, 1.0, 2000)
+    po = _quantile_profile(np.asarray(obs, float), q)
+    pl = _quantile_profile(np.asarray(lo, float), q) if lo is not None else None
+    pu = _quantile_profile(np.asarray(up, float), q) if up is not None else None
+    if pl is not None and pu is not None:
+        ax.fill_between(q, pl, pu, color=C_BAND, alpha=0.32, linewidth=0, zorder=1, label="certified band")
+    if pl is not None:
+        ax.plot(q, pl, color=C_LO, lw=0.95, zorder=2, label=labels[1])
+    if pu is not None:
+        ax.plot(q, pu, color=C_UP, lw=0.95, zorder=2, label=labels[2])
+    ax.plot(q, po, color=C_OR, lw=1.35, zorder=3, label=labels[0])
+    if q_mark and pl is not None and pu is not None:
+        qm = np.array([q_mark])
+        a, b = _quantile_profile(np.asarray(lo, float), qm)[0], _quantile_profile(np.asarray(up, float), qm)[0]
+        ax.axvline(q_mark, color="#8c8c8c", lw=0.6, ls=":", zorder=1)
+        ax.plot([q_mark, q_mark], [a, b], color="#333333", lw=2.6, alpha=0.55, solid_capstyle="butt", zorder=4,
+                label=rf"band at $q={q_mark:g}$")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(*lim)
+    ax.set_xlabel(r"quantile level $q$")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, color=C_GRID, lw=0.5, zorder=0)
+    ax.set_axisbelow(True)
+    if legend:
+        h, lab = ax.get_legend_handles_labels()
+        order = [lab.index(x) for x in (labels[0], labels[1], labels[2]) if x in lab]
+        order += [i for i in range(len(lab)) if i not in order]
+        ax.legend([h[i] for i in order], [lab[i] for i in order], loc="upper left")
 
 
 # ==============================
 # Figure orchestration per run
 # ==============================
 
-def _make_run_figures(
-        run_root: str,
-        tag: str,
-        pretty: Optional[str],
-        bins: int | str = "auto",
-        keep_existing: bool = False
-        ) -> None:
-    """
-    Generate and save figures for a single run tag within run_root.
-
-    This loads the associated edge CSV, extracts the columns required for each
-    figure, and writes up to three PNG files in run_root/figures_paper/:
-    - fig_cOR_hist__{tag}.png
-    - fig_cBF_hist__{tag}.png
-    - fig_scatter_cBF_cOR__{tag}.png
-
-    Parameters
-    - run_root: Path to a run directory containing the manifest and CSVs.
-    - tag: The run identifier used to locate the edge CSV.
-    - pretty: Optional pre-specified display name for titles; falls back to a
-      derived pretty name from the tag.
-    - bins: Number of histogram bins or plt bins option.
-    - keep_existing: Currently used by the caller to control directory setup;
-      the function itself always writes or overwrites files by name.
-    """
+def _make_run_figures(run_root: str, tag: str, pretty: Optional[str], bins=60, keep_existing: bool = False) -> None:
+    """Write the figures of one graph (see the module docstring) into ``run_root/figures_paper``."""
     csv_path = _edge_csv_for_tag(run_root, tag)
     if csv_path is None or not os.path.exists(csv_path):
         print(f"[make_paper_figures] No edge CSV for '{tag}' under {run_root}; skipping.")
         return
     df = _read_edges(csv_path)
+    col = lambda name: pd.to_numeric(df[name], errors="coerce").to_numpy(float) if name in df.columns else None
 
-    as_np = lambda name: pd.to_numeric(df[name], errors="coerce").to_numpy() if name in df.columns else None
-
-    cOR     = as_np("c_OR")
-    cBF     = as_np("c_BF")
-    cOR_lo  = as_np("cOR_lower_from_cBF")
-    cOR_up  = as_np("cOR_upper_from_cBF")
-    cBF_lo  = as_np("cBF_lower_from_cOR")
-    cBF_up  = as_np("cBF_upper_from_cOR")
-    env_up  = as_np("env_upper")
+    cOR, cBF = col("c_OR"), col("c_BF")
+    cOR_lo, cOR_up = col("cOR_lower_from_cBF"), col("cOR_upper_from_cBF")
+    cBF_lo, cBF_up = col("cBF_lower_from_cOR"), col("cBF_upper_from_cOR")
 
     fig_dir = os.path.join(run_root, "figures_paper")
+    os.makedirs(fig_dir, exist_ok=True)
     safe_tag = tag.replace("/", "-").replace(" ", "_").replace(".", "_")
-    pretty_tag = pretty or _pretty_from_tag(tag)
+    title = _title(pretty, safe_tag)
+    out = lambda stem: os.path.join(fig_dir, f"{stem}__{safe_tag}.png")
 
-    # 1) OR histogram (short title; run name as suptitle)
     if cOR is not None:
-        fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        _hist_with_bands(ax, obs=cOR, lower=cOR_lo, upper=cOR_up, env=env_up, lower_label=r"BF$\rightarrow$OR L. Dist.", 
-                            upper_label=r"BF$\rightarrow$OR U. Dist.", bins=bins, title="Ollivier-Ricci Curvature", 
-                            xlabel="Curvature " + DISPLAY["c_OR"])
-        fig.suptitle(pretty_tag, y=0.90, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-        filename = os.path.join(fig_dir, f"fig_cOR_hist__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
+        lim = _limits(cOR, *(a for a in (cOR_lo, cOR_up) if a is not None))
+        leg = _legend_on(safe_tag, FIG3_TAGS)
+        fig, ax = _new_panel()
+        _hist_panel(ax, cOR, cOR_lo, cOR_up, lim, bins, title=title, legend=leg)
+        _save(fig, out("fig_cOR_hist"), keep_existing)
+        fig, ax = _new_panel()
+        _quantile_panel(ax, cOR, cOR_lo, cOR_up, lim, title=title, legend=leg)
+        _save(fig, out("fig_cOR_quantile"), keep_existing)
 
-        # quantile plot
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _quantile_lines(
-            ax,
-            arrays=[cOR, cOR_lo, cOR_up],
-            labels=[
-                r"OR Curvature " + DISPLAY["c_OR"],
-                r"BF$\rightarrow$OR lower (dist.)",
-                r"BF$\rightarrow$OR upper (dist.)"
-            ],
-            xlabel=r"Quantile $q$",
-            ylabel="Curvature " + DISPLAY["c_OR"],
-        )
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_cOR_quantile__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-
-    # 2) BF histogram (short title; run name as suptitle)
     if cBF is not None:
-        fig, ax = plt.subplots(figsize=(6.8, 4.4))
-        _hist_with_bands(ax, obs=cBF, lower=cBF_lo, upper=cBF_up, env=None,
-                            lower_label=r"OR$\rightarrow$BF lower (dist.)", upper_label=r"OR$\rightarrow$BF upper (dist.)",
-                            bins=bins, title="Balanced Forman Curvature", xlabel="Curvature " + DISPLAY["c_BF"])
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
-        filename = os.path.join(fig_dir, f"fig_cBF_hist__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
+        lim = _limits(cBF, *(a for a in (cBF_lo, cBF_up) if a is not None))
+        labels = (K_BF, "lower bound from " + K_OR, "upper bound from " + K_OR)
+        fig, ax = _new_panel()
+        _hist_panel(ax, cBF, cBF_lo, cBF_up, lim, bins, title=title, labels=labels)
+        _save(fig, out("fig_cBF_hist"), keep_existing)
+        fig, ax = _new_panel()
+        _quantile_panel(ax, cBF, cBF_lo, cBF_up, lim, title=title, labels=labels, q_mark=None)
+        _save(fig, out("fig_cBF_quantile"), keep_existing)
 
-        # quantile plot
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _quantile_lines(
-            ax,
-            arrays=[cBF, cBF_lo, cBF_up],
-            labels=[
-                r"BF Curvature " + DISPLAY["c_BF"],
-                r"OR$\rightarrow$BF lower (dist.)",
-                r"OR$\rightarrow$BF upper (dist.)"
-            ],
-            xlabel=r"Quantile $q$",
-            ylabel="Curvature " + DISPLAY["c_BF"],
-        )
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_cBF_quantile__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-
-    # 3) Scatter BF vs OR (short title already set inside helper; keep short suptitle)
-    if (cBF is not None) and (cOR is not None):
-        # plot with many points
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _scatter_ribbon(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
-
-        # plot with 2D hist
-        fig, ax = plt.subplots(figsize=(6.6, 4.9))
-        _scatter_ribbon_hist(ax, cBF, cOR, lower_from_bf=cOR_lo, upper_from_bf=cOR_up, nbins=bins)
-        fig.suptitle(pretty_tag, y=0.9, fontsize=12)
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        filename = os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}_2d_Hist.png")
-        if not keep_existing or not os.path.exists(filename):
-            fig.savefig(filename)
-        plt.close(fig)
+    if cBF is not None and cOR is not None:
+        leg = _legend_on(safe_tag, FIG2_TAGS)
+        fig, ax = _new_panel()
+        _density_panel(ax, cBF, cOR, cOR_lo, cOR_up, title=title, legend=leg, points=True)
+        _save(fig, out("fig_scatter_cBF_cOR"), keep_existing)
+        fig, ax = _new_panel()
+        _density_panel(ax, cBF, cOR, cOR_lo, cOR_up, title=title, legend=leg)
+        _save(fig, os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}_2d_Hist.png"), keep_existing)
 
 
-def generate_paper_figures(
-        out_root: Optional[str] = None,
-        run_name: Optional[str] = None,
-        bins: int = 60,
-        keep_existing: bool = False
-        ) -> None:
-    """
-    Generate figures for all runs under out_root or for a specific run_name.
+def generate_paper_figures(out_root: Optional[str] = None, run_name: Optional[str] = None, bins=60,
+                           keep_existing: bool = False) -> None:
+    """Generate the figures of every run directory under ``out_root``, or only of ``run_name``.
 
-    Parameters
-    - out_root: Directory that contains one or more run subfolders (defaults to
-      experiments/out relative to this file if None).
-    - run_name: Optional subfolder name within out_root to process (if None,
-      all run subfolders are processed).
-    - bins: Number of bins for histograms.
-    - keep_existing: If False (default), the figures_paper/ directory is
-      recreated for a clean slate; if True, existing figures are kept and new
-      ones overwrite by filename only.
-    """
+    ``bins``: maximum number of histogram bins (the Rice rule decides below it), or a numpy rule
+    such as ``"fd"``. ``keep_existing``: keep
+    an existing ``figures_paper/`` and existing files (default: recreate the directory)."""
     _apply_style()
     base_root = out_root or os.path.join(os.path.dirname(__file__), "out")
     if not os.path.isdir(base_root):
@@ -725,82 +543,52 @@ def generate_paper_figures(
         for rd in run_dirs:
             _generate_for_run_dir(rd, bins=bins, keep_existing=keep_existing)
     else:
-        rd = os.path.join(base_root, run_name)
-        _generate_for_run_dir(rd, bins=bins, keep_existing=keep_existing)
+        _generate_for_run_dir(os.path.join(base_root, run_name), bins=bins, keep_existing=keep_existing)
 
-def _generate_for_run_dir(
-        run_dir: str,
-        bins: int | str = "auto",
-        keep_existing: bool = False
-        ) -> None:
-    """
-    Generate figures for every run entry listed in one run directory.
 
-    This function reads manifest.json, prepares/cleans the figures_paper/
-    directory according to keep_existing, and then calls
-    _make_run_figures(...) for each run entry.
-
-    Parameters
-    - run_dir: Absolute path to a specific run directory containing outputs.
-    - bins: Number of bins for histograms or plt bins option.
-    - keep_existing: Whether to keep an existing figures_paper/ directory.
-    """
+def _generate_for_run_dir(run_dir: str, bins=60, keep_existing: bool = False) -> None:
+    """Generate the figures of every run listed in ``run_dir/manifest.json``."""
     man = _load_manifest(run_dir)
     runs = man.get("runs", [])
     if not runs:
         print(f"[make_paper_figures] Empty manifest in {run_dir}")
         return
     print(f"[make_paper_figures] Generating figures for {len(runs)} run(s) in {os.path.basename(run_dir)}")
-
-    # Handle directory creation/deletion once per run directory
     fig_dir = os.path.join(run_dir, "figures_paper")
-    if os.path.exists(fig_dir):
-        if not keep_existing:
-            print(f"[make_paper_figures] Removing existing figures directory: {fig_dir}")
-            shutil.rmtree(fig_dir)
-            os.makedirs(fig_dir, exist_ok=True)
-        else:
-            print(f"[make_paper_figures] Keeping existing figures directory: {fig_dir}")
-    else:
-        print(f"[make_paper_figures] Creating new figures directory: {fig_dir}")
-        os.makedirs(fig_dir, exist_ok=True)
-
+    if os.path.exists(fig_dir) and not keep_existing:
+        shutil.rmtree(fig_dir)
+    os.makedirs(fig_dir, exist_ok=True)
     for r in runs:
         tag = r.get("tag") or r.get("name") or "run"
-        pretty = r.get("title") or r.get("pretty")  # optional pretty name in manifest
+        pretty = r.get("title") or r.get("pretty") or r.get("name")
         _make_run_figures(run_dir, tag, pretty, bins=bins, keep_existing=keep_existing)
 
-_ALLOWED = {"auto","fd","scott","sturges","doane","rice","sqrt","stone"}
+
+_ALLOWED = {"auto", "fd", "scott", "sturges", "doane", "rice", "sqrt", "stone"}
+
 
 def parse_bins(s):
     try:
         return int(s)
     except ValueError:
         s = s.lower()
-        if s in _ALLOWED: return s
-        raise argparse.ArgumentTypeError(f"bins must be int or one of: {', '.join(sorted(_ALLOWED))}")
+        if s in _ALLOWED:
+            return s
+        raise argparse.ArgumentTypeError(f"bins must be an integer or one of: {', '.join(sorted(_ALLOWED))}")
+
 
 def main():
-    """
-    Command-line entry point.
-
-    Parses arguments and calls generate_paper_figures. Use --help for a
-    description of available options.
-    """
     _apply_style()
-    ap = argparse.ArgumentParser(description="Generate paper-ready figures from experiment outputs.")
-    ap.add_argument("--out-root", type=str, default=None, help="Root folder containing run subfolders (default: experiments/out)")
-    ap.add_argument("--run-name", type=str, default=None, help="Specific run folder name to process (default: all under out-root)")
-    ap.add_argument(
-        "--bins",
-        type=parse_bins,
-        default="scott",
-        metavar="INT|RULE",
-        help="Number of bins or rule: auto, fd, scott, sturges, doane, rice, sqrt, stone",
-    )
-    ap.add_argument("--keep-existing", action="store_true", help="Keep existing figures directory instead of recreating it")
+    ap = argparse.ArgumentParser(description="Figures of the BF interval from the per-edge CSVs.")
+    ap.add_argument("--out-root", type=str, default=None, help="folder that contains the run folders (default: experiments/out)")
+    ap.add_argument("--run-name", type=str, default=None, help="one run folder under --out-root (default: all)")
+    ap.add_argument("--bins", type=parse_bins, default=60, metavar="INT|RULE",
+                    help="histogram bins: a number, or a numpy rule (auto, fd, scott, sturges, doane, rice, sqrt, stone)")
+    ap.add_argument("--keep-existing", action="store_true", help="keep the existing figures folder and files")
     args = ap.parse_args()
-    generate_paper_figures(out_root=args.out_root, run_name=args.run_name, bins=args.bins, keep_existing=args.keep_existing)
+    generate_paper_figures(out_root=args.out_root, run_name=args.run_name, bins=args.bins,
+                           keep_existing=args.keep_existing)
+
 
 if __name__ == "__main__":
     main()
