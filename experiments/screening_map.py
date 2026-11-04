@@ -13,13 +13,14 @@ certificate of the cascade of Algorithm 1 for the threshold query
   (d) + exact solver     the transport problems that remain (orcut)
 
 An edge leaves the cascade at the first certificate that decides it, so the
-decided sets are nested. Colors follow the other figures (Okabe-Ito): an edge
-decided with kappa_OR < tau is vermillion, the color of upper ends, because an
-upper end (or the solver) decides it; an edge decided with kappa_OR >= tau is
-blue, the color of lower ends. In each panel the edges decided by that panel's
-certificate are saturated, those decided by an earlier one are pale, and the
-undecided ones are gray. Below each panel: the share of edges decided without
-transport, and in (d) the number of transport problems.
+decided sets are nested. Each panel draws the edges that its own certificate
+decides bold, in the colors of the other figures (Okabe-Ito): vermillion, the
+color of upper ends, for kappa_OR < tau, which an upper end (or the solver)
+decides, and blue, the color of lower ends, for kappa_OR >= tau. Edges decided
+by an earlier certificate are thin and gray, and undecided edges are not drawn,
+so the drawn part of the graph grows from panel to panel. Below each panel: the
+share of edges decided without transport, and in (d) the number of transport
+problems.
 
 Consistency. The decisions come from the per-edge store of ``edges.py``, the
 arrays behind Tables 3-6 and the screening fractions of ``screening.py``, with
@@ -43,8 +44,9 @@ Outputs, in ``--out``:
   screening_map_numbers.tex           the \\res macros quoted in Section 6.3
 
 Usage
-  python experiments/screening_map.py --results results --out results/figures_paper
-  python experiments/screening_map.py --results results --out results/figures_paper --graph Yeast
+  python main.py --steps screening_map figures            # pipeline step -> results/screening_map/
+  python experiments/screening_map.py --results results --out results/screening_map
+  python experiments/screening_map.py --results results --out results/screening_map --graph Yeast
 """
 from __future__ import annotations
 
@@ -68,7 +70,6 @@ matplotlib.use("Agg")
 logging.getLogger("fontTools").setLevel(logging.ERROR)  # font subsetting chatter on PDF save
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.collections import LineCollection  # noqa: E402
-from matplotlib.legend_handler import HandlerTuple  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 
 from curvature_transfer import Graph, certify_threshold, screen  # noqa: E402
@@ -89,16 +90,11 @@ MAP = (FIG_W - 2 * SIDE - (N_STAGES - 1) * GAP) / N_STAGES   # side of each squa
 TITLE_H, NUM_H, LEG_H = 0.20, 0.40, 0.22                      # bands above / below the maps
 FIG_H = LEG_H + NUM_H + MAP + TITLE_H
 
-C_NEG, C_POS = C_UP, C_LO    # decided kappa < tau (by an upper end), kappa >= tau (by a lower end)
-C_UND = "#8c8c8c"            # undecided
+C_NEG, C_POS = C_UP, C_LO    # decided here: kappa < tau (by an upper end), kappa >= tau (by a lower end)
+C_OLD = "#b4b4b4"            # decided by an earlier certificate
 C_TEXT2 = "#4d4d4d"          # secondary text
-PALE = 0.30                  # weight of the color in the pale tint (the rest is white)
-LW_NEW, LW_OLD, LW_UND = 0.55, 0.40, 0.40   # line widths (pt): decided here, earlier, undecided
-
-
-def _pale(hex_color: str, w: float = PALE):
-    rgb = np.array(matplotlib.colors.to_rgb(hex_color))
-    return tuple(w * rgb + (1.0 - w))
+C_TEXT_OLD = "#8a8a8a"       # legend text of the gray edges
+LW_NEW, LW_OLD = 0.85, 0.35  # line widths (pt): decided here, decided earlier (undecided: not drawn)
 
 
 # ----------------------------------------------------------- the cascade
@@ -243,13 +239,13 @@ def draw(P, edges, stage, below, tau, paths):
     for k in range(N_STAGES):
         x0 = SIDE + k * (MAP + GAP)
         ax = fig.add_axes((x0 / FIG_W, (LEG_H + NUM_H) / FIG_H, MAP / FIG_W, MAP / FIG_H))
-        here, before, und = stage == k, stage < k, stage > k
-        hue_new = np.where(below, C_NEG, C_POS)
-        layers = [  # bottom to top: decided earlier, undecided, decided here
-            (before, [_pale(c) for c in hue_new[before]], LW_OLD),
-            (und, C_UND, LW_UND),
-            (here, list(hue_new[here]), LW_NEW),
-        ]
+        here, before = stage == k, stage < k   # edges decided later are not drawn
+        new_neg, new_pos = here & below, here & ~below
+        if new_neg.sum() < new_pos.sum():      # the less frequent sign on top, so it stays visible
+            new_layers = [(new_pos, C_POS, LW_NEW), (new_neg, C_NEG, LW_NEW)]
+        else:
+            new_layers = [(new_neg, C_NEG, LW_NEW), (new_pos, C_POS, LW_NEW)]
+        layers = [(before, C_OLD, LW_OLD)] + new_layers   # bottom to top
         for mask, colors, lw in layers:
             if mask.any():
                 ax.add_collection(LineCollection(segs[mask], colors=colors, linewidths=lw,
@@ -273,13 +269,14 @@ def draw(P, edges, stage, below, tau, paths):
 
     lab_neg = r"$\kappa_{\mathrm{OR}}<" + tau_txt + "$"
     lab_pos = r"$\kappa_{\mathrm{OR}}\geq" + tau_txt + "$"
-    h = [Line2D([], [], color=C_NEG, lw=1.6), Line2D([], [], color=C_POS, lw=1.6),
-         (Line2D([], [], color=_pale(C_NEG), lw=1.6), Line2D([], [], color=_pale(C_POS), lw=1.6)),
-         Line2D([], [], color=C_UND, lw=1.6)]
-    labels = [f"decided here, {lab_neg}", f"decided here, {lab_pos}", "decided by an earlier stage", "undecided"]
-    fig.legend(h, labels, loc="center", bbox_to_anchor=(0.5, (LEG_H / 2) / FIG_H), ncol=4,
-               handler_map={tuple: HandlerTuple(ndivide=None, pad=0.0)}, handlelength=1.8,
-               columnspacing=1.4, fontsize=7.0)
+    h = [Line2D([], [], color=C_NEG, lw=2.0), Line2D([], [], color=C_POS, lw=2.0),
+         Line2D([], [], color=C_OLD, lw=1.0), Line2D([], [], color="none")]
+    labels = [f"decided here, {lab_neg}", f"decided here, {lab_pos}", "decided by an earlier stage",
+              "undecided: not drawn"]
+    leg = fig.legend(h, labels, loc="center", bbox_to_anchor=(0.5, (LEG_H / 2) / FIG_H), ncol=4,
+                     handlelength=1.8, columnspacing=1.4, fontsize=7.0)
+    for t in leg.get_texts()[2:]:
+        t.set_color(C_TEXT_OLD)
     for p in paths:
         fig.savefig(p, dpi=300 if p.endswith(".png") else None)
     plt.close(fig)
@@ -296,6 +293,8 @@ def main():
     ap.add_argument("--layout-seed", type=int, default=1, help="seed of the spring layout (large non-RGG graphs)")
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--chunk", type=int, default=10000)
+    ap.add_argument("--quick", action="store_true",
+                    help="accepted with the common flags of main.py; the graph is small, so it changes nothing")
     a = ap.parse_args()
 
     spec = suite.specs([a.graph])[0]
