@@ -59,7 +59,15 @@ from curvature_transfer import _io  # noqa: E402
 # kernel, which also evaluates the TLW certificate).
 TIMING_VERSION = 2
 
-# Figures produced by the "distributions" and "benchmark" steps.
+# Graph of the certify-then-solve edge map of Section 6.3 (step "screening_map") and its
+# file tag; the consistency step checks the tag against the registry.
+SCREENING_MAP_GRAPH = "RGG(800, 0.056419)"
+SCREENING_MAP_TAG = "rg_n800_r0_056419"
+
+# Paper figures that the "figures" step collects into results/figures/, from the output
+# directories of the steps that draw them (FIGURE_DIRS, under results/): the distribution
+# figures of "distributions" and the edge map of "screening_map". The runtime figures of
+# "benchmark" are collected separately.
 FIGURES = [
     "fig_scatter_cBF_cOR__er_n800_p0_0100125_2d_Hist.png",
     "fig_scatter_cBF_cOR__ws_n800_k10_b0_2_2d_Hist.png",
@@ -77,7 +85,9 @@ FIGURES = [
             "real_yeast",
         )
     ],
+    f"fig_screening_map__{SCREENING_MAP_TAG}.pdf",
 ]
+FIGURE_DIRS = [("edges", "csv", "figures_paper"), ("screening_map",)]
 FIG_GRAPHS = OrderedDict([
     ("ER", "ER(800, 0.0100125)"),
     ("HRG", "HRG(800, 5.0, 1.0, 0.0)"),
@@ -92,6 +102,7 @@ STEPS = {
     "bounds": "bound comparison and ranking tables, from edges/ -> tables/bounds/",
     "bounds_legacy": "same tables with the preliminary BF normalization -> tables/bounds_legacy/",
     "screening": "certify-then-solve evaluation, from edges/ -> tables/screening/",
+    "screening_map": "certify-then-solve edge map (Section 6.3 figure) and its numbers, from edges/ -> screening_map/",
     "distributions": "per-edge CSVs + distribution figures, from edges/ -> edges/csv/",
     "benchmark": "runtime scaling, one figure per family -> benchmark/",
     "figures": "collect key figures into one directory -> figures/",
@@ -105,6 +116,7 @@ CORE = [
     "edges",
     "bounds",
     "screening",
+    "screening_map",
     "distributions",
     "benchmark",
     "figures",
@@ -311,6 +323,47 @@ def run_consistency_checks(results_dir):
                 f"differs on {bad}",
             )
 
+    # certify-then-solve edge map (Section 6.3); checked only once its step has run
+    spec = suite.BY_NAME[SCREENING_MAP_GRAPH]
+    add(
+        f"edge map graph {SCREENING_MAP_GRAPH} has file tag {SCREENING_MAP_TAG} in the registry",
+        spec.file_tag == SCREENING_MAP_TAG,
+        f"registry file tag {spec.file_tag}",
+    )
+    mdir = os.path.join(results_dir, "screening_map")
+    mjson = os.path.join(mdir, f"screening_map__{SCREENING_MAP_TAG}.json")
+    if os.path.exists(mjson):
+        with open(mjson) as fh:
+            mp = json.load(fh)
+        cum = [s["decided_cumulative"] for s in mp["stages"]]
+        add(
+            f"edge map is drawn from registry graph {SCREENING_MAP_GRAPH} "
+            f"(screening_map/fig_screening_map__{SCREENING_MAP_TAG}.pdf)",
+            mp["graph"] == SCREENING_MAP_GRAPH
+            and os.path.exists(os.path.join(mdir, f"fig_screening_map__{SCREENING_MAP_TAG}.pdf")),
+            f"summary names {mp['graph']}",
+        )
+        add(
+            "edge map: the decided sets of the cascade are nested and end with every edge",
+            cum == sorted(cum) and cum[-1] == mp["E"],
+            f"cumulative decided {cum} of {mp['E']}",
+        )
+        srow = next((r for r in screen_rows or [] if r["graph"] == SCREENING_MAP_GRAPH), None)
+        if srow is not None:
+            bad = [
+                f"{iv}: map {mp['stages'][k]['share_cumulative']:.6f}, table {_num(srow, 'sign_avoided_' + iv):.6f}"
+                for k, iv in enumerate(("bf", "two_hop", "sharpened"))
+                if abs(mp["stages"][k]["share_cumulative"] - _num(srow, "sign_avoided_" + iv)) > 1e-12
+            ]
+            if mp["E"] != int(float(srow["E"])):
+                bad.append(f"|E|: map {mp['E']}, table {srow['E']}")
+            add(
+                "edge map: |E| and the shares decided by the BF, 2-hop, and sharpened intervals "
+                "equal the screening fractions of its graph",
+                not bad,
+                "; ".join(bad),
+            )
+
     return out
 
 
@@ -495,6 +548,22 @@ class Runner:
                             "--data-dir", self.path("data", "large")] + self.common(),
                         cfg={"timing_version": TIMING_VERSION})
 
+    def screening_map(self):
+        return self.run(
+            "screening_map",
+            [
+                PY,
+                "screening_map.py",
+                "--results",
+                self.out,
+                "--out",
+                self.path("screening_map"),
+                "--graph",
+                SCREENING_MAP_GRAPH,
+            ]
+            + self.common(),
+        )
+
     def distributions(self):
         return self.run(
             "distributions",
@@ -540,10 +609,11 @@ class Runner:
 
     def figures(self):
         dst = self.path("figures")
-        src = self.path("edges", "csv", "figures_paper")
+        srcs = [self.path(*d) for d in FIGURE_DIRS]
         missing = []
         for f in FIGURES:
-            if os.path.exists(os.path.join(src, f)):
+            src = next((s for s in srcs if os.path.exists(os.path.join(s, f))), None)
+            if src is not None:
                 shutil.copy2(os.path.join(src, f), os.path.join(dst, f))
             else:
                 missing.append(f)
@@ -629,6 +699,16 @@ class Runner:
                 "Certify-then-solve on large real networks (Table 7, timed)",
                 rel("tables", "screening", "screening_large.csv"),
                 "",
+            ),
+            (
+                "Certify-then-solve edge map (Section 6.3 figure)",
+                rel("figures", f"fig_screening_map__{SCREENING_MAP_TAG}.pdf"),
+                SCREENING_MAP_GRAPH,
+            ),
+            (
+                "Numbers quoted with the edge map (LaTeX macros)",
+                rel("screening_map", "screening_map_numbers.tex"),
+                f"per-stage counts: screening_map__{SCREENING_MAP_TAG}.json",
             ),
             (
                 "Cross-checks across tables, figures, and benchmarks",
