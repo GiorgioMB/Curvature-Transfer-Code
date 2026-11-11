@@ -2,7 +2,9 @@
 
 Code for the experiments of 
 
-> Giorgio Micaletto and Tebe Nigrelli. *From Proxy to Certificate: Two-Sided Ollivier--Ricci Bounds from Balanced Forman Curvature.* 2026.
+> Giorgio Micaletto and Tebe Nigrelli. *From Proxy to Certificate: Two-Sided Ollivier--Ricci Bounds from Balanced Forman Curvature.* 2026. [arXiv:2603.13535](https://arxiv.org/abs/2603.13535)
+
+An earlier version, *Scalable Graph Curvature: Bounding Ollivier-Ricci via Local Combinatorics for Geometric Deep Learning*, was accepted (non-archival) at the NeurIPS 2026 workshop *Bridging Optimal Transport, Learning and Structured Data* (GDDL). Its [poster](https://giorgiomb.github.io/assets/pdf/scalable-graph-curvature-poster.pdf) links here.
 
 
 The package computes, for every edge of an undirected simple graph:
