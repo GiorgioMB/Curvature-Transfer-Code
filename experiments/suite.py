@@ -134,8 +134,13 @@ REGISTRY: List[Spec] = [
 
 BY_NAME = {s.name: s for s in REGISTRY}
 BY_TAG = {s.tag: s for s in REGISTRY}
-BY_FILE_TAG = {s.file_tag: s for s in REGISTRY}
 assert len(BY_NAME) == len(REGISTRY) and len(BY_TAG) == len(REGISTRY), "duplicate names or tags in the registry"
+
+# graphs of the figures of Section 6, in the order of their panels
+SCATTER_GRAPHS = ["ER(800, 0.0100125)", "WS(800, 10, 0.2)", "BA(1600, 2)", "RGG(1600, 0.039894)",
+                  "HRG(800, 5.0, 1.0, 0.5)", "SBM(2x500, 0.012, 0.004)"]          # fig:scatters
+DIST_GRAPHS = {"ER": "ER(800, 0.0100125)", "HRG": "HRG(800, 5.0, 1.0, 0.0)", "Yeast": "Yeast"}  # fig:dists_sel
+SCREENING_MAP_GRAPH = "RGG(800, 0.056419)"                                            # fig:screening-map
 
 # graphs used by --quick (a smoke test of the pipeline, not the paper's numbers)
 QUICK = ["BA(800, 2)", "ER(800, 0.0100125)", "HRG(800, 5.0, 1.0, 0.0)", "Grid(40,40)", "Tree(4,6)", "Karate", "Yeast"]

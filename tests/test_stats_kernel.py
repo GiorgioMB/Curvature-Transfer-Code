@@ -58,28 +58,26 @@ GRAPHS = {
 def case(request):
     g = _g(GRAPHS[request.param]())
     ids = np.arange(g.num_edges, dtype=np.int64)
-    oracle = {lg: np.array([K.edge_stats_one(g.indptr, g.indices, a, b, lg, True) for a, b in g.edges])
-              for lg in (False, True)}
+    oracle = np.array([K.edge_stats_one(g.indptr, g.indices, a, b, True) for a, b in g.edges])
     ex = K.exact_ids(g.indptr, g.indices, g.edges, ids, True, False, False, 3)
     return g, oracle, ex
 
 
-@pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("tlw", [False, True])
-def test_statistics_equal_the_oracle(case, legacy, tlw):
+def test_statistics_equal_the_oracle(case, tlw):
     g, oracle, _ = case
-    new = K.edge_stats_all(g.indptr, g.indices, g.edges, legacy, True, tlw)
+    new = K.edge_stats_all(g.indptr, g.indices, g.edges, True, tlw)
     assert new.shape == (g.num_edges, K.N_STATS)
-    assert np.array_equal(new[:, :8], oracle[legacy][:, :8])
+    assert np.array_equal(new[:, :7], oracle[:, :7])
     if not tlw:
-        assert np.all(new[:, 8] == 0)
+        assert np.all(new[:, 7] == 0)
 
 
 def test_matching_can_be_skipped(case):
     g, oracle, _ = case
-    new = K.edge_stats_all(g.indptr, g.indices, g.edges, False, False, False)
-    keep = [0, 1, 2, 3, 4, 5, 7]
-    assert np.array_equal(new[:, keep], oracle[False][:, keep]) and np.all(new[:, 6] == 0)
+    new = K.edge_stats_all(g.indptr, g.indices, g.edges, False, False)
+    keep = [0, 1, 2, 3, 4, 6]
+    assert np.array_equal(new[:, keep], oracle[:, keep]) and np.all(new[:, 5] == 0)
 
 
 def test_tlw_equals_the_exact_solver_certificate(case):
@@ -91,7 +89,7 @@ def test_tlw_equals_the_exact_solver_certificate(case):
     assert np.all(fast >= ex[:, 0] - 1e-12)  # an upper bound on c_OR
     sub = np.random.default_rng(0).permutation(ids)[: max(1, len(ids) // 3)]
     assert np.array_equal(K.tlw_lazy_ids(g.indptr, g.indices, g.edges, sub, 4), ex[sub, 3])
-    raw = K.edge_stats_all(g.indptr, g.indices, g.edges, False, True, True)
+    raw = K.edge_stats_all(g.indptr, g.indices, g.edges, True, True)
     assert np.array_equal(K.tlw_lazy_from_stats(raw, g.deg[g.edges[:, 0]], g.deg[g.edges[:, 1]]), ex[:, 3])
 
 
@@ -100,30 +98,30 @@ def test_block_cyclic_chunks_do_not_change_values(case, nchunks, block):
     """More chunks than threads (the public wrapper clamps to one per thread),
     small blocks: every edge is computed exactly once, with the same values."""
     g, _, _ = case
-    base = K._stats_run(g.indptr, g.indices, g.edges, True, True, True, 1, 64)
-    assert np.array_equal(K._stats_run(g.indptr, g.indices, g.edges, True, True, True, nchunks, block), base)
+    base = K._stats_run(g.indptr, g.indices, g.edges, True, True, 1, 64)
+    assert np.array_equal(K._stats_run(g.indptr, g.indices, g.edges, True, True, nchunks, block), base)
 
 
 def test_empty_and_reordered_inputs(case):
     g, oracle, _ = case
-    assert K.edge_stats_all(g.indptr, g.indices, g.edges[:0], False).shape == (0, K.N_STATS)
+    assert K.edge_stats_all(g.indptr, g.indices, g.edges[:0]).shape == (0, K.N_STATS)
     p = np.random.default_rng(1).permutation(g.num_edges)
     rev = g.edges[p][:, ::-1]  # reversed endpoints: oriented columns swap accordingly
-    new = K.edge_stats_all(g.indptr, g.indices, rev, False, True, True)
-    ref = oracle[False][p]
-    assert np.array_equal(new[:, [0, 3, 4, 6]], ref[:, [0, 3, 4, 6]])
+    new = K.edge_stats_all(g.indptr, g.indices, rev, True, True)
+    ref = oracle[p]
+    assert np.array_equal(new[:, [0, 3, 4, 5]], ref[:, [0, 3, 4, 5]])
     assert np.array_equal(new[:, 1], ref[:, 2]) and np.array_equal(new[:, 2], ref[:, 1])
-    assert np.array_equal(new[:, 7], ref[:, 3] - ref[:, 7])
-    fwd = K.edge_stats_all(g.indptr, g.indices, g.edges[p], False, True, True)
-    assert np.array_equal(new[:, 8], fwd[:, 8])  # the certificate is symmetric
+    assert np.array_equal(new[:, 6], ref[:, 3] - ref[:, 6])
+    fwd = K.edge_stats_all(g.indptr, g.indices, g.edges[p], True, True)
+    assert np.array_equal(new[:, 7], fwd[:, 7])  # the certificate is symmetric
 
 
 def test_dense_cross_graph_grows_the_buffer():
     g = _g(_dense_cross(k=40))
     e = g.edge_id(0, 1)
-    row = K.edge_stats_all(g.indptr, g.indices, g.edges[e:e + 1], False, True, True)[0]
-    assert row[3] == 80 and row[6] == 40  # every vertex of U_0, U_1 has a cross edge; perfect matching
-    assert np.array_equal(row[:8], K.edge_stats_one(g.indptr, g.indices, 0, 1, False, True)[:8])
+    row = K.edge_stats_all(g.indptr, g.indices, g.edges[e:e + 1], True, True)[0]
+    assert row[3] == 80 and row[5] == 40  # every vertex of U_0, U_1 has a cross edge; perfect matching
+    assert np.array_equal(row[:7], K.edge_stats_one(g.indptr, g.indices, 0, 1, True)[:7])
 
 
 def test_exact_driver_block_cyclic_chunks_do_not_change_values():

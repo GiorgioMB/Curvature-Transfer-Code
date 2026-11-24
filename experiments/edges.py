@@ -6,8 +6,8 @@ its largest component: the 2-hop statistics, BF, every combinatorial bound,
 the exact curvatures c_OR, c_OR-0, c_LLY, and the TLW dual certificates, and
 stores them in
 
-    <out>/edges/<file_tag>.<varpi>.npz    statistics + bounds + exact values
-    <out>/edges/<file_tag>.exact.npz      exact values only (shared by both varpi)
+    <out>/edges/<file_tag>.paper.npz      statistics + bounds + exact values
+    <out>/edges/<file_tag>.exact.npz      exact values only
 
 Every table (``compare_bounds.py``), the screening fractions
 (``screening.py``) and every figure (``--csv``, read by
@@ -96,19 +96,19 @@ def exact_arrays(spec, g: Graph, out, n_jobs=None, chunk=10000):
     return arrays
 
 
-def compute(spec, out, seed=0, n_jobs=None, varpi="paper", chunk=10000, force=False):
+def compute(spec, out, seed=0, n_jobs=None, chunk=10000, force=False):
     """All per-edge arrays of one graph (loaded if already stored)."""
     d = edges_dir(out)
     os.makedirs(d, exist_ok=True)
     g = graph_of(spec, seed)
     fp = graph_fingerprint(g)
-    final = os.path.join(d, f"{spec.file_tag}.{varpi}.npz")
+    final = os.path.join(d, f"{spec.file_tag}.paper.npz")
     if not force:
         z = _io.read_npz(final)
         if z is not None and str(z.get("fingerprint")) == fp:
             return z
     t0 = time.time()
-    eng = CurvatureEngine(g, n_jobs=n_jobs, varpi=varpi)
+    eng = CurvatureEngine(g, n_jobs=n_jobs)
     st = eng.stats()
     b = eng.bounds()
     ex = exact_arrays(spec, g, out, n_jobs, chunk)
@@ -126,13 +126,11 @@ def compute(spec, out, seed=0, n_jobs=None, varpi="paper", chunk=10000, force=Fa
     return _io.read_npz(final)
 
 
-def write_csv(spec, arrays, csv_dir, seed=0, n_jobs=None, varpi="paper"):
+def write_csv(spec, arrays, csv_dir, n_jobs=None):
     """Per-edge CSV in the format of :meth:`CurvatureEngine.edge_table`
     (read by make_paper_figures.py), from the stored arrays."""
-    import pandas as pd  # noqa: F401
-
     g = Graph.from_edges(arrays["edges"], int(arrays["num_nodes"]))
-    eng = CurvatureEngine(g, n_jobs=n_jobs, varpi=varpi)
+    eng = CurvatureEngine(g, n_jobs=n_jobs)
     ex = {k: arrays[k] for k in EXACT_KEYS}
     df = eng.edge_table(exact=True, exact_values=ex)
     if not np.array_equal(df["c_BF"].to_numpy(), arrays["c_BF"]):
@@ -151,7 +149,6 @@ def main():
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--jobs", type=int, default=None)
-    ap.add_argument("--varpi", choices=["paper", "legacy"], default="paper")
     ap.add_argument("--chunk", type=int, default=10000, help="edges per checkpointed chunk of exact evaluation")
     ap.add_argument("--csv", action="store_true", help="also write per-edge CSVs + manifest.json for the figures")
     a = ap.parse_args()
@@ -162,12 +159,12 @@ def main():
     manifest_path = os.path.join(csv_dir, "manifest.json")
     manifest = _io.read_json(manifest_path, {"runs": []}) if a.csv else None
     for spec in specs:
-        arr = compute(spec, a.out, a.seed, a.jobs, a.varpi, a.chunk)
+        arr = compute(spec, a.out, a.seed, a.jobs, a.chunk)
         if a.csv:
             path = os.path.join(csv_dir, f"{spec.file_tag}_edges.csv")
             entry = next((r for r in manifest["runs"] if r["tag"] == spec.tag), None)
             if not (entry and entry.get("fingerprint") == str(arr["fingerprint"]) and os.path.exists(path)):
-                _, m = write_csv(spec, arr, csv_dir, a.seed, a.jobs, a.varpi)
+                _, m = write_csv(spec, arr, csv_dir, a.jobs)
                 manifest["runs"] = [r for r in manifest["runs"] if r["tag"] != spec.tag]
                 manifest["runs"].append({"tag": spec.tag, "name": spec.name, "group": spec.group,
                                          "n": int(arr["num_nodes"]), "m": int(m),

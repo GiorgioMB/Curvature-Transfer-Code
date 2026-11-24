@@ -98,14 +98,14 @@ def compute(graph: Graph, kind: str, n_jobs: Optional[int] = None,
         di = g.deg[E[:, 0]].astype(float)
         dj = g.deg[E[:, 1]].astype(float)
         # one pass: statistics, plus the matching and the TLW certificate if needed
-        raw = K.edge_stats_all(g.indptr, g.indices, E, False, kind != "bf", kind != "bf")
+        raw = K.edge_stats_all(g.indptr, g.indices, E, kind != "bf", kind != "bf")
         tri = raw[:, 0].astype(float)
         C4 = B.c4_term(raw[:, 3].astype(float), raw[:, 4].astype(float), di, dj)
         bf = B.bf_curvature(di, dj, tri, C4)
         if kind == "bf":
             return B.phi_int_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
-        m = raw[:, 6].astype(float)
-        Ulazy = B.lazy_upper(di, dj, tri, m, raw[:, 7].astype(float), (raw[:, 3] - raw[:, 7]).astype(float))
+        m = raw[:, 5].astype(float)
+        Ulazy = B.lazy_upper(di, dj, tri, m, raw[:, 6].astype(float), (raw[:, 3] - raw[:, 6]).astype(float))
         tlw = K.tlw_lazy_from_stats(raw, di, dj)
         up = np.minimum(Ulazy, np.minimum(tlw, B.zero_cost_upper(di, dj, tri)))
         if kind == "matching":
@@ -133,13 +133,13 @@ def stage_one(graph: Graph, n_jobs: Optional[int] = None,
     with _threads(n_jobs):
         di = g.deg[E[:, 0]].astype(float)
         dj = g.deg[E[:, 1]].astype(float)
-        raw = K.edge_stats_all(g.indptr, g.indices, E, False, True)
+        raw = K.edge_stats_all(g.indptr, g.indices, E, True)
     tri = raw[:, 0].astype(float)
     C4 = B.c4_term(raw[:, 3].astype(float), raw[:, 4].astype(float), di, dj)
     bf = B.bf_curvature(di, dj, tri, C4)
     bf_lo, bf_up = B.phi_int_bf_to_or(bf, di, dj), B.psi_bf_to_or(bf, di, dj)
-    m = raw[:, 6].astype(float)
+    m = raw[:, 5].astype(float)
     lo = B.lazy_lower(di, dj, tri, m)
-    up = B.lazy_upper(di, dj, tri, m, raw[:, 7].astype(float), (raw[:, 3] - raw[:, 7]).astype(float))
+    up = B.lazy_upper(di, dj, tri, m, raw[:, 6].astype(float), (raw[:, 3] - raw[:, 6]).astype(float))
     up = np.minimum(up, B.zero_cost_upper(di, dj, tri))  # rounding only (U^lazy <= zero-cost bound)
     return {"bf": (bf_lo, bf_up), "two_hop": (lo, up)}

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "curvature-transfer"
 version = "1.1.0"
-description = "Experiments for comparing edgewise graph curvatures and analytic envelopes"
+description = "Two-sided Ollivier-Ricci bounds from Balanced Forman curvature: code of the experiments"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11,<3.14"

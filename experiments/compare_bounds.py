@@ -260,17 +260,15 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--chunk", type=int, default=10000)
-    ap.add_argument("--varpi", choices=["paper", "legacy"], default="paper",
-                    help="4-cycle normalization; 'legacy' reproduces the preliminary BF values")
     a = ap.parse_args()
     specs = suite.specs(a.only.split(";") if a.only else None, quick=a.quick)
     os.makedirs(os.path.join(a.out, "per_graph"), exist_ok=True)
     results = []
     for spec in specs:
         t0 = time.time()
-        A = E.compute(spec, a.results, a.seed, a.jobs, a.varpi, a.chunk)
+        A = E.compute(spec, a.results, a.seed, a.jobs, a.chunk)
         pg = os.path.join(a.out, "per_graph", f"{spec.file_tag}.json")
-        key = {"fingerprint": str(A["fingerprint"]), "version": RESULT_VERSION, "seed": a.seed, "varpi": a.varpi}
+        key = {"fingerprint": str(A["fingerprint"]), "version": RESULT_VERSION, "seed": a.seed}
         cached = _io.read_json(pg)
         if cached and cached.get("key") == key:
             o = cached["result"]

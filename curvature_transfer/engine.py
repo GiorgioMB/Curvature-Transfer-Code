@@ -12,9 +12,8 @@ order; every returned array is aligned with ``eng.edges``.
 """
 from __future__ import annotations
 
-import os
 from contextlib import contextmanager
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 
@@ -54,20 +53,11 @@ class CurvatureEngine:
     graph : Graph, networkx graph, or (M, 2) edge array.
     n_jobs : number of threads for the Numba kernels (None = Numba default,
         -1 = all, k > 0 = k threads, k < -1 = all but |k| - 1).
-    varpi : ``"paper"`` (default) uses the 4-cycle normalization of Topping et
-        al. / the paper, gamma_max = the maximum degree of the cross-edge graph
-        H_ij between U_i and U_j. ``"legacy"`` reproduces the preliminary code,
-        which maximized over all of N(i)\\{j} into N(j)\\{i}; this underestimates
-        the 4-cycle term on some edges (the bounds stay valid, but the BF values
-        are not Topping's BF).
     """
 
-    def __init__(self, graph, n_jobs: Optional[int] = None, varpi: str = "paper"):
-        if varpi not in ("paper", "legacy"):
-            raise ValueError("varpi must be 'paper' or 'legacy'")
+    def __init__(self, graph, n_jobs: Optional[int] = None):
         self.graph = _as_graph(graph)
         self.n_jobs = n_jobs
-        self.varpi = varpi
         self._cache: Dict[str, object] = {}
 
     # ------------------------------------------------------------ builders
@@ -86,13 +76,13 @@ class CurvatureEngine:
     # --------------------------------------------------------- statistics
     def stats(self) -> Dict[str, np.ndarray]:
         """2-hop statistics (cached): deg_i, deg_j, triangle, nUi, nUj, Xi,
-        varpi, varpi_legacy (if requested), matching, C4, and c_BF; the paper's
-        symbols for these names are listed in the notation of :mod:`.bounds`."""
+        varpi, matching, C4, and c_BF; the paper's symbols for these names are
+        listed in the notation of :mod:`.bounds`."""
         if "stats" in self._cache:
             return self._cache["stats"]  # type: ignore[return-value]
         g = self.graph
         with _threads(self.n_jobs):
-            raw = K.edge_stats_all(g.indptr, g.indices, g.edges, self.varpi == "legacy")
+            raw = K.edge_stats_all(g.indptr, g.indices, g.edges)
         di = g.deg[g.edges[:, 0]].astype(float)
         dj = g.deg[g.edges[:, 1]].astype(float)
         st = {
@@ -101,14 +91,11 @@ class CurvatureEngine:
             "nUi": raw[:, 1].astype(float), "nUj": raw[:, 2].astype(float),
             "Xi": raw[:, 3].astype(float),
             "varpi": raw[:, 4].astype(float),
-            "matching": raw[:, 6].astype(float),
-            "xi_i": raw[:, 7].astype(float), "xi_j": (raw[:, 3] - raw[:, 7]).astype(float),
+            "matching": raw[:, 5].astype(float),
+            "xi_i": raw[:, 6].astype(float), "xi_j": (raw[:, 3] - raw[:, 6]).astype(float),
         }
-        vp = raw[:, 5] if self.varpi == "legacy" else raw[:, 4]
-        if self.varpi == "legacy":
-            st["varpi_legacy"] = raw[:, 5].astype(float)
-        st["sho_max"] = vp * np.maximum(di, dj)
-        st["C4"] = B.c4_term(st["Xi"], vp, di, dj)
+        st["sho_max"] = raw[:, 4] * np.maximum(di, dj)
+        st["C4"] = B.c4_term(st["Xi"], raw[:, 4], di, dj)
         st["c_BF"] = B.bf_curvature(di, dj, st["triangle"], st["C4"])
         self._cache["stats"] = st
         return st
@@ -181,7 +168,7 @@ class CurvatureEngine:
             return self._cache["bounds"]  # type: ignore[return-value]
         st = self.stats()
         di, dj, t = st["deg_i"], st["deg_j"], st["triangle"]
-        S, T, Kk = B.degree_terms(di, dj)
+        S, T, _ = B.degree_terms(di, dj)
         bf = st["c_BF"]
         m = st["matching"]
         Lsq = B.matching_lower(di, dj, t, m)
@@ -232,13 +219,6 @@ class CurvatureEngine:
             "matching_lower": b["matching_lower_lazy"], "matching_upper": up,
             "sharpened_lower": b["sharpened_lower"], "sharpened_upper": up,
         }
-
-    def certified_intervals(self, prior_upper: Optional[np.ndarray] = None):
-        """The BF, matching, and sharpened intervals of Section 6.1, as
-        ``{kind: (lower, upper)}`` (see :mod:`curvature_transfer.intervals`).
-        ``prior_upper`` defaults to :meth:`prior_upper` (TLW dual + zero-cost)."""
-        from . import intervals as I
-        return I.from_arrays(self.bounds(), self.prior_upper() if prior_upper is None else prior_upper)
 
     # ------------------------------------------------ transfer conveniences
     def bounds_from_BF(self, c_BF=None) -> Dict[str, np.ndarray]:

@@ -53,7 +53,7 @@ RESULT_VERSION = 4  # 4: 2-hop kernel, TLW stage, and the denser large networks
 def benchmark_rows(specs, a):
     rows = []
     for spec in specs:
-        A = E.compute(spec, a.results, a.seed, a.jobs, "paper", a.chunk)
+        A = E.compute(spec, a.results, a.seed, a.jobs, a.chunk)
         c = A["c_OR"]
         M = len(c)
         iv = I.from_arrays(A, A["prior_upper"])

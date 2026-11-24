@@ -54,7 +54,7 @@ def test_chunked_intervals_equal_whole():
 
 def _args(**kw):
     a = dict(chunk_above=100, chunk=150, budget_hours=12.0, no_mem_guard=False, max_attempts=2, min_total=0.0,
-             max_reps=1, legacy_dir=None, legacy_sample=10)
+             max_reps=1)
     a.update(kw)
     return SimpleNamespace(**a)
 

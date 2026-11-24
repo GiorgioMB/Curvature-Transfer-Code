@@ -1,4 +1,4 @@
-# Reproducible environment for the curvature experiments (Sections 6.1-6.4).
+# The environment of the experiments (Section 6).
 #   docker build -t curvature-transfer .
 #   docker run --rm -v "$PWD/results:/repo/results" -v "$PWD/logs:/repo/logs" curvature-transfer            # full reproduction
 #   docker run --rm -v "$PWD/results:/repo/results" -v "$PWD/logs:/repo/logs" curvature-transfer --quick    # smoke run

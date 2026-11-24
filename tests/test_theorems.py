@@ -15,9 +15,9 @@ _NAMED = (nx.complete_graph(6), nx.hypercube_graph(3), nx.hypercube_graph(5), nx
 GRAPHS = random_graphs(4) + [nx.convert_node_labels_to_integers(g) for g in _NAMED]
 
 
-@pytest.fixture(scope="module", params=["paper", "legacy"])
-def results(request):
-    return [CurvatureEngine(G, varpi=request.param).compute_all() for G in GRAPHS]
+@pytest.fixture(scope="module")
+def results():
+    return [CurvatureEngine(G).compute_all() for G in GRAPHS]
 
 
 @pytest.fixture(scope="module")
@@ -237,10 +237,3 @@ def test_moduli_monotone():
     lo = B.phi_or_to_bf(z, di, dj)
     ok = ~np.isnan(lo)
     assert np.all(np.diff(lo[ok]) >= -1e-12)
-
-
-def test_legacy_c4_never_exceeds_paper_c4():
-    for G in GRAPHS[:10]:
-        a = CurvatureEngine(G).stats()["C4"]
-        b = CurvatureEngine(G, varpi="legacy").stats()["C4"]
-        assert np.all(b <= a + TOL)

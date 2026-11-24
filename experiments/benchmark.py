@@ -1,59 +1,25 @@
 #!/usr/bin/env python3
-"""Runtime scaling of exact OR curvature versus the certified bounds (Section 6.4).
+"""Runtime scaling of exact OR curvature versus the certified intervals (Section 6.4, Table 8).
 
-Families. Four random graph families with the same scaling law: the average
-degree grows as dbar(n) = 0.2 (50/n)^0.6 n ~ 2.1 n^0.4 (the law of the ER example
-of the paper), so that graph size and density grow together:
+Families: four random graph models whose average degree grows as dbar(n) = 0.2 (50/n)^0.6 n,
+about 2.1 n^0.4 (the law of the ER example of the paper): ER G(n, p) with p = dbar / (n - 1); BA
+with m = round(dbar / 2); RGG in the unit square with r = sqrt(dbar / (pi (n - 1))); WS with k = 2
+round(dbar / 2) and rewiring 0.2. The generators are vectorized and seeded per (seed, family, n),
+so a restart regenerates the same graph (they are not those of the bound tables, generators.py).
 
-  ER   Erdos-Renyi G(n, p),            p = dbar / (n - 1)             homogeneous degrees
-  BA   Barabasi-Albert,                m = round(dbar / 2)            heavy-tailed degrees (hubs)
-  RGG  random geometric, unit square,  r = sqrt(dbar / (pi (n-1)))    clustered, many triangles
-  WS   Watts-Strogatz, rewiring p=0.2, k = 2 round(dbar / 2)          clustered ring lattice
-
-The generators here are vectorized (numpy / a k-d tree), so a graph with 10^5-10^6
-nodes is generated in seconds; they are seeded per (seed, family, n), so a restart
-regenerates exactly the same graph. (They are not the generators of the bound
-tables, which are kept unchanged in generators.py.)
-
-Phases (``timing.PHASES``, the same code as the speedup column of the screening
-table): exact (exact lazy OR, min-cut), bf, prior (JL and TLW lower bounds),
-bf_interval, matching_interval, sharpened_interval (the intervals of Section 6.1;
-the last two include the TLW dual certificate, evaluated by the 2-hop kernel in
-the same pass as the statistics). Cheap phases run first.
-
-How a phase is timed. Graphs with at most ``--chunk-above`` edges: the median of
-repeated runs on all edges (``--min-total``, ``--max-reps``). Larger graphs: the
-sum of the times of consecutive chunks of ``--chunk`` edges, each run once (the
-CSV column ``chunked`` says which); the figure marks where chunking starts.
-
-Checkpointing. After every phase, and inside a chunked phase after every chunk,
-the measurement is written (atomically) to ``rows_<...>/n<n>.partial.json``; the
-finished size goes to ``n<n>.json``. A killed job resumes at the first chunk not
-yet measured. Each size is processed in increasing order of n.
-
-Infeasible phases are skipped, not crashed on, and once skipped for a family a
-phase stays skipped for every larger n:
-
-* time: the phase's time is extrapolated from the last measured sizes of the
-  same family (log-log fit on the last 3 points, slope >= 1); if the prediction
-  exceeds ``--budget-hours``, the phase is not run;
-* memory: the exact solver holds per-edge bitsets of order |S|^2 / 8 bytes,
-  |S| <= d_i + d_j. If threads x 4 x |S|_max^2 bytes (a rough estimate)
-  exceeds 80% of ``--mem-gb``, exact OR is not run. The other phases need O(n)
-  stamps per thread and O(deg) scratch per edge (plus the cross edges of the
-  edge), and are not guarded;
-* kills: if the same chunk was started ``--max-attempts`` times without finishing
-  (out of memory, or a wall-time kill that hit the same long chunk twice), the
-  phase is not run for this and larger sizes.
-
-A phase that is not run has an empty time, its reason in ``<phase>_status``, and
-the extrapolated time in ``<phase>_pred_s``, drawn as hollow markers on a dotted
-line ("predicted, not run").
+Phases (``timing.PHASES``, shared with the screening table): exact, bf, prior, bf_interval,
+matching_interval, sharpened_interval, cheap phases first. Up to ``--chunk-above`` edges a phase is
+timed by the median of repeated runs; above, by the sum of the times of chunks of ``--chunk``
+edges, each run once and saved as soon as it is measured (``rows_<...>/n<n>.partial.json``), so a
+killed job resumes at the next chunk. A phase is not run, from that size on, if its time
+extrapolated from the last sizes exceeds ``--budget-hours``, if the per-edge bitsets of exact OR
+(about threads x 4 |S|_max^2 bytes) exceed 80% of ``--mem-gb``, or if the same chunk was started
+``--max-attempts`` times; its reason is in ``<phase>_status`` and its extrapolated time, drawn as
+"predicted, not run", in ``<phase>_pred_s``.
 
 Usage
   python benchmark.py --family BA --min-n 50 --max-n 200000 --graphs 100 --jobs 32 --out ../results/benchmark
   python benchmark.py --plot-only --out ../results/benchmark      # redraw every family's figure
-Families are independent (separate row folders), so they can run as parallel jobs.
 """
 from __future__ import annotations
 
@@ -77,12 +43,7 @@ from curvature_transfer import _io  # noqa: E402
 import timing  # noqa: E402
 
 FAMILIES = ("ER", "BA", "RGG", "WS")
-FAMILY_TITLES = {"ER": "Erdős-Rényi", "BA": "Barabási-Albert", "RGG": "Random geometric",
-                 "WS": r"Watts-Strogatz ($p=0.2$)"}
 PHASE_ORDER = ["bf", "prior", "bf_interval", "matching_interval", "sharpened_interval", "exact"]
-PHASE_LABELS = {"exact": "Exact OR (min-cut)", "sharpened_interval": "Sharpened interval",
-                "matching_interval": "Matching interval", "bf_interval": "BF interval",
-                "bf": "Balanced Forman", "prior": "JL / TLW lower bounds"}
 PHASE_STYLE = {"exact": ("o", "-"), "sharpened_interval": ("s", "--"), "matching_interval": ("P", "--"),
                "bf_interval": ("D", "-."), "bf": ("^", ":"), "prior": ("v", "-.")}
 MEM_FACTOR = {"exact": 4.0}  # bytes per |S|^2 per thread (the intervals need no |S|^2 structure)
@@ -90,7 +51,7 @@ FAMILY_CODE = {"ER": 1, "BA": 2, "RGG": 3, "WS": 4}
 GEN_VERSION = 1
 COLS = (["family", "n", "param", "num_edges", "avg_deg", "max_deg", "s_max", "threads", "chunked", "chunk",
          "chunk_above", "budget_hours", "mem_gb", "gen_s"]
-        + [f"{p}_{x}" for p in PHASE_ORDER for x in ("s", "pred_s", "status")] + ["legacy_s_extrapolated"])
+        + [f"{p}_{x}" for p in PHASE_ORDER for x in ("s", "pred_s", "status")])
 
 
 # ------------------------------------------------------------ generators
@@ -212,37 +173,6 @@ def predict(rows, phase, n):
     return float(pts[-1][1] * (n / pts[-1][0]) ** slope)
 
 
-def time_legacy(legacy_dir, n, edges, sample, seed):
-    """Preliminary solver on a sample of edges, extrapolated (sequential)."""
-    import importlib
-    import types
-    stubs = {}
-    if "torch" not in sys.modules:  # the old module imports torch only for typing
-        torch = types.ModuleType("torch"); torch.Tensor = object; torch.long = "long"
-        tgd = types.ModuleType("torch_geometric.data"); tgd.Data = object
-        stubs = {"torch": torch, "torch_geometric": types.ModuleType("torch_geometric"), "torch_geometric.data": tgd}
-        sys.modules.update(stubs)
-    sys.path.insert(0, legacy_dir)
-    try:
-        old = importlib.import_module("pyg_curvature")
-    finally:
-        for k in stubs:
-            sys.modules.pop(k, None)
-    eng = old.CurvatureEngine.__new__(old.CurvatureEngine)
-    und = sorted({(min(int(a), int(b)), max(int(a), int(b))) for a, b in edges if a != b})
-    nb = [set() for _ in range(n)]
-    for a, b in und:
-        nb[a].add(b); nb[b].add(a)
-    eng.edges, eng.neighbors, eng._cache = und, nb, {}
-    eng.deg = np.array([len(s) for s in nb])
-    eng.c_OR_edge(0)  # compile
-    ids = np.random.default_rng(seed).choice(len(und), min(sample, len(und)), replace=False)
-    t = time.perf_counter()
-    for k in ids:
-        eng.c_OR_edge(int(k))
-    return (time.perf_counter() - t) / len(ids) * len(und)
-
-
 def read_rows(rows_dir):
     rows = [_io.read_json(p) for p in glob.glob(os.path.join(rows_dir, "n*.json")) if not p.endswith(".partial.json")]
     return sorted([r for r in rows if r], key=lambda r: int(r["n"]))
@@ -337,8 +267,6 @@ def run_size(family, n, seed, n_jobs, threads, rows_dir, prev, a, mem_gb):
         row[f"{ph}_s"] = part["done"].get(ph, float("nan"))
         row[f"{ph}_pred_s"] = part["pred"].get(ph) if part["status"][ph] != "measured" else None
         row[f"{ph}_status"] = part["status"][ph]
-    row["legacy_s_extrapolated"] = (time_legacy(a.legacy_dir, n, edges, a.legacy_sample, seed)
-                                    if a.legacy_dir and not chunked else float("nan"))
     return row
 
 
@@ -350,7 +278,7 @@ def run_family(family, a):
     threads = numba.get_num_threads() if a.jobs is None else (numba.config.NUMBA_NUM_THREADS if a.jobs == -1 else a.jobs)
     mem_gb = mem_budget_gb(a.mem_gb)
     cfg = _io.fingerprint({"threads": threads, "min_total": a.min_total, "max_reps": a.max_reps, "seed": a.seed,
-                           "legacy": bool(a.legacy_dir), "chunk": a.chunk, "chunk_above": a.chunk_above,
+                           "legacy": False, "chunk": a.chunk, "chunk_above": a.chunk_above,  # (as the rows of v1.1)
                            "gen": GEN_VERSION, "version": 4}, length=8)  # 4: 2-hop kernel and TLW of v10
     rows_dir = os.path.join(out_dir, f"rows_{family}_{a.min_n}_{a.max_n}_{cfg}")
     os.makedirs(rows_dir, exist_ok=True)
@@ -489,32 +417,12 @@ def plot_family(csv_path, out_pdf, family, predicted=True, legend=None):
 
 
 def plot_all(out_dir, predicted=True):
-    """One figure per family (runtime_scaling_loglog_<family>.pdf) and a 2x2 panel."""
-    import matplotlib
-    import logging
-    logging.getLogger("fontTools").setLevel(logging.ERROR)  # timestamp notices when embedding cmr10
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    found = {}
+    """One figure per family: runtime_scaling_loglog_<family>.pdf."""
     for fam in FAMILIES:
         cands = sorted(glob.glob(os.path.join(out_dir, f"benchmark_{fam}_*.csv")),
                        key=lambda p: int(p.rsplit("_", 1)[1][:-4]))
         if cands:
-            found[fam] = cands[-1]
             plot_family(cands[-1], os.path.join(out_dir, f"runtime_scaling_loglog_{fam.lower()}.pdf"), fam, predicted)
-    if not found:
-        return
-    plt.rcParams.update(_PLOT_RC)
-    k = len(found)
-    cols = 2 if k > 1 else 1
-    fig, axes = plt.subplots((k + cols - 1) // cols, cols, figsize=(PANEL_W * cols, PANEL_H * ((k + cols - 1) // cols)), squeeze=False)
-    for ax, (fam, path) in zip(axes.ravel(), found.items()):
-        _draw(ax, list(csv.DictReader(open(path))), fam, predicted, legend=(ax is axes.ravel()[0]))
-    for ax in axes.ravel()[k:]:
-        ax.set_visible(False)
-    fig.tight_layout()
-    _save(fig, os.path.join(out_dir, "runtime_scaling_all.pdf"))
-    plt.close(fig)
 
 
 def main():
@@ -533,8 +441,6 @@ def main():
     ap.add_argument("--mem-gb", type=float, default=None, help="memory available (default: Slurm allocation or RAM)")
     ap.add_argument("--no-mem-guard", action="store_true")
     ap.add_argument("--max-attempts", type=int, default=2, help="give up on a chunk started this many times")
-    ap.add_argument("--legacy-dir", default=None, help="path to the preliminary repository (for the old solver)")
-    ap.add_argument("--legacy-sample", type=int, default=200)
     ap.add_argument("--no-predicted", action="store_true", help="do not draw predicted times of skipped phases")
     ap.add_argument("--no-figures", action="store_true")
     ap.add_argument("--plot-only", action="store_true", help="only redraw the figures from the CSVs in --out")

@@ -20,8 +20,6 @@ from numba import njit, prange
 # the statistics kernel; ``_nchunks``/``_ids`` normalize the driver arguments.
 from orcut._kernels import (  # noqa: F401  (re-exported)
     N_EXACT,
-    U0,
-    U1,
     _ids,
     _nchunks,
     _run,
@@ -31,9 +29,6 @@ from orcut._kernels import (  # noqa: F401  (re-exported)
     screen_ids,
     tlw_lazy_ids_local,
 )
-
-INF = np.int64(1) << np.int64(60)
-
 
 
 @njit(cache=True, inline="always")
@@ -180,22 +175,20 @@ def hopcroft_karp(nl, nr, ptr, adj):
 
 # ---------------------------------------------------------- edge statistics
 
-N_STATS = 9  # tri, nUi, nUj, Xi, varpi, varpi_legacy, matching, xi_i, TLW numerator (lazy)
+N_STATS = 8  # tri, nUi, nUj, Xi, varpi, matching, xi_i, TLW numerator (lazy)
 
 
 
 
 @njit(cache=True)
-def edge_stats_one(indptr, indices, i, j, legacy, matching=True):
+def edge_stats_one(indptr, indices, i, j, matching=True):
     """2-hop statistics of edge (i, j): the direct implementation (sorted-list
     intersections, allocations per edge), kept as the test oracle of the
-    production kernel :func:`_stats_edge` (column 8 is always 0 here).
+    production kernel :func:`_stats_edge` (column 7 is always 0 here).
 
     Returns int64[8]: triangles (t_ij), |U_i|, |U_j|, Xi, varpi = gamma_max (the
-    paper/Topping definition: the maximum degree of the cross-edge graph H_ij
-    between U_i and U_j), varpi as computed by the preliminary code (over
-    N(i)\\{j} into N(j)\\{i}; only if ``legacy``), the matching number M_ij of
-    H_ij, and |xi_i|.
+    maximum degree of the cross-edge graph H_ij between U_i and U_j), the
+    matching number M_ij of H_ij, and |xi_i|.
     """
     out = np.zeros(N_STATS, np.int64)
     a0 = indptr[i]
@@ -270,31 +263,9 @@ def edge_stats_one(indptr, indices, i, j, legacy, matching=True):
                 varpi = rcnt[b]
     out[3] = xi_i + xi_j
     out[4] = varpi
-    out[7] = xi_i
+    out[6] = xi_i
     if matching and ptr[nui] > 0:
-        out[6] = hopcroft_karp(nui, nuj, ptr, adj)
-    if legacy:
-        # max_k in N(i)\{j} |N(k) & (N(j)\{i})| and symmetrically
-        best = 0
-        for t in range(a0, a1):
-            k = indices[t]
-            if k == j:
-                continue
-            c = _count_intersect(indices, indptr[k], indptr[k + 1], indices, b0, b1)
-            if _contains(indices, indptr[k], indptr[k + 1], i):
-                c -= 1
-            if c > best:
-                best = c
-        for t in range(b0, b1):
-            w = indices[t]
-            if w == i:
-                continue
-            c = _count_intersect(indices, indptr[w], indptr[w + 1], indices, a0, a1)
-            if _contains(indices, indptr[w], indptr[w + 1], j):
-                c -= 1
-            if c > best:
-                best = c
-        out[5] = best
+        out[5] = hopcroft_karp(nui, nuj, ptr, adj)
     return out
 
 
@@ -428,9 +399,9 @@ def _hk(nl, nr, ptr, adj, bound, bi, oi):
 
 
 @njit(cache=True)
-def _stats_edge(indptr, indices, i0, j0, legacy, matching, tlw, ep, sO, pO, mS, mO, bi, out):
+def _stats_edge(indptr, indices, i0, j0, matching, tlw, ep, sO, pO, mS, mO, bi, out):
     """2-hop statistics of edge (i0, j0) written into ``out`` (the layout of
-    :func:`edge_stats_one`, in the orientation (i0, j0)), plus out[8] = the
+    :func:`edge_stats_one`, in the orientation (i0, j0)), plus out[7] = the
     numerator of the lazy TLW dual certificate (over (d_i + 1)(d_j + 1)) if
     ``tlw``. ``sO``/``pO`` (membership in and position on the side that is not
     scanned) and ``mS``/``mO`` (vertices adjacent to the scanned / the other
@@ -576,36 +547,10 @@ def _stats_edge(indptr, indices, i0, j0, legacy, matching, tlw, ep, sO, pO, mS, 
     out[3] = nxS + nxO
     out[4] = varpi
     xi_i = nxS if scan_i else nxO  # |xi| of the oriented i
-    out[7] = (nxS + nxO - xi_i) if flip else xi_i
+    out[6] = (nxS + nxO - xi_i) if flip else xi_i
     if matching and m > 0:
         res, bi, oi = _hk(nS, nO, ptr, adj, min(nxS, nxO), bi, oi)
-        out[6] = res
-    if legacy:
-        # max_k in N(i)\{j} |N(k) & (N(j)\{i})| and symmetrically (symmetric in i, j)
-        a0 = indptr[i]
-        a1 = indptr[i + 1]
-        b0 = indptr[j]
-        b1 = indptr[j + 1]
-        best = 0
-        for t in range(a0, a1):
-            k = indices[t]
-            if k == j:
-                continue
-            c = _count_intersect(indices, indptr[k], indptr[k + 1], indices, b0, b1)
-            if _contains(indices, indptr[k], indptr[k + 1], i):
-                c -= 1
-            if c > best:
-                best = c
-        for t in range(b0, b1):
-            w = indices[t]
-            if w == i:
-                continue
-            c = _count_intersect(indices, indptr[w], indptr[w + 1], indices, a0, a1)
-            if _contains(indices, indptr[w], indptr[w + 1], j):
-                c -= 1
-            if c > best:
-                best = c
-        out[5] = best
+        out[5] = res
     if tlw and nUi > 0:  # (nUi = 0: identical measures, numerator 0)
         # here S = U_i, O = U_j, and mS stamps the vertices adjacent to U_i
         sy = 0
@@ -644,12 +589,12 @@ def _stats_edge(indptr, indices, i0, j0, legacy, matching, tlw, ep, sO, pO, mS, 
                         sx += d
             sP = (dj + 1) * sx
             sN = (di + 1) * sy
-        out[8] = sP if sP > sN else sN
+        out[7] = sP if sP > sN else sN
     return bi
 
 
 @njit(cache=True)
-def _stats_chunk(indptr, indices, edges, c, nch, block, legacy, matching, tlw, out):
+def _stats_chunk(indptr, indices, edges, c, nch, block, matching, tlw, out):
     """Blocks c, c + nch, c + 2 nch, ... of ``block`` consecutive edges on one
     thread, with its own stamps and arena (see :func:`_chunk`)."""
     n = indptr.shape[0] - 1
@@ -664,12 +609,12 @@ def _stats_chunk(indptr, indices, edges, c, nch, block, legacy, matching, tlw, o
         lo = bk * block
         hi = min(K, lo + block)
         for k in range(lo, hi):
-            bi = _stats_edge(indptr, indices, edges[k, 0], edges[k, 1], legacy, matching, tlw,
+            bi = _stats_edge(indptr, indices, edges[k, 0], edges[k, 1], matching, tlw,
                              k, sO, pO, mS, mO, bi, out[k])
 
 
 @njit(cache=True, parallel=True)
-def _stats_run(indptr, indices, edges, legacy, matching, tlw, nchunks, block):
+def _stats_run(indptr, indices, edges, matching, tlw, nchunks, block):
     K = edges.shape[0]
     out = np.zeros((K, N_STATS), np.int64)
     if K == 0:
@@ -677,29 +622,29 @@ def _stats_run(indptr, indices, edges, legacy, matching, tlw, nchunks, block):
     nb = (K + block - 1) // block
     nchunks = max(1, min(nchunks, nb))
     for c in prange(nchunks):
-        _stats_chunk(indptr, indices, edges, c, nchunks, block, legacy, matching, tlw, out)
+        _stats_chunk(indptr, indices, edges, c, nchunks, block, matching, tlw, out)
     return out
 
 
-def edge_stats_all(indptr, indices, edges, legacy, matching=True, tlw=False, nchunks=None):
+def edge_stats_all(indptr, indices, edges, matching=True, tlw=False, nchunks=None):
     """2-hop statistics of every edge of ``edges`` (a (K, 2) array) as a
     (K, ``N_STATS``) int64 array: the columns of :func:`edge_stats_one`, plus
-    column 8 = the numerator of the lazy TLW dual certificate if ``tlw`` (see
+    column 7 = the numerator of the lazy TLW dual certificate if ``tlw`` (see
     :func:`tlw_lazy_from_stats`), else 0. ``matching=False`` skips the maximum
-    matching (column 6 is then 0). Parallel over at most ``nchunks`` chunks
+    matching (column 5 is then 0). Parallel over at most ``nchunks`` chunks
     (default and maximum: one per thread)."""
     E = np.ascontiguousarray(edges, dtype=np.int64).reshape(-1, 2)
     if E.shape[0] >= np.iinfo(np.int32).max:
         raise ValueError("at most 2^31 - 2 edges per call (the vertex stamps are int32)")
-    return _stats_run(indptr, indices, E, bool(legacy), bool(matching), bool(tlw), _nchunks(nchunks),
+    return _stats_run(indptr, indices, E, bool(matching), bool(tlw), _nchunks(nchunks),
                       _STATS_BLOCK)
 
 
 def tlw_lazy_from_stats(raw, di, dj):
-    """TLW dual upper bound on the lazy curvature from column 8 of
+    """TLW dual upper bound on the lazy curvature from column 7 of
     :func:`edge_stats_all` (``tlw=True``) and the degrees: the same arithmetic
     as the exact solver, 1 - numerator / ((d_i + 1)(d_j + 1))."""
-    return 1.0 - np.asarray(raw)[:, 8] / ((np.asarray(di, float) + 1.0) * (np.asarray(dj, float) + 1.0))
+    return 1.0 - np.asarray(raw)[:, 7] / ((np.asarray(di, float) + 1.0) * (np.asarray(dj, float) + 1.0))
 
 
 def tlw_lazy_ids(indptr, indices, edges, ids, nchunks):
@@ -707,7 +652,7 @@ def tlw_lazy_ids(indptr, indices, edges, ids, nchunks):
     solve and no local distance structure: the 2-hop kernel with ``tlw=True``;
     equal bit for bit to the certificate that the exact solver returns)."""
     E = np.ascontiguousarray(np.asarray(edges)[_ids(ids)], dtype=np.int64).reshape(-1, 2)
-    raw = edge_stats_all(indptr, indices, E, False, False, True, nchunks)
+    raw = edge_stats_all(indptr, indices, E, False, True, nchunks)
     deg = indptr[1:] - indptr[:-1]
     return tlw_lazy_from_stats(raw, deg[E[:, 0]], deg[E[:, 1]])
 

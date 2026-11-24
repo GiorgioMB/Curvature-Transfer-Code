@@ -9,9 +9,6 @@ dist/
 # OS Metadata (macOS)
 .DS_Store
 
-# Jupyter / Checkpoints
-.ipynb_checkpoints/
-
 # User Defined / Execution Outputs
 *.nbi
 *.nbc
@@ -19,15 +16,3 @@ experiments/out/
 results/
 /logs/
 /data/
-
-# LaTeX / Paper Artifacts
-paper/*.aux
-paper/*.log
-paper/*.out
-paper/*.blg
-paper/*.bbl
-paper/*.pdf
-paper/*.toc
-paper/*.fls
-paper/*.fdb_latexmk
-paper/*.synctex.gz

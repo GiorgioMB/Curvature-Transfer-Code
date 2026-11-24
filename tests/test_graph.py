@@ -12,16 +12,9 @@ def test_canonicalization():
     assert g.has_edge(2, 1) and not g.has_edge(2, 3)
 
 
-def test_edge_ids_and_directed_aggregation():
+def test_edge_ids():
     g = Graph.from_edges([(0, 1), (1, 2), (2, 3)])
     assert g.edge_id(2, 1) == 1 and g.edge_id(0, 3) == -1
-    assert g.edge_ids(np.array([[1, 0], [3, 2], [0, 2]])).tolist() == [0, 2, -1]
-    ei = g.to_edge_index()
-    vals = np.arange(ei.shape[1], dtype=float)
-    agg = g.directed_to_undirected(vals, ei, "mean")
-    for e, (u, v) in enumerate(g.edges):
-        mask = ((ei[0] == u) & (ei[1] == v)) | ((ei[0] == v) & (ei[1] == u))
-        assert agg[e] == pytest.approx(vals[mask].mean())
 
 
 def test_isolated_nodes_and_empty():
@@ -31,9 +24,3 @@ def test_isolated_nodes_and_empty():
     assert e.num_edges == 0
     with pytest.raises(ValueError):
         Graph.from_edges([(0, 4)], num_nodes=3)
-
-
-def test_with_edges():
-    g = Graph.from_edges([(0, 1), (1, 2)])
-    h = g.with_edges(add=[(2, 0)], remove=[(1, 0)])
-    assert h.edges.tolist() == [[0, 2], [1, 2]]

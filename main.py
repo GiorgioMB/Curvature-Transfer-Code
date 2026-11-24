@@ -1,44 +1,25 @@
 #!/usr/bin/env python3
-"""Reproduce every experimental table, figure, and statistic with one command.
+"""Reproduce every table, figure, and number of Section 6 with one command.
 
     python main.py                       # everything
     python main.py --quick               # small smoke run of the whole pipeline (minutes)
-    python main.py --steps bounds        # selected steps only
-    python main.py --list                # show the steps and what each one produces
+    python main.py --steps bounds paper  # selected steps only
+    python main.py --list                # the steps and what each one produces
+    python main.py --steps paper --paper ~/overleaf --manuscript tex/manuscript-journal.tex
 
-All outputs go to ``results/`` (``--out``); every step writes its log to
-``logs/<step>.log`` (``--logs``).
-
-Resuming. Every step saves what it computes as soon as it is computed (per
-graph, per chunk of edges, and per graph size), using atomic writes (tmp
-file + rename). After a kill (e.g. a wall-time limit) just
-run the same command again: finished steps are skipped through their stamp in
-``results/.stamps``, and the interrupted step continues from its last saved
-unit. ``--force`` ignores the stamps (the per-unit checkpoints are still
-reused; delete ``results/`` to recompute from scratch).
-
-Consistency. All graphs come from one registry (experiments/suite.py), all
-per-edge quantities from one store (results/edges, written by edges.py), and
-all intervals from one definition (curvature_transfer/intervals.py), so every
-table, figure, and number refers to the same edges. The ``consistency`` step
-verifies these invariants and writes ``results/CONSISTENCY.md``; it fails if a
-check fails.
-
-``results/REPORT.md`` maps every experimental artifact to the file that
-reproduces it, and ``results/environment.json`` records the software and
-hardware used. All randomness is seeded; outputs other than timings do not
-depend on the number of threads.
+Outputs go to ``results/`` (``--out``), logs to ``logs/<step>.log`` (``--logs``). Every step saves
+its work as soon as it is computed (per graph, per chunk of edges, per graph size), with atomic
+writes, so a killed run resumes when the same command is run again: finished steps are skipped
+through their stamp in ``results/.stamps`` (``--force`` reruns them, still reusing the saved
+units; delete ``results/`` to start over). The ``paper`` step writes the files the manuscript reads
+(``experiments/paper_artifacts.py``); ``consistency`` cross-checks tables, figures and benchmarks.
 """
 from __future__ import annotations
 
 import argparse
-from collections import OrderedDict
-import csv
 from datetime import datetime, timezone
 import hashlib
-import io
 import json
-import math
 import os
 import platform
 import shutil
@@ -53,46 +34,21 @@ PY = sys.executable
 sys.path.insert(0, ROOT)
 sys.path.insert(0, EXP)
 from curvature_transfer import _io  # noqa: E402
+import suite  # noqa: E402
 
 # Version of the timed computations (benchmark, screening). Their stamps include
 # it, so that a step finished with older timing code is rerun (2: the 2-hop
 # kernel, which also evaluates the TLW certificate).
 TIMING_VERSION = 2
 
-# Graph of the certify-then-solve edge map of Section 6.3 (step "screening_map") and its
-# file tag; the consistency step checks the tag against the registry.
-SCREENING_MAP_GRAPH = "RGG(800, 0.056419)"
-SCREENING_MAP_TAG = "rg_n800_r0_056419"
-
-# Paper figures that the "figures" step collects into results/figures/, from the output
-# directories of the steps that draw them (FIGURE_DIRS, under results/): the distribution
-# figures of "distributions" and the edge map of "screening_map". The runtime figures of
-# "benchmark" are collected separately.
-FIGURES = [
-    "fig_scatter_cBF_cOR__er_n800_p0_0100125_2d_Hist.png",
-    "fig_scatter_cBF_cOR__ws_n800_k10_b0_2_2d_Hist.png",
-    "fig_scatter_cBF_cOR__ba_n1600_m2_2d_Hist.png",
-    "fig_scatter_cBF_cOR__rg_n1600_r0_039894_2d_Hist.png",
-    "fig_scatter_cBF_cOR__hrg_n800_R5_0_a1_0_T0_5_2d_Hist.png",
-    "fig_scatter_cBF_cOR__sbm2_n1000_pin0_012018_pout0_004006_2d_Hist.png",
-    *[
-        f"fig_{c}_{v}__{t}.png"
-        for c in ("cOR", "cBF")
-        for v in ("hist", "quantile")
-        for t in (
-            "er_n800_p0_0100125",
-            "hrg_n800_R5_0_a1_0_T0_0",
-            "real_yeast",
-        )
-    ],
-    f"fig_screening_map__{SCREENING_MAP_TAG}.pdf",
-]
+# Figures that the "figures" step collects into results/figures/ (the names the manuscript
+# includes), from the output directories of the steps that draw them (FIGURE_DIRS, under results/);
+# the runtime figures of "benchmark" are collected separately.
+_tag = lambda name: suite.BY_NAME[name].file_tag
+FIGURES = ([f"fig_scatter_cBF_cOR__{_tag(g)}_2d_Hist.png" for g in suite.SCATTER_GRAPHS]
+           + [f"fig_cOR_{v}__{_tag(g)}.png" for g in suite.DIST_GRAPHS.values() for v in ("hist", "quantile")]
+           + [f"fig_screening_map__{_tag(suite.SCREENING_MAP_GRAPH)}.pdf"])
 FIGURE_DIRS = [("edges", "csv", "figures_paper"), ("screening_map",)]
-FIG_GRAPHS = OrderedDict([
-    ("ER", "ER(800, 0.0100125)"),
-    ("HRG", "HRG(800, 5.0, 1.0, 0.0)"),
-    ("Yeast", "Yeast"),
-])
 
 STEPS = {
     "environment": "software/hardware record -> environment.json",
@@ -100,13 +56,13 @@ STEPS = {
     "examples": "closed-form values (Q_n, K_n, trees, grid) -> tables/examples.txt",
     "edges": "per-edge statistics, bounds, exact curvatures of every registry graph (chunked) -> edges/",
     "bounds": "bound comparison and ranking tables, from edges/ -> tables/bounds/",
-    "bounds_legacy": "same tables with the preliminary BF normalization -> tables/bounds_legacy/",
     "screening": "certify-then-solve evaluation, from edges/ -> tables/screening/",
     "screening_map": "certify-then-solve edge map (Section 6.3 figure) and its numbers, from edges/ -> screening_map/",
     "distributions": "per-edge CSVs + distribution figures, from edges/ -> edges/csv/",
     "benchmark": "runtime scaling, one figure per family -> benchmark/",
     "figures": "collect key figures into one directory -> figures/",
     "consistency": "cross-checks across bounds, screening, figures, and benchmarks -> CONSISTENCY.md",
+    "paper": "numbers.tex, table rows, INDEX.md, figures for the manuscript -> --paper (generated/, figures_paper/)",
     "report": "REPORT.md mapping experimental artifacts to files",
 }
 CORE = [
@@ -123,255 +79,12 @@ CORE = [
 ]
 
 
-# --------------------------------------------------------- helpers
-def _fin(x):
-    return x is not None and isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def _pct(x):
-    return f"{100 * x:.1f}" if _fin(x) else "--"
-
-
-def _num(r, k):
-    try:
-        return float(r[k])
-    except (KeyError, ValueError, TypeError):
-        return float("nan")
-
-
-def _read_csv(path):
-    with open(path, newline="") as fh:
-        return list(csv.DictReader(fh))
-
-
-def _atomic_csv(rows, fieldnames, path):
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=fieldnames, lineterminator="\n")
-    w.writeheader()
-    w.writerows(rows)
-    _io.atomic_text(buf.getvalue(), path)
-
-
-def _parse_bounds(rows):
-    R = []
-    for r in rows:
-        o = {
-            k: (v if k in ("graph", "tag", "group") else _num(r, k))
-            for k, v in r.items()
-        }
-        o["E"] = int(o["E"])
-        R.append(o)
-    return R
-
-
-def _benchmark_files(bdir):
-    """{family: CSV with the largest max n} among benchmark_<family>_<min>_<max>.csv."""
-    out = {}
-    for f in os.listdir(bdir):
-        if f.startswith("benchmark_") and f.endswith(".csv"):
-            parts = f[:-4].split("_")
-            if len(parts) == 4 and parts[3].isdigit():
-                fam, mx = parts[1], int(parts[3])
-                if fam not in out or mx > out[fam][0]:
-                    out[fam] = (mx, os.path.join(bdir, f))
-    return {k: v[1] for k, v in out.items()}
-
-
-def run_consistency_checks(results_dir):
-    """Cross-checks between raw files, bound tables, screening, figures, and benchmarks."""
-    import compare_bounds as cb
-    import suite
-
-    out = []
-
-    def add(name, ok, detail=""):
-        out.append((name, bool(ok), detail))
-
-    bpath = os.path.join(results_dir, "tables", "bounds", "bound_comparison.csv")
-    sdir = os.path.join(results_dir, "tables", "screening")
-    spath = os.path.join(sdir, "screening_benchmark.csv")
-    lpath = os.path.join(sdir, "screening_large.csv")
-    bounds_rows = _read_csv(bpath) if os.path.exists(bpath) else None
-    screen_rows = _read_csv(spath) if os.path.exists(spath) else None
-    large_rows = _read_csv(lpath) if os.path.exists(lpath) else None
-
-    R = _parse_bounds(bounds_rows) if bounds_rows else []
-    if R:
-        add(
-            "no certified bound is violated on any edge (tolerance 1e-7)",
-            sum(o["violations"] for o in R) == 0,
-            f"largest excess {max(o['max_violation'] for o in R):.2e}",
-        )
-        add(
-            "Theorem 4.3 (quadrangle-augmented JL bound) is never below Jost-Liu",
-            sum(o["n_ours_below_JL"] for o in R) == 0,
-        )
-        names = [
-            s.name for s in suite.REGISTRY if s.name in {o["graph"] for o in R}
-        ]
-        add(
-            "bound tables list the graphs in registry order",
-            [o["graph"] for o in R] == names,
-        )
-
-    if R and screen_rows:
-        gb = {o["graph"]: o for o in R}
-        S = {r["graph"]: r for r in screen_rows}
-        add(
-            "bound and screening tables cover the same graphs",
-            set(gb) == set(S),
-            f"only in bounds: {sorted(set(gb) - set(S))}; only in screening: {sorted(set(S) - set(gb))}",
-        )
-        bad_e = [g for g in set(S) & set(gb) if int(float(S[g]["E"])) != gb[g]["E"]]
-        add(
-            "|E| is the same in the bound and screening tables",
-            not bad_e,
-            f"differs on {bad_e}",
-        )
-        for iv, ck in (("bf", "cert_bf"), ("sharpened", "cert_sharp")):
-            bad = []
-            for g in set(S) & set(gb):
-                av, ce = _num(S[g], f"sign_avoided_{iv}"), gb[g][ck]
-                if av < ce - 1e-12 or float(_pct(av)) < float(_pct(ce)):
-                    bad.append(f"{g} ({_pct(av)} < {_pct(ce)})")
-            add(
-                f"{iv} interval: avoided fraction for c_OR<0 >= certified-sign fraction (exact and as printed)",
-                not bad,
-                "; ".join(bad),
-            )
-    if large_rows:
-        bad = [r["graph"] for r in large_rows if str(r.get("sign_correct")) != "True"]
-        add(
-            "certify-then-solve on the large networks returned the exact answer",
-            not bad,
-            f"wrong on {bad}",
-        )
-
-    if R:
-        R_agg = [o for o in R if o["group"] in suite.AGGREGATE_GROUPS]
-        more = [
-            o
-            for o in R_agg
-            if float(_pct(o["cert_ours"])) > float(_pct(o["cert_prior"]))
-        ]
-        equal = [
-            o for o in R_agg if _pct(o["cert_ours"]) == _pct(o["cert_prior"])
-        ]
-        fewer = len(R_agg) - len(more) - len(equal)
-        add(
-            "sign-certification counts add up to the number of aggregate graphs",
-            len(more) + len(equal) + fewer == len(R_agg),
-        )
-        lo = [
-            cb.fnum(o[k])
-            for o in R
-            for k in (
-                "gap_up_JL",
-                "gap_up_TLW",
-                "gap_up_ours",
-                "gap_Lup_prior",
-                "gap_Lup_ours",
-            )
-        ]
-        add("no table entry prints as -0.000", "-0.000" not in lo)
-        figs = os.path.join(results_dir, "figures")
-        for lab, name in FIG_GRAPHS.items():
-            spec = suite.BY_NAME[name]
-            ok = os.path.exists(
-                os.path.join(figs, f"fig_cOR_hist__{spec.file_tag}.png")
-            ) or not os.path.isdir(figs)
-            add(
-                f"distributional figure '{lab}' is drawn from registry graph {name} (file tag {spec.file_tag})",
-                ok,
-            )
-        bdir = os.path.join(results_dir, "benchmark")
-        if os.path.isdir(bdir):
-            bfiles = _benchmark_files(bdir)
-            sizes = {
-                fam: [int(r["n"]) for r in _read_csv(p)]
-                for fam, p in bfiles.items()
-            }
-            if "ER" in sizes:
-                bad = [
-                    f
-                    for f, ns in sizes.items()
-                    if sorted(ns) != sorted(sizes["ER"])
-                ]
-                add(
-                    "runtime benchmark: every family covers the same sizes as ER",
-                    not bad,
-                    f"different sizes in {bad}",
-                )
-            for fam in bfiles:
-                f = os.path.join(figs, f"runtime_scaling_{fam.lower()}.pdf")
-                add(
-                    f"runtime figure of {fam} exists (figures/runtime_scaling_{fam.lower()}.pdf)",
-                    os.path.exists(f) or not os.path.isdir(figs),
-                )
-        man = os.path.join(results_dir, "edges", "csv", "manifest.json")
-        if os.path.exists(man):
-            with open(man) as fh:
-                m = {r["name"]: r for r in json.load(fh)["runs"]}
-            bad = [
-                o["graph"]
-                for o in R
-                if o["graph"] in m and int(m[o["graph"]]["m"]) != o["E"]
-            ]
-            add(
-                "figure CSVs have the same number of edges as the table rows",
-                not bad,
-                f"differs on {bad}",
-            )
-
-    # certify-then-solve edge map (Section 6.3); checked only once its step has run
-    spec = suite.BY_NAME[SCREENING_MAP_GRAPH]
-    add(
-        f"edge map graph {SCREENING_MAP_GRAPH} has file tag {SCREENING_MAP_TAG} in the registry",
-        spec.file_tag == SCREENING_MAP_TAG,
-        f"registry file tag {spec.file_tag}",
-    )
-    mdir = os.path.join(results_dir, "screening_map")
-    mjson = os.path.join(mdir, f"screening_map__{SCREENING_MAP_TAG}.json")
-    if os.path.exists(mjson):
-        with open(mjson) as fh:
-            mp = json.load(fh)
-        cum = [s["decided_cumulative"] for s in mp["stages"]]
-        add(
-            f"edge map is drawn from registry graph {SCREENING_MAP_GRAPH} "
-            f"(screening_map/fig_screening_map__{SCREENING_MAP_TAG}.pdf)",
-            mp["graph"] == SCREENING_MAP_GRAPH
-            and os.path.exists(os.path.join(mdir, f"fig_screening_map__{SCREENING_MAP_TAG}.pdf")),
-            f"summary names {mp['graph']}",
-        )
-        add(
-            "edge map: the decided sets of the cascade are nested and end with every edge",
-            cum == sorted(cum) and cum[-1] == mp["E"],
-            f"cumulative decided {cum} of {mp['E']}",
-        )
-        srow = next((r for r in screen_rows or [] if r["graph"] == SCREENING_MAP_GRAPH), None)
-        if srow is not None:
-            bad = [
-                f"{iv}: map {mp['stages'][k]['share_cumulative']:.6f}, table {_num(srow, 'sign_avoided_' + iv):.6f}"
-                for k, iv in enumerate(("bf", "two_hop", "sharpened"))
-                if abs(mp["stages"][k]["share_cumulative"] - _num(srow, "sign_avoided_" + iv)) > 1e-12
-            ]
-            if mp["E"] != int(float(srow["E"])):
-                bad.append(f"|E|: map {mp['E']}, table {srow['E']}")
-            add(
-                "edge map: |E| and the shares decided by the BF, 2-hop, and sharpened intervals "
-                "equal the screening fractions of its graph",
-                not bad,
-                "; ".join(bad),
-            )
-
-    return out
-
-
 # -------------------------------------------------------------- runner
 class Runner:
     def __init__(self, a):
         self.a = a
         self.out = os.path.abspath(a.out)
+        self.paper_dir = os.path.abspath(a.paper or os.path.join(self.out, "paper"))
         self.logs = os.path.abspath(a.logs)
         os.makedirs(self.logs, exist_ok=True)
         for d in (".stamps", "tables", "figures"):
@@ -525,22 +238,6 @@ class Runner:
             + self.common(),
         )
 
-    def bounds_legacy(self):
-        return self.run(
-            "bounds_legacy",
-            [
-                PY,
-                "compare_bounds.py",
-                "--varpi",
-                "legacy",
-                "--results",
-                self.out,
-                "--out",
-                self.path("tables", "bounds_legacy"),
-            ]
-            + self.common(),
-        )
-
     def screening(self):
         return self.run("screening", 
                         [PY, "screening.py", "--results", 
@@ -559,7 +256,7 @@ class Runner:
                 "--out",
                 self.path("screening_map"),
                 "--graph",
-                SCREENING_MAP_GRAPH,
+                suite.SCREENING_MAP_GRAPH,
             ]
             + self.common(),
         )
@@ -602,8 +299,6 @@ class Runner:
                 if self.a.bench_mem_gb is None
                 else ["--mem-gb", str(self.a.bench_mem_gb)]
             )
-            if self.a.legacy_dir:
-                cmd += ["--legacy-dir", os.path.abspath(self.a.legacy_dir)]
             ok &= self.run(f"benchmark_{fam}", cmd, cfg={"timing_version": TIMING_VERSION})
         return ok
 
@@ -618,20 +313,11 @@ class Runner:
             else:
                 missing.append(f)
         for fam in self.a.bench_families:
-            rt = self.path(
-                "benchmark", f"runtime_scaling_loglog_{fam.lower()}.pdf"
-            )
-            names = [f"runtime_scaling_{fam.lower()}.pdf"] + (
-                ["runtime_scaling.pdf"] if fam == "ER" else []
-            )
+            rt = self.path("benchmark", f"runtime_scaling_loglog_{fam.lower()}.pdf")
             if os.path.exists(rt):
-                for nm in names:
-                    shutil.copy2(rt, os.path.join(dst, nm))
+                shutil.copy2(rt, os.path.join(dst, f"runtime_scaling_{fam.lower()}.pdf"))
             else:
-                missing += names
-        rt = self.path("benchmark", "runtime_scaling_all.pdf")
-        if os.path.exists(rt):
-            shutil.copy2(rt, os.path.join(dst, "runtime_scaling_all.pdf"))
+                missing.append(f"runtime_scaling_{fam.lower()}.pdf")
         if missing:
             print(
                 f"[warn] figures not produced: {missing}"
@@ -643,7 +329,9 @@ class Runner:
         return True
 
     def consistency(self):
-        checks = run_consistency_checks(self.out)
+        import paper_artifacts as PA
+
+        checks = PA.consistency_checks(self.out)
         failed = [c for c in checks if not c[1]]
         lines = [
             "# Consistency checks",
@@ -669,120 +357,40 @@ class Runner:
         self.status["consistency"] = f"ok ({len(checks)}/{len(checks)} passed)"
         return True
 
+    def paper(self):
+        import paper_artifacts as PA
+
+        info = PA.build(self.out, self.paper_dir, self.a.manuscript)
+        miss = len(info["missing"]) + len(info["missing_rows"])
+        print(f"[ ok ] paper: {info['numbers']} numbers, {len(info['tables'])} tables -> "
+              f"{os.path.join(self.paper_dir, 'generated')}" + (f"; the manuscript misses {miss} (see INDEX.md)"
+                                                          if miss else ""))
+        self.status["paper"] = "ok" if not miss else f"ok, {miss} keys of the manuscript missing"
+        return True
+
     def report(self):
-        rel = lambda *p: os.path.join(*p)
-        ex = lambda *p: (
-            "yes" if os.path.exists(self.path(*p)) else "**missing**"
-        )
-        bench = (
-            "benchmark_ER_50_800.csv"
-            if self.a.quick
-            else f"benchmark_ER_50_{self.a.bench_max_n}.csv"
-        )
+        mtag = suite.BY_NAME[suite.SCREENING_MAP_GRAPH].file_tag
         rows = [
-            (
-                "Per-edge arrays behind every table and figure",
-                rel("edges"),
-                "<tag>.paper.npz, <tag>.exact.npz",
-            ),
-            (
-                "All per-graph bound quantities (CSV)",
-                rel("tables", "bounds", "bound_comparison.csv"),
-                "",
-            ),
-            (
-                "Certify-then-solve on the registry graphs (stored intervals)",
-                rel("tables", "screening", "screening_benchmark.csv"),
-                "",
-            ),
-            (
-                "Certify-then-solve on large real networks (Table 7, timed)",
-                rel("tables", "screening", "screening_large.csv"),
-                "",
-            ),
-            (
-                "Certify-then-solve edge map (Section 6.3 figure)",
-                rel("figures", f"fig_screening_map__{SCREENING_MAP_TAG}.pdf"),
-                SCREENING_MAP_GRAPH,
-            ),
-            (
-                "Numbers quoted with the edge map (LaTeX macros)",
-                rel("screening_map", "screening_map_numbers.tex"),
-                f"per-stage counts: screening_map__{SCREENING_MAP_TAG}.json",
-            ),
-            (
-                "Cross-checks across tables, figures, and benchmarks",
-                "CONSISTENCY.md",
-                "",
-            ),
-            (
-                "Closed-form values on structured graphs",
-                rel("tables", "examples.txt"),
-                "",
-            ),
-            (
-                "Runtime scaling (ER)",
-                rel("figures", "runtime_scaling.pdf"),
-                "",
-            ),
-            (
-                "Runtime scaling, one figure per family + 2x2 panel",
-                rel("figures"),
-                "runtime_scaling_*.pdf",
-            ),
-            (
-                "Runtime data (ER; other families alongside)",
-                rel("benchmark", bench),
-                "benchmark_<family>_*.csv",
-            ),
-            (
-                "Scatter / distributional views",
-                rel("figures"),
-                "fig_*.png",
-            ),
-            (
-                "Per-edge CSVs behind distributional figures",
-                rel("edges", "csv"),
-                "*_edges.csv + manifest.json",
-            ),
-            (
-                "Legacy BF normalization comparison",
-                rel("tables", "bounds_legacy", "bound_comparison.csv"),
-                "optional (--legacy-check)",
-            ),
+            ("Per-edge arrays behind every table and figure", "edges", "<tag>.paper.npz, <tag>.exact.npz"),
+            ("Bound comparison, ranking, BF interval (Tables 3-6)", "tables/bounds/bound_comparison.csv", ""),
+            ("Certify-then-solve on the registry graphs", "tables/screening/screening_benchmark.csv", ""),
+            ("Certify-then-solve on large networks (Table 7, timed)", "tables/screening/screening_large.csv", ""),
+            ("Edge map of certify-then-solve (Section 6.3)", f"figures/fig_screening_map__{mtag}.pdf",
+             suite.SCREENING_MAP_GRAPH),
+            ("Runtime scaling (Table 8, one figure per family)", "figures", "runtime_scaling_<family>.pdf"),
+            ("Scatter and distributional views", "figures", "fig_*.png"),
+            ("Closed-form values on structured graphs", "tables/examples.txt", ""),
+            ("Cross-checks", "CONSISTENCY.md", ""),
+            ("Files read by the manuscript", os.path.relpath(self.paper_dir, self.out), "generated/INDEX.md"),
         ]
-        lines = [
-            "# Reproduction report",
-            "",
-            f"Generated {datetime.now(timezone.utc).isoformat()} by `{' '.join(sys.argv)}`"
-            + (
-                "  \n**Quick mode: reduced graphs and sizes.**"
-                if self.a.quick
-                else ""
-            ),
-            "",
-            "| Artifact | File (under results/) | Present | Notes |",
-            "| --- | --- | --- | --- |",
-        ]
-        for name, path, note in rows:
-            lines.append(f"| {name} | `{path}` | {ex(path)} | {note} |")
-        lines += (
-            ["", "## Step status", ""]
-            + [f"- {k}: {v}" for k, v in self.status.items()]
-        )
-        cons = self.path("CONSISTENCY.md")
-        if os.path.exists(cons):
-            with open(cons) as fh:
-                lines += [
-                    "",
-                    fh.read()
-                    .replace("# Consistency checks", "## Consistency checks")
-                    .rstrip(),
-                ]
-        lines += [
-            "",
-            f"Software and hardware: `environment.json`. Logs: `{self.logs}`.",
-        ]
+        lines = ["# Reproduction report", "",
+                 f"Generated {datetime.now(timezone.utc).isoformat()} by `{' '.join(sys.argv)}`"
+                 + ("  \n**Quick mode: reduced graphs and sizes.**" if self.a.quick else ""), "",
+                 "| Artifact | File (under results/) | Present | Notes |", "| --- | --- | --- | --- |"]
+        lines += [f"| {n} | `{p}` | {'yes' if os.path.exists(self.path(p)) else '**missing**'} | {note} |"
+                  for n, p, note in rows]
+        lines += ["", "## Step status", ""] + [f"- {k}: {v}" for k, v in self.status.items()]
+        lines += ["", f"Software and hardware: `environment.json`. Logs: `{self.logs}`."]
         _io.atomic_text("\n".join(lines) + "\n", self.path("REPORT.md"))
         self.status["report"] = "ok"
         print(f"[ ok ] report -> {self.path('REPORT.md')}")
@@ -806,11 +414,11 @@ def main():
         action="store_true",
         help="small graphs and sizes: checks the pipeline, not the numbers",
     )
-    ap.add_argument(
-        "--legacy-check",
-        action="store_true",
-        help="also recompute the tables with the preliminary BF",
-    )
+    ap.add_argument("--paper", default=None,
+                    help="where the paper step writes generated/ and figures_paper/ (default: <out>/paper), "
+                         "e.g. a checkout of the manuscript")
+    ap.add_argument("--manuscript", default=None,
+                    help="the manuscript whose \\res keys the paper step checks (relative to --paper)")
     ap.add_argument(
         "--bench-families",
         nargs="+",
@@ -841,11 +449,6 @@ def main():
         type=float,
         default=None,
         help="runtime benchmark: memory available (default: the Slurm allocation)",
-    )
-    ap.add_argument(
-        "--legacy-dir",
-        default=None,
-        help="preliminary repository, to add the old solver to the benchmark",
     )
     ap.add_argument(
         "--chunk",
@@ -879,15 +482,9 @@ def main():
     a = ap.parse_args()
     if a.list:
         for k, v in STEPS.items():
-            opt = k == "bounds_legacy"
-            print(f"{k:14s} {v}{'  [optional]' if opt else ''}")
+            print(f"{k:14s} {v}")
         return
-    steps = a.steps or (
-        CORE[:5]
-        + (["bounds_legacy"] if a.legacy_check else [])
-        + CORE[5:]
-        + ["consistency", "report"]
-    )
+    steps = a.steps or CORE + ["consistency", "paper", "report"]
     r = Runner(a)
     print(f"[main] steps: {' '.join(steps)}\n[main] output: {r.out}")
     t0 = time.time()

@@ -68,11 +68,13 @@ def test_registry_matches_manuscript_file_names():
     import main
     tags = {s.file_tag for s in suite.REGISTRY}
     for f in main.FIGURES:
-        t = f.split("__", 1)[1].replace("_2d_Hist.png", "").replace(".png", "")
+        t = os.path.splitext(f.split("__", 1)[1])[0].replace("_2d_Hist", "")
         assert t in tags, f"figure {f} refers to a graph that is not in the registry"
+    assert len(main.FIGURES) == 13  # 6 scatter plots, 3 x 2 distribution views, the edge map
     assert all(q in suite.BY_NAME for q in suite.QUICK)
     assert {s.group for s in suite.REGISTRY} <= set(suite.GROUPS)
-    assert all(name in suite.BY_NAME for name in main.FIG_GRAPHS.values())
+    figs = suite.SCATTER_GRAPHS + list(suite.DIST_GRAPHS.values()) + [suite.SCREENING_MAP_GRAPH]
+    assert all(name in suite.BY_NAME for name in figs)
 
 
 def test_number_formatting():

@@ -3,23 +3,16 @@ Figures of the BF interval (Figures 2 and 3 of the paper) from the per-edge CSVs
 
 Reads the run directories written by ``experiments/distributions.py`` (through ``edges.py --csv``):
 ``manifest.json``, which lists the graphs under ``"runs"`` (each with its registry ``"name"`` and
-``"tag"``), and one ``{tag}_edges.csv`` per graph. For every graph it writes, into
-``<run>/figures_paper/``,
+``"tag"``), and one ``{tag}_edges.csv`` per graph. It writes, into ``<run>/figures_paper/``,
 
   fig_scatter_cBF_cOR__{tag}_2d_Hist.png   density of the edges in the (kappa_BF, kappa_OR) plane, with
                                            the conditional medians of kappa_OR and of the two ends of
-                                           the BF interval (Figure 2)
+                                           the BF interval (fig:scatters; ``suite.SCATTER_GRAPHS``)
   fig_cOR_hist__{tag}.png                  distributions of kappa_OR and of the two ends, on shared bins
-                                           (Figure 3, left)
   fig_cOR_quantile__{tag}.png              quantile profiles of kappa_OR and of the two ends; the shaded
                                            band is the certified range of every quantile, and the bar
                                            at q = 0.1 the certified range of the lowest decile
-                                           (Figure 3, right)
-  fig_scatter_cBF_cOR__{tag}.png,          the same views as a point cloud, and for the reverse
-  fig_cBF_hist__{tag}.png,                 direction (bounds on kappa_BF from kappa_OR, Appendix C);
-  fig_cBF_quantile__{tag}.png              not used by the paper
-
-under the file names that ``main.py`` (``FIGURES``) and the manuscript expect.
+                                           (fig:dists_sel; ``suite.DIST_GRAPHS``)
 
 Style. Every panel is drawn at its printed size, PANEL_W x PANEL_H inches: the manuscript includes
 each panel at ``width=0.49\\textwidth`` and JMLR's ``\\textwidth`` is 6 in, so 8-pt labels print at
@@ -27,8 +20,7 @@ each panel at ``width=0.49\\textwidth`` and JMLR's ``\\textwidth`` is 6 in, so 8
 Text uses Computer Modern (matplotlib's mathtext ``cm``), the font of the paper. Colors are from
 the Okabe-Ito palette (distinguishable with color-vision deficiencies and in grayscale): exact
 curvature black, lower end blue, upper end vermillion, edge density in gray. Only the first panel
-of each paper figure carries a legend (the captions describe the encodings); every other graph gets
-a legend on every panel.
+of each figure carries a legend (the captions describe the encodings).
 
 Conditional medians (Figure 2) are computed on bins of kappa_BF that hold about equally many edges
 and never split edges with the same BF value, so every point of a median line summarizes at least
@@ -51,6 +43,8 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib
+
+import suite
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -121,9 +115,8 @@ DENSITY_BINS = 56     # cells per axis of the 2D histogram
 
 # Panels of the paper's Figures 2 and 3, in the order of the manuscript: only the first panel of
 # each figure carries a legend. File tags as written by edges.py (dots replaced by underscores).
-FIG2_TAGS = ["er_n800_p0_0100125", "ws_n800_k10_b0_2", "ba_n1600_m2", "rg_n1600_r0_039894",
-             "hrg_n800_R5_0_a1_0_T0_5", "sbm2_n1000_pin0_012018_pout0_004006"]
-FIG3_TAGS = ["er_n800_p0_0100125", "hrg_n800_R5_0_a1_0_T0_0", "real_yeast"]
+FIG2_TAGS = [suite.BY_NAME[n].file_tag for n in suite.SCATTER_GRAPHS]
+FIG3_TAGS = [suite.BY_NAME[n].file_tag for n in suite.DIST_GRAPHS.values()]
 
 K_BF = r"$\kappa_{\mathrm{BF}}$"
 K_OR = r"$\kappa_{\mathrm{OR}}$"
@@ -135,7 +128,7 @@ def _apply_style():
 
 
 def _legend_on(tag: str, paper_tags: Sequence[str]) -> bool:
-    return tag not in paper_tags or tag == paper_tags[0]
+    return tag == paper_tags[0]
 
 
 def _halo(lw: float):
@@ -329,7 +322,7 @@ def _quantile_profile(a: np.ndarray, q: np.ndarray) -> np.ndarray:
 # Panels
 # ==============================
 
-def _density_panel(ax, bf, orv, lo=None, up=None, title="", legend=True, points=False):
+def _density_panel(ax, bf, orv, lo=None, up=None, title="", legend=True):
     """Edges in the (kappa_BF, kappa_OR) plane, with conditional medians of kappa_OR and of the
     two ends of the BF interval (``lo``, ``up``) given kappa_BF."""
     bf, orv = np.asarray(bf, float), np.asarray(orv, float)
@@ -342,17 +335,12 @@ def _density_panel(ax, bf, orv, lo=None, up=None, title="", legend=True, points=
 
     xlim = _core_limits(xb, pad=0.03)
     ylim = _limits(np.array(_core_limits(yb, pad=0.0)), *(m for m in (med_lo, med_up) if m is not None), pad=0.05)
-    if points:
-        n = len(xb)
-        sel = np.random.default_rng(1234).choice(n, size=25000, replace=False) if n > 25000 else slice(None)
-        ax.scatter(xb[sel], yb[sel], s=1.6, color="#7a7a7a", alpha=0.35, linewidths=0, rasterized=True)
-    else:
-        xe = np.linspace(*xlim, DENSITY_BINS + 1)
-        ye = np.linspace(*ylim, DENSITY_BINS + 1)
-        h, _, _ = np.histogram2d(xb, yb, bins=[xe, ye])
-        hmax = max(1.0, float(h.max()))
-        ax.hist2d(xb, yb, bins=[xe, ye], cmap=DENSITY_CMAP, cmin=1,
-                  norm=mcolors.LogNorm(vmin=1, vmax=hmax), rasterized=True, zorder=1)
+    xe = np.linspace(*xlim, DENSITY_BINS + 1)
+    ye = np.linspace(*ylim, DENSITY_BINS + 1)
+    h, _, _ = np.histogram2d(xb, yb, bins=[xe, ye])
+    hmax = max(1.0, float(h.max()))
+    ax.hist2d(xb, yb, bins=[xe, ye], cmap=DENSITY_CMAP, cmin=1,
+              norm=mcolors.LogNorm(vmin=1, vmax=hmax), rasterized=True, zorder=1)
 
     if len(cx):
         if med_up is not None and med_lo is not None:
@@ -485,7 +473,6 @@ def _make_run_figures(run_root: str, tag: str, pretty: Optional[str], bins=60, k
 
     cOR, cBF = col("c_OR"), col("c_BF")
     cOR_lo, cOR_up = col("cOR_lower_from_cBF"), col("cOR_upper_from_cBF")
-    cBF_lo, cBF_up = col("cBF_lower_from_cOR"), col("cBF_upper_from_cOR")
 
     fig_dir = os.path.join(run_root, "figures_paper")
     os.makedirs(fig_dir, exist_ok=True)
@@ -493,7 +480,7 @@ def _make_run_figures(run_root: str, tag: str, pretty: Optional[str], bins=60, k
     title = _title(pretty, safe_tag)
     out = lambda stem: os.path.join(fig_dir, f"{stem}__{safe_tag}.png")
 
-    if cOR is not None:
+    if cOR is not None and safe_tag in FIG3_TAGS:
         lim = _limits(cOR, *(a for a in (cOR_lo, cOR_up) if a is not None))
         leg = _legend_on(safe_tag, FIG3_TAGS)
         fig, ax = _new_panel()
@@ -503,21 +490,8 @@ def _make_run_figures(run_root: str, tag: str, pretty: Optional[str], bins=60, k
         _quantile_panel(ax, cOR, cOR_lo, cOR_up, lim, title=title, legend=leg)
         _save(fig, out("fig_cOR_quantile"), keep_existing)
 
-    if cBF is not None:
-        lim = _limits(cBF, *(a for a in (cBF_lo, cBF_up) if a is not None))
-        labels = (K_BF, "lower bound from " + K_OR, "upper bound from " + K_OR)
-        fig, ax = _new_panel()
-        _hist_panel(ax, cBF, cBF_lo, cBF_up, lim, bins, title=title, labels=labels)
-        _save(fig, out("fig_cBF_hist"), keep_existing)
-        fig, ax = _new_panel()
-        _quantile_panel(ax, cBF, cBF_lo, cBF_up, lim, title=title, labels=labels, q_mark=None)
-        _save(fig, out("fig_cBF_quantile"), keep_existing)
-
-    if cBF is not None and cOR is not None:
+    if cBF is not None and cOR is not None and safe_tag in FIG2_TAGS:
         leg = _legend_on(safe_tag, FIG2_TAGS)
-        fig, ax = _new_panel()
-        _density_panel(ax, cBF, cOR, cOR_lo, cOR_up, title=title, legend=leg, points=True)
-        _save(fig, out("fig_scatter_cBF_cOR"), keep_existing)
         fig, ax = _new_panel()
         _density_panel(ax, cBF, cOR, cOR_lo, cOR_up, title=title, legend=leg)
         _save(fig, os.path.join(fig_dir, f"fig_scatter_cBF_cOR__{safe_tag}_2d_Hist.png"), keep_existing)
@@ -531,7 +505,7 @@ def generate_paper_figures(out_root: Optional[str] = None, run_name: Optional[st
     such as ``"fd"``. ``keep_existing``: keep
     an existing ``figures_paper/`` and existing files (default: recreate the directory)."""
     _apply_style()
-    base_root = out_root or os.path.join(os.path.dirname(__file__), "out")
+    base_root = out_root
     if not os.path.isdir(base_root):
         print(f"[make_paper_figures] Output base not found: {base_root}")
         return
@@ -580,7 +554,7 @@ def parse_bins(s):
 def main():
     _apply_style()
     ap = argparse.ArgumentParser(description="Figures of the BF interval from the per-edge CSVs.")
-    ap.add_argument("--out-root", type=str, default=None, help="folder that contains the run folders (default: experiments/out)")
+    ap.add_argument("--out-root", type=str, required=True, help="folder that contains the run folders")
     ap.add_argument("--run-name", type=str, default=None, help="one run folder under --out-root (default: all)")
     ap.add_argument("--bins", type=parse_bins, default=60, metavar="INT|RULE",
                     help="histogram bins: a number, or a numpy rule (auto, fd, scott, sturges, doane, rice, sqrt, stone)")

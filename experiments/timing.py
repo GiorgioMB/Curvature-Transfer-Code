@@ -15,14 +15,9 @@ edge), listed in :data:`PHASES`:
   evaluates in the same pass as the statistics: no transport solve and no local
   distance structure).
 
-Every phase is edgewise, so it can be timed either
-
-* whole (:func:`repeat`): the median of repeated runs on all edges, repeated
-  until ``min_total`` seconds or ``max_reps`` runs (small graphs, where a
-  single run is dominated by timer noise); or
-* in chunks (:func:`time_chunked`): the sum of the times of disjoint chunks of
-  edges, each run once (large graphs; each chunk time can be saved as soon as
-  it is measured, so a killed job loses at most one chunk).
+Every phase is edgewise; :func:`repeat` times it as the median of repeated runs
+on all edges, until ``min_total`` seconds or ``max_reps`` runs (chunked timing of
+large graphs is in ``benchmark.py``).
 
 Kernels are JIT-compiled before any timing (:func:`warmup`).
 """
@@ -56,7 +51,7 @@ def phase_exact(g: Graph, ids=None, n_jobs=None):
 def _stats(g, ids, matching):
     E = np.ascontiguousarray(g.edges[_ids(g, ids)])
     di = g.deg[E[:, 0]].astype(float); dj = g.deg[E[:, 1]].astype(float)
-    return di, dj, K.edge_stats_all(g.indptr, g.indices, E, False, matching)
+    return di, dj, K.edge_stats_all(g.indptr, g.indices, E, matching)
 
 
 def phase_bf(g: Graph, ids=None, n_jobs=None):
@@ -114,38 +109,11 @@ def repeat(fn: Callable[[], object], min_total: float = 1.0, max_reps: int = 5) 
     return float(np.median(ts)), out, len(ts)
 
 
-def time_chunked(g: Graph, phase: str, chunk: int, n_jobs=None, done: Optional[Dict[int, float]] = None,
-                 on_chunk: Optional[Callable[[int, float], None]] = None) -> float:
-    """Sum of the times of ``phase`` on consecutive chunks of ``chunk`` edges.
-    ``done`` maps chunk index -> seconds already measured (skipped);
-    ``on_chunk(k, seconds)`` is called after every new chunk (to save it)."""
-    f = PHASES[phase][0]
-    done = dict(done or {})
-    M = g.num_edges
-    for k in range(-(-M // chunk)):
-        if k in done:
-            continue
-        ids = np.arange(k * chunk, min(M, (k + 1) * chunk), dtype=np.int64)
-        t = time.perf_counter()
-        f(g, ids, n_jobs)
-        done[k] = time.perf_counter() - t
-        if on_chunk:
-            on_chunk(k, done[k])
-    return float(sum(done.values()))
-
-
 # ------------------------------------------------- used by screening.py
 def exact_fn(g: Graph, n_jobs: Optional[int] = None):
     """ids -> exact lazy c_OR on those edges (fresh, nothing cached)."""
     return lambda ids: phase_exact(g, ids, n_jobs)
 
-
-def time_exact(g: Graph, n_jobs=None, **kw):
-    return repeat(lambda: phase_exact(g, None, n_jobs), **kw)
-
-
-def time_interval(g: Graph, kind: str, n_jobs=None, **kw):
-    return repeat(lambda: I.compute(g, kind, n_jobs), **kw)
 
 def exact_all(g: Graph, n_jobs=None, seed: int = 0) -> np.ndarray:
     """Exact lazy c_OR on every edge, the baseline of the certify-then-solve

@@ -1,52 +1,23 @@
 #!/usr/bin/env python3
-"""Edge map of certify-then-solve (Section 6.3, Figure ``fig:screening-map``).
+"""Edge map of certify-then-solve (Section 6.3, ``fig:screening-map``).
 
-Draws one registry graph four times on the same vertex positions, one panel per
-certificate of the cascade of Algorithm 1 for the threshold query
-{kappa_OR < tau} (default tau = 0, the sign query of Table 7):
+Draws one registry graph (``suite.SCREENING_MAP_GRAPH``) four times on the same vertex positions,
+one panel per certificate of the cascade of Algorithm 1 for the query {kappa_OR < tau} (default
+tau = 0): (a) the BF interval (Corollary 5.8; reported in Table 7, not used by the algorithm),
+(b) the 2-hop interval (Proposition 5.9), (c) the 2-hop interval intersected with the TLW
+certificate, and (d) the transport problems that remain. An edge leaves the cascade at the first
+certificate that decides it; each panel draws the edges its certificate decides in bold
+(vermillion for kappa_OR < tau, blue otherwise), the edges decided earlier thin and gray, and not
+the undecided ones. The decisions come from the per-edge store of ``edges.py``, with the intervals
+of ``curvature_transfer.intervals``, and are checked against ``curvature_transfer.screen``. A
+random geometric graph is drawn at the seeded points it was generated from (checked against the
+stored edges); any other graph gets a deterministic layout.
 
-  (a) BF interval        what kappa_BF and the two degrees decide (Corollary 5.8);
-                         reported in Table 7 but not used by the algorithm
-  (b) 2-hop interval     the first stage (Proposition 5.9), which contains (a)
-  (c) + TLW certificate  the second stage: the 2-hop interval intersected with
-                         U^prior, i.e. the sharpened interval of Section 6.1
-  (d) + exact solver     the transport problems that remain (orcut)
+Outputs, in ``--out``: ``fig_screening_map__<file_tag>.pdf`` (and a ``.png`` preview),
+``screening_map__<file_tag>.json`` (per-stage counts), and ``screening_map_numbers.tex`` (the
+numbers of Section 6.3, read by ``paper_artifacts.py``).
 
-An edge leaves the cascade at the first certificate that decides it, so the
-decided sets are nested. Each panel draws the edges that its own certificate
-decides bold, in the colors of the other figures (Okabe-Ito): vermillion, the
-color of upper ends, for kappa_OR < tau, which an upper end (or the solver)
-decides, and blue, the color of lower ends, for kappa_OR >= tau. Edges decided
-by an earlier certificate are thin and gray, and undecided edges are not drawn,
-so the drawn part of the graph grows from panel to panel. Below each panel: the
-share of edges decided without transport, and in (d) the number of transport
-problems.
-
-Consistency. The decisions come from the per-edge store of ``edges.py``, the
-arrays behind Tables 3-6 and the screening fractions of ``screening.py``, with
-the intervals of ``curvature_transfer.intervals`` widened by ROUNDING_TOL, and
-the stage counts and the answer are checked against
-``curvature_transfer.screen``, which runs the cascade from scratch (the step
-fails otherwise).
-
-Positions. A random geometric graph (registry tag ``rg_n<n>_r<r>``) is drawn at
-the points from which it was generated: they are redrawn with the seeded RNG of
-``generators.random_geometric``, and the geometric graph they span, restricted
-to its largest component as in ``suite.load``, must reproduce the stored edges
-and vertex labels exactly. Any other graph gets a deterministic layout
-(Kamada-Kawai up to 1500 vertices, otherwise a seeded spring layout), so that
-``--graph Yeast`` draws the network of the workshop poster.
-
-Outputs, in ``--out``:
-  fig_screening_map__<file_tag>.pdf   the figure (vector; JMLR text width)
-  fig_screening_map__<file_tag>.png   preview
-  screening_map__<file_tag>.json      per-stage counts, sign split, medians
-  screening_map_numbers.tex           the \\res macros quoted in Section 6.3
-
-Usage
-  python main.py --steps screening_map figures            # pipeline step -> results/screening_map/
-  python experiments/screening_map.py --results results --out results/screening_map
-  python experiments/screening_map.py --results results --out results/screening_map --graph Yeast
+Usage: python experiments/screening_map.py --results results --out results/screening_map [--graph NAME]
 """
 from __future__ import annotations
 
@@ -79,7 +50,7 @@ import edges as E  # noqa: E402
 import suite  # noqa: E402
 from make_paper_figures import C_LO, C_UP, _apply_style  # noqa: E402
 
-DEFAULT_GRAPH = "RGG(800, 0.056419)"
+DEFAULT_GRAPH = suite.SCREENING_MAP_GRAPH
 STAGES = ("BF interval", "2-hop interval", "+ TLW certificate", "+ exact solver")
 N_STAGES = len(STAGES)
 
@@ -298,7 +269,7 @@ def main():
     a = ap.parse_args()
 
     spec = suite.specs([a.graph])[0]
-    A = E.compute(spec, a.results, a.seed, a.jobs, "paper", a.chunk)
+    A = E.compute(spec, a.results, a.seed, a.jobs, a.chunk)
     stage = stages_from_store(A, a.tau)
     check_against_cascade(A, stage, a.tau, a.jobs, a.seed)
     P = positions(spec, A, a.seed, a.layout_seed)

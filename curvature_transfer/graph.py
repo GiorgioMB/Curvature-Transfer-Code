@@ -9,7 +9,7 @@ order), and adjacency lists are sorted. All kernels read the CSR arrays
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -100,58 +100,3 @@ class Graph:
         hi = np.searchsorted(self.edges[:, 0], a, "right")
         k = lo + np.searchsorted(self.edges[lo:hi, 1], b)
         return int(k) if k < hi and self.edges[k, 1] == b else -1
-
-    def edge_ids(self, pairs: np.ndarray) -> np.ndarray:
-        """Vectorized ``edge_id`` for an (K, 2) array; -1 where absent."""
-        pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
-        a = np.minimum(pairs[:, 0], pairs[:, 1]); b = np.maximum(pairs[:, 0], pairs[:, 1])
-        key_e = self.edges[:, 0] * (self.num_nodes + 1) + self.edges[:, 1]
-        key = a * (self.num_nodes + 1) + b
-        k = np.searchsorted(key_e, key)
-        k = np.minimum(k, max(len(key_e) - 1, 0))
-        ok = (len(key_e) > 0) & (key_e[k] == key) if len(key_e) else np.zeros(len(key), bool)
-        return np.where(ok, k, -1)
-
-    def directed_to_undirected(self, values, edge_index, agg: str = "mean") -> np.ndarray:
-        """Aggregate per-directed-edge values onto ``self.edges`` order."""
-        ei = np.asarray(edge_index)
-        vals = np.asarray(values, dtype=float)
-        ids = self.edge_ids(ei.T)
-        ok = ids >= 0
-        out = np.full(self.num_edges, np.nan)
-        if agg == "mean":
-            s = np.bincount(ids[ok], weights=vals[ok], minlength=self.num_edges)
-            c = np.bincount(ids[ok], minlength=self.num_edges)
-            out = np.where(c > 0, s / np.maximum(c, 1), np.nan)
-        elif agg in ("min", "max"):
-            fill = np.inf if agg == "min" else -np.inf
-            out = np.full(self.num_edges, fill)
-            (np.minimum if agg == "min" else np.maximum).at(out, ids[ok], vals[ok])
-            out[~np.isfinite(out)] = np.nan
-        elif agg == "first":
-            first = {}
-            for k in np.nonzero(ok)[0]:
-                first.setdefault(int(ids[k]), vals[k])
-            for e, x in first.items():
-                out[e] = x
-        else:
-            raise ValueError(f"unknown agg={agg!r}")
-        return out
-
-    def to_edge_index(self) -> np.ndarray:
-        """Directed (2, 2M) edge index, sorted by (source, target)."""
-        src = np.repeat(np.arange(self.num_nodes, dtype=np.int64), self.deg)
-        return np.stack([src, self.indices])
-
-    def with_edges(self, add: Iterable = (), remove: Iterable = ()) -> "Graph":
-        """Return a new graph with edges added/removed (both as (u, v) pairs)."""
-        e = self.edges
-        rem = np.asarray(list(remove), dtype=np.int64).reshape(-1, 2)
-        if rem.size:
-            ids = self.edge_ids(rem)
-            mask = np.ones(len(e), bool); mask[ids[ids >= 0]] = False
-            e = e[mask]
-        addv = np.asarray(list(add), dtype=np.int64).reshape(-1, 2)
-        if addv.size:
-            e = np.concatenate([e, addv])
-        return Graph.from_edges(e, self.num_nodes)
