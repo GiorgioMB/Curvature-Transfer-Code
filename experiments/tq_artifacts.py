@@ -53,8 +53,9 @@ def build(table_groups=("random", "real")):
     tight = sorted((r for r in _all("tightness") if r["group"] in table_groups), key=lambda r: order.get(r["tag"], 999))
     rng = {r["tag"]: r for r in _all("range")}
     for r in _all("tightness"):
-        if r["tq_violations"] or r["prior_violations"]:
-            problems.append(f"tightness {r['name']}: {r['tq_violations']} TQ / {r['prior_violations']} prior violations")
+        bad = {k: v for k, v in r["violations"].items() if v}
+        if bad:
+            problems.append(f"tightness {r['name']}: violations {bad}")
     for r in rng.values():
         if r["violations"]:
             problems.append(f"range {r['name']}: {r['violations']} violations of the chain")
@@ -62,23 +63,26 @@ def build(table_groups=("random", "real")):
     for r in tight:
         fr = rng.get(r["tag"])
         tail = f"{f1(fr['range_sign'])} & {f3(fr['range_width'])}" if fr and fr["complete"] else "-- & --"
-        lines.append(f"{prose[r['tag']]} & {fint(r['m'])} & {f1(r['prior_sign'])} & {f3(r['prior_width'])} & "
-                     f"{f1(r['tq_sign'])} & {f3(r['tq_width'])} & {tail} \\\\")
+        lines.append(f"{prose[r['tag']]} & {fint(r['m'])} & {f1(r['bm_sign'])} & {f3(r['bm_width'])} & "
+                     f"{f1(r['tlw_sign'])} & {f3(r['tlw_width'])} & {f1(r['tq_sign'])} & {f3(r['tq_width'])} & "
+                     f"{tail} \\\\")
     rows["TightnessRows"] = "\n".join(lines)
     if tight:
         keys["NumSynthetic"] = str(sum(r["group"] == "random" for r in tight))
         keys["NumReal"] = str(sum(r["group"] == "real" for r in tight))
         keys["NumGraphs"] = str(len(tight))
         keys["TQSignMin"] = f1(min(r["tq_sign"] for r in tight)); keys["TQSignMax"] = f1(max(r["tq_sign"] for r in tight))
-        keys["PriorSignMin"] = f1(min(r["prior_sign"] for r in tight)); keys["PriorSignMax"] = f1(max(r["prior_sign"] for r in tight))
-        index.append("NumSynthetic, NumReal, NumGraphs, TQSign*, PriorSign*: results/tightness (Table 2 graphs: "
-                     f"groups {', '.join(table_groups)}); sign = share of edges whose sign the interval settles, exactly")
+        for k_, f_ in (("BM", "bm_sign"), ("TLW", "tlw_sign")):
+            keys[f"{k_}SignMin"] = f1(min(r[f_] for r in tight)); keys[f"{k_}SignMax"] = f1(max(r[f_] for r in tight))
+        index.append("NumSynthetic, NumReal, NumGraphs, TQSign*, BMSign*, TLWSign*: results/tightness, the non-lazy "
+                     f"measure on the Table 2 graphs (groups {', '.join(table_groups)}); sign = share of edges whose "
+                     "sign the interval settles, decided exactly on the grid 1/(d_i d_j)")
     comp = [rng[r["tag"]] for r in tight if r["tag"] in rng and rng[r["tag"]]["complete"]]
     if comp:
         keys["GapLoMean"] = f3(np.mean([c["gap_lo"] for c in comp]))
         keys["GapHiMean"] = f3(np.mean([c["gap_hi"] for c in comp]))
         keys["SignGapMax"] = f1(max(c["range_sign"] - c["tq_sign"] for c in comp))
-        index.append(f"GapLoMean, GapHiMean: mean over the {len(comp)} graphs with a complete full range of the "
+        index.append(f"GapLoMean, GapHiMean: non-lazy measure; mean over the {len(comp)} graphs with a complete full range of the "
                      "per-graph mean gap between TQ and the ends of the full range; SignGapMax: largest difference "
                      "of settled signs, in percentage points (results/range)")
 
@@ -86,7 +90,7 @@ def build(table_groups=("random", "real")):
     meas = _all("measures")
     if meas:
         gl, gh, sg = [], [], []
-        for name in ("nonlazy", "half", "degree"):
+        for name in ("lazy", "half", "degree"):
             ok = [m[name] for m in meas if m[name]["complete"]]
             for m in meas:
                 if m[name]["violations"]:
@@ -95,7 +99,7 @@ def build(table_groups=("random", "real")):
                 gl.append(np.mean([o["gap_lo"] for o in ok])); gh.append(np.mean([o["gap_hi"] for o in ok]))
                 sg.append(max(o["range_sign"] - o["tq_sign"] for o in ok))
         keys["MeasGapLo"] = f3(max(gl)); keys["MeasGapHi"] = f3(max(gh)); keys["MeasSignGap"] = f1(max(sg))
-        index.append(f"MeasGapLo, MeasGapHi, MeasSignGap: largest over the non-lazy measure, idleness 1/2 (certified "
+        index.append(f"MeasGapLo, MeasGapHi, MeasSignGap: largest over the lazy measure, idleness 1/2 (certified "
                      f"at w_j and lifted by Corollary 5.4) and the degree-biased walk of the mean gaps and of the "
                      f"sign difference, on {len(meas)} graphs (results/measures)")
 

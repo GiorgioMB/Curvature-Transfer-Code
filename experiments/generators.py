@@ -1,33 +1,16 @@
 """
-Graph model generators (unchanged from the preliminary code so that seeded
-graphs reproduce exactly). This module provides several classic random graph
-generators plus a fast, parallel implementation of the native hyperbolic 
-random graph (HRG) model. Everything returns undirected simple graphs as 
-a sorted list of edges (u, v) with u < v.
+Seeded random graph generators (the same arguments and seed always give the same graph). Everything returns
+an undirected simple graph as (n, sorted array of edges (u, v) with u < v).
 
-Included models
-- Erdos--Renyi G(n, p)
-- Watts--Strogatz small-world model
-- Barabasi--Albert preferential attachment
-- Random geometric (unit square)
-- Random d-regular
-- Stochastic Block Model (SBM): homogeneous assortative / disassortative
-- Cycle, grid, d-ary tree, complete graph, toroidal 
-- Native HRG (Krioukov et al.), both a simple reference version and a scalable parallel 
-  version using shared memory and tiled computation.
+Models: Erdos-Renyi G(n, p); Watts-Strogatz; Barabasi-Albert; random geometric (unit square); random
+d-regular; stochastic block model (assortative and disassortative); native hyperbolic random graph
+(Krioukov et al.), with a scalable parallel generator using shared memory and tiled computation.
 
-Main concepts for the hyperbolic model
-- Each node is placed in a hyperbolic disk of radius R. Angles are uniform; the
-  radial coordinate is sampled so that cosh(alpha * r) is uniform in [1, cosh(alpha * R)].
-- The hyperbolic distance d between two nodes can be computed via cosh(alpha d)
-  from the radii and the angle difference (law of cosines in the hyperbolic plane).
-- Edges are independent given positions: p(d) = 1 / (1 + exp((d - R) / (2T))).
-  Temperature T = 0 gives a hard threshold at d <= R.
-- The parallel generator precomputes cosh/sinh of the radii and cos/sin of the
-  angles, stores them in shared memory, and assigns disjoint tiles of the upper
-  triangle to worker processes. This avoids duplicates and minimizes overhead.
+Hyperbolic model: nodes in a disk of radius R with uniform angles and cosh(alpha r) uniform in
+[1, cosh(alpha R)]; edges independent given positions with p(d) = 1 / (1 + exp((d - R) / (2T))), so T = 0 is
+a hard threshold at d <= R. The parallel generator precomputes cosh/sinh of the radii and cos/sin of the
+angles in shared memory and assigns disjoint tiles of the upper triangle to worker processes.
 
-Usage (example)
 >>> n, edges = erdos_renyi(100, 0.05, seed=1)
 >>> n, edges = make_hyperbolic_random_graph(10000, R=10.0, alpha=1.0, T=0.5, seed=123, n_jobs=-1)
 """
@@ -364,140 +347,6 @@ def d_regular_graph(
     raise RuntimeError("Failed to generate a simple d-regular graph after multiple attempts")
 
 
-def cycle_graph(
-        n: int
-        ) -> Tuple[int, List[Tuple[int,int]]]:
-    """
-    Cycle on n nodes: edges (0,1), (1,2), ..., (n-1,0).
-    """
-    edges = set()
-    for u in range(n):
-        _add_undirected(edges, u, (u+1)%n)
-    return n, sorted(edges)
-
-
-def grid_graph(
-        m: int, 
-        n: int
-        ) -> Tuple[int, List[Tuple[int,int]]]:
-    """
-    m x n rectangular grid with 4-neighbor connectivity.
-    """
-    edges = set()
-    def id(i,j): return i*n + j
-    for i in range(m):
-        for j in range(n):
-            if i+1 < m: _add_undirected(edges, id(i,j), id(i+1,j))
-            if j+1 < n: _add_undirected(edges, id(i,j), id(i,j+1))
-    return m*n, sorted(edges)
-
-def torus_graph(
-        m: int,
-        n: int
-        ) -> Tuple[int, List[Tuple[int,int]]]:
-    """
-    m x n toroidal grid (C_m x C_n) with 4-neighbor connectivity and wraparound.
-    Returns (m*n, sorted edges).
-    """
-    edges = set()
-    def id(i,j): return i*n + j
-    for i in range(m):
-        for j in range(n):
-            _add_undirected(edges, id(i,j), id((i+1) % m, j))
-            _add_undirected(edges, id(i,j), id(i, (j+1) % n))
-    return m*n, sorted(edges)
-
-def dary_tree(
-        d: int, 
-        h: int
-        ) -> Tuple[int, List[Tuple[int,int]]]:
-    """
-    Rooted d-ary tree of height h (root at level 0).
-
-    Returns (n, sorted edges). For d <= 1, this degenerates to a path of length h.
-    """
-    if h < 0: 
-        return 0, []
-    if d < 1:
-        return 1, []
-    # number of nodes: (d^(h+1)-1)/(d-1)
-    n = (d**(h+1)-1)//(d-1) if d > 1 else h+1
-    edges = set()
-    # parent index p has children indices from c=d*p+1 to d*p+d for a BFS labeling
-    for p in range((d**h-1)//(d-1) if d>1 else h):
-        for j in range(1, d+1):
-            c = d*p + j
-            if c < n:
-                _add_undirected(edges, p, c)
-    return n, sorted(edges)
-
-
-def complete_graph(
-        n: int
-        ) -> Tuple[int, List[Tuple[int,int]]]:
-    """
-    Complete graph K_n: all pairs connected.
-    """
-    edges = set()
-    for u in range(n):
-        for v in range(u+1, n):
-            _add_undirected(edges, u, v)
-    return n, sorted(edges)
-
-
-def deprecated_make_hyperbolic_random_graph(
-        n: int, 
-        R: float, 
-        alpha: float = 1.0, 
-        T: float = 0.0, 
-        seed: int = 0
-        ) -> Tuple[int, List[Tuple[int,int]]]:
-    """
-    Reference (single-process) HRG generator for clarity and testing.
-
-    Native hyperbolic model (Krioukov et al. 2010). Nodes are distributed in a
-    hyperbolic disk of radius R with curvature -alpha^2. Connection probability:
-        p(d) = 1 / (1 + exp((d - R) / (2T)))
-    with T = 0 giving a hard threshold at d <= R.
-
-    Returns (n, sorted edges). Slower than the parallel version but easy to read.
-    """
-    rng = np.random.default_rng(seed)
-
-    # angles and radii
-    thetas = [2.0*math.pi*rng.random() for _ in range(n)]
-    cR = math.cosh(alpha*R)
-    rs, cosh_r, sinh_r = [], [], []
-    for _ in range(n):
-        u = rng.random()
-        x = 1.0 + u * (cR - 1.0)        # in [1, cosh(αR)]
-        r = math.acosh(max(1.0, x)) / alpha
-        rs.append(r)
-        cosh_r.append(math.cosh(r))
-        sinh_r.append(math.sinh(r))
-
-    # edges
-    edges = set()
-    for i in range(n):
-        ti, ci, si = thetas[i], cosh_r[i], sinh_r[i]
-        for j in range(i+1, n):
-            dj, cj, sj = thetas[j], cosh_r[j], sinh_r[j]
-            dtheta = abs(ti - dj)
-            if dtheta > math.pi:
-                dtheta = 2.0*math.pi - dtheta
-            cosh_d = ci*cj - si*sj*math.cos(dtheta)
-            d = math.acosh(max(1.0, cosh_d))
-            if T <= 0.0:
-                if d <= R:
-                    edges.add((i, j))
-            else:
-                p = 1.0 / (1.0 + math.exp((d - R)/(2.0*T)))
-                if rng.random() < p:
-                    edges.add((i, j))
-    return n, sorted(edges)
-
-
-
 def make_hyperbolic_random_graph(
     n: int, 
     R: float, 
@@ -777,11 +626,6 @@ if __name__ == "__main__":
             ("Watts-Strogatz", lambda: watts_strogatz(test_n, 4, 0.3, test_seed)),
             ("Barabasi-Albert", lambda: barabasi_albert(test_n, 2, test_seed)),
             ("Random Geometric", lambda: random_geometric(test_n, 0.4, test_seed)),
-            ("Cycle", lambda: cycle_graph(test_n)),
-            ("Grid 3x3", lambda: grid_graph(3, 3)),
-            ("Binary Tree (h=3)", lambda: dary_tree(2, 3)),
-            ("Complete", lambda: complete_graph(5)),  # smaller for complete graph
-            ("Hyperbolic (deprecated)", lambda: deprecated_make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed)),
             ("Hyperbolic (parallel)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=1)),  # sequential 
             ("Hyperbolic (parallel multi)", lambda: make_hyperbolic_random_graph(test_n, 2.0, 1.0, 0.0, test_seed, n_jobs=-1)),  # all CPUs
             ("SBM (assortative)", lambda: make_sbm_graph([3, 4, 3], 0.8, 0.2, test_seed)),

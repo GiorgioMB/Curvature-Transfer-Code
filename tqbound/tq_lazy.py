@@ -121,9 +121,19 @@ def _lazy_edge(indptr, indices, deg, u, v, ep, stamp, tag, lidx, Ui, Uj, Cc, Hp,
                 resx[xx] -= s; resy[yy] -= s; cost += s
                 if resx[xx] == 0:
                     break
-    # common neighbours with fallback 2 (not adjacent to all of U_j), along their edges (cost 1)
+    # common neighbours with fallback 2 (not adjacent to all of U_j), along their edges (cost 1), those with
+    # fewer edges into U_j first
     if D > 0:
+        for z in range(ny + 2):
+            cnt[z] = 0
         for kk in range(t):
+            cnt[dCU[kk] + 1] += 1
+        for z in range(ny + 1):
+            cnt[z + 1] += cnt[z]
+        for kk in range(t):
+            order[cnt[dCU[kk]]] = kk; cnt[dCU[kk]] += 1
+        for idx in range(t):
+            kk = order[idx]
             if dCU[kk] == ny:
                 continue
             for f in range(KYp[kk], KYp[kk + 1]):

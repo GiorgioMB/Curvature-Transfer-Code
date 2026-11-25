@@ -46,52 +46,6 @@ wheels = [
 ]
 
 [[package]]
-name = "curvature-transfer"
-version = "2.0.0"
-source = { editable = "." }
-dependencies = [
-    { name = "faster-or-curvature" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "scipy" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "hypothesis" },
-    { name = "pytest" },
-]
-experiments = [
-    { name = "matplotlib" },
-    { name = "networkx" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "hypothesis" },
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "faster-or-curvature", specifier = "==1.3.1" },
-    { name = "hypothesis", marker = "extra == 'dev'", specifier = "==6.168.0" },
-    { name = "matplotlib", marker = "extra == 'experiments'", specifier = "==3.11.2" },
-    { name = "networkx", marker = "extra == 'experiments'", specifier = "==3.7" },
-    { name = "numba", specifier = "==0.68.1" },
-    { name = "numpy", specifier = "==2.5.4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.2" },
-    { name = "scipy", specifier = "==1.18.1" },
-]
-provides-extras = ["experiments", "dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "hypothesis", specifier = "==6.168.0" },
-    { name = "pytest", specifier = "==8.4.2" },
-]
-
-[[package]]
 name = "cycler"
 version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -503,4 +457,50 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
+]
+
+[[package]]
+name = "tqbound"
+version = "2.0.0"
+source = { editable = "." }
+dependencies = [
+    { name = "faster-or-curvature" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "hypothesis" },
+    { name = "pytest" },
+]
+experiments = [
+    { name = "matplotlib" },
+    { name = "networkx" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "hypothesis" },
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "faster-or-curvature", specifier = "==1.3.1" },
+    { name = "hypothesis", marker = "extra == 'dev'", specifier = "==6.168.0" },
+    { name = "matplotlib", marker = "extra == 'experiments'", specifier = "==3.11.2" },
+    { name = "networkx", marker = "extra == 'experiments'", specifier = "==3.7" },
+    { name = "numba", specifier = "==0.68.1" },
+    { name = "numpy", specifier = "==2.5.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.2" },
+    { name = "scipy", specifier = "==1.18.1" },
+]
+provides-extras = ["experiments", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "hypothesis", specifier = "==6.168.0" },
+    { name = "pytest", specifier = "==8.4.2" },
 ]

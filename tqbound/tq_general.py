@@ -202,13 +202,14 @@ def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode, capmode,
                 if rS[2 + CCk[f]] < 0.0:
                     c0 += 1
             cnt[s] = c0
+    for z in range(nQ + 2):    # counting sort of the suppliers by their number of options
+        cur[z] = 0
     for s in range(ns):
-        order[s] = s
-    for a1 in range(1, ns):    # insertion sort by number of options (ns is small)
-        key = order[a1]; b1 = a1 - 1
-        while b1 >= 0 and cnt[order[b1]] > cnt[key]:
-            order[b1 + 1] = order[b1]; b1 -= 1
-        order[b1 + 1] = key
+        cur[cnt[s] + 1] += 1
+    for z in range(nQ + 1):
+        cur[z + 1] += cur[z]
+    for s in range(ns):
+        order[cur[cnt[s]]] = s; cur[cnt[s]] += 1
     for phase in range(2):    # phase 0: suppliers with fallback 2 (step 2); phase 1: all (step 4a)
         for so in range(ns):
             s = order[so]

@@ -1,12 +1,12 @@
-"""Large real networks for the certify-then-solve experiment (Section 6.3).
+"""Large real networks for the screen-then-solve experiment (Table 3).
 
 These graphs (10^5 to 10^6 edges) are not part of :data:`suite.REGISTRY`: they
-do not enter the bound tables, only the timed screening table. Each entry is
+do not enter Table 2, only the timed Table 3. Each entry is
 downloaded once from its public source into ``<data_dir>`` (default
 ``experiments/data/large``), parsed into an undirected simple graph (self-loops
 dropped, directions and duplicates merged, node ids relabeled), and restricted
 to its largest connected component by :func:`suite.largest_component`, as every
-graph of the paper.
+graph of the experiments.
 
 All graphs were chosen so that exact evaluation of every edge stays feasible
 (maximum degree at most about 10^4): the speedup is measured against it, and
@@ -104,7 +104,7 @@ def _download(url: str, path: str, retries: int = 4) -> None:
     last = None
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "curvature-transfer/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "tqbound/2.0"})
             with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as fh:
                 while True:
                     b = r.read(1 << 20)

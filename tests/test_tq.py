@@ -9,9 +9,12 @@ import orcut
 import pytest
 from orcut.measures import Walk
 
-from curvature_transfer.full_range import lower_and_relaxed, upper_end
-from curvature_transfer.tq_general import tq_general
-from curvature_transfer.tq_lazy import bf, bounds_from, tq_lazy
+from tqbound.full_range import lower_and_relaxed, upper_end
+from tqbound.tq_general import tq_general
+from tqbound.tq_lazy import bf, bounds_from, tq_lazy
+from tqbound.baselines import bm_tlw, snap
+from tqbound.screen import screen_then_solve
+from fractions import Fraction
 
 
 def _graph(G):
@@ -100,3 +103,26 @@ def test_bf_matches_definition():
         box = sum(1 for x in hx if hx[x]) + sum(1 for y in hy if hy[y])
         ref = 0.0 if a <= 1 else 2 / a + 2 / c - 2 + (2 / c + 1 / a) * len(C) + (box / (gm * c) if gm else 0.0)
         assert abs(b[e] - ref) < 1e-12
+
+
+def test_baselines_contain_and_lie_on_the_grid():
+    for G in _graphs(15, 4):
+        G, g, ge, ip, ix = _graph(G)
+        r = orcut.curvature(g, measure=Fraction(0), exact_fraction=True)
+        num, den = r["w1_num"].astype(object), r["w1_den"].astype(object)
+        B = bm_tlw(ip, ix, ge); D = B["den"].astype(object)
+        up = snap(B["upper"], B["den"]).astype(object)
+        for low in (B["bm_lower"], B["tlw_lower"]):
+            lo = snap(low, B["den"]).astype(object)
+            assert not np.any(lo * den > (den - num) * D) and not np.any(up * den < (den - num) * D)
+
+
+def test_screen_then_solve_is_exact():
+    for G in _graphs(6, 5):
+        G, g, ge, ip, ix = _graph(G)
+        r = orcut.curvature(g, exact_fraction=True)
+        for theta in (0, Fraction(1, 10), Fraction(-1, 5)):
+            out = screen_then_solve(g, theta)
+            a, b = Fraction(theta).numerator, Fraction(theta).denominator
+            truth = b * (r["w1_den"].astype(object) - r["w1_num"].astype(object)) < a * r["w1_den"].astype(object)
+            assert np.array_equal(out["below"], np.asarray(truth, bool))

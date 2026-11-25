@@ -74,8 +74,8 @@ def main():
     if "tightness" in steps:
         for s in reg:
             r = X.tightness(s, threads, args.force)
-            log(f"tightness {s.name}: |E|={r['m']} TQ {r['tq_sign']:.1f}% prior {r['prior_sign']:.1f}% "
-                f"(violations {r['tq_violations']}/{r['prior_violations']})")
+            log(f"tightness {s.name}: |E|={r['m']} signs TQ {r['tq_sign']:.1f}% BM {r['bm_sign']:.1f}% "
+                f"TLW {r['tlw_sign']:.1f}% (violations {r['violations']})")
     if "range" in steps:
         cap = args.range_max_edges or (5_000 if args.quick else None)
         for s in table:
@@ -90,7 +90,7 @@ def main():
                 continue
             r = X.measures(s, threads, args.milp_time_limit, args.force, args.range_budget)
             log(f"measures {s.name}: " + "  ".join(
-                f"{k} {r[k]['tq_sign']:.1f}/{r[k]['range_sign']:.1f}%" for k in ("nonlazy", "half", "degree")))
+                f"{k} {r[k]['tq_sign']:.1f}/{r[k]['range_sign']:.1f}%" for k in ("lazy", "half", "degree")))
     if "kstar" in steps:
         for s in table:
             n, E = suite.load(s)

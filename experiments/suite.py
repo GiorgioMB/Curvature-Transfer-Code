@@ -1,29 +1,11 @@
-"""The graphs of the paper, defined once.
+"""The graphs of Table 2 and of the sentences of Section 6, defined once.
 
-Every step that evaluates graphs (the per-edge tables, Tables 2-5, the
-screening table, Figures 2-4, the numbers quoted in the text) draws its graphs
-from :data:`REGISTRY` through :func:`load`, so the same name always denotes
-the same edge set. In particular:
+Every step draws its graphs from :data:`REGISTRY` through :func:`load`, so a name always denotes the same
+edge set: every graph is restricted to its largest connected component, in one place (:func:`load`), and
+every statistic uses every edge.
 
-* every graph is restricted to its largest connected component (the paper
-  assumes connected graphs), in one place, :func:`load`;
-* there is no edge subsampling anywhere: every statistic uses every edge;
-* the per-edge file tag (``Spec.tag``) is what the figure file names use, so
-  a figure and a table row with the same graph are computed from the same
-  per-edge arrays.
-
-Groups:
-
-* ``random``    random graph models (degree heterogeneity, clustering,
-                geometry, community structure);
-* ``canonical`` deterministic families with known curvature (clean extremes);
-* ``real``      the real networks in ``experiments/data``.
-
-Aggregate statements in the text (ranges, medians, counts "on k of the N
-graphs") are computed over :data:`AGGREGATE_GROUPS`; the canonical graphs are
-reported in the tables but are excluded from those aggregates, because on
-them several bounds are exact by construction (Theorem 4.8 on trees, JL on
-trees, BF on K_n), which makes ratios such as the gap reduction 0/0.
+Groups: ``random`` (Erdos-Renyi, Barabasi-Albert, Watts-Strogatz, random geometric, hyperbolic, stochastic
+block, random regular) and ``real`` (the networks in ``experiments/data``).
 """
 from __future__ import annotations
 
@@ -38,16 +20,16 @@ import numpy as np
 import generators as gen
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-GROUPS = ("random", "canonical", "real")
+GROUPS = ("random", "real")
 AGGREGATE_GROUPS = ("random", "real")
-GROUP_TITLES = {"random": "Random graph models", "canonical": "Canonical graphs", "real": "Real networks"}
+GROUP_TITLES = {"random": "Random graph models", "real": "Real networks"}
 
 
 @dataclass(frozen=True)
 class Spec:
     name: str              # name in the tables
     tag: str               # per-edge file tag (figure file names use tag with '.' -> '_')
-    group: str             # random | canonical | real
+    group: str             # random | real
     make: Callable[[int], Tuple[int, object]] = field(compare=False, repr=False)  # seed -> (n, edges)
     prose: str = ""        # name used in running text (LaTeX); defaults to ``name``
 
@@ -91,10 +73,6 @@ def _R(name, tag, make, prose=""):
     return Spec(name, tag, "random", make, prose)
 
 
-def _C(name, tag, make, prose=""):
-    return Spec(name, tag, "canonical", make, prose)
-
-
 REGISTRY: List[Spec] = [
     # --- random graph models -------------------------------------------------
     _R("BA(800, 2)", "ba_n800_m2", lambda s: gen.barabasi_albert(800, 2, seed=s), "BA$(800,2)$"),
@@ -117,13 +95,6 @@ REGISTRY: List[Spec] = [
        lambda s: gen.make_sbm_graph([500, 500], 0.004002, 0.012006, seed=s), "SBM (disassortative)"),
     _R("RReg(1000, 8)", "rreg_n1000_d8", lambda s: gen.d_regular_graph(1000, 8, seed=s), "RReg$(1000,8)$"),
     _R("RReg(2000, 8)", "rreg_n2000_d8", lambda s: gen.d_regular_graph(2000, 8, seed=s), "RReg$(2000,8)$"),
-    # --- canonical families -------------------------------------------------
-    _C("Cycle(600)", "cycle_n600", lambda s: gen.cycle_graph(600), "Cycle"),
-    _C("Grid(40,40)", "grid_40x40", lambda s: gen.grid_graph(40, 40), "Grid"),
-    _C("Torus(32,32)", "torus_32x32", lambda s: gen.torus_graph(32, 32), "Torus$(32,32)$"),
-    _C("Torus(40,40)", "torus_40x40", lambda s: gen.torus_graph(40, 40), "Torus$(40,40)$"),
-    _C("Tree(4,6)", "tree_d4_h6", lambda s: gen.dary_tree(4, 6), "Tree"),
-    _C("Complete(120)", "complete_n120", lambda s: gen.complete_graph(120), "$K_{120}$"),
     # --- real networks (table order) -----------------------------------------
     Spec("Arxiv", "real_arxiv", "real", _real("arxiv")),
     Spec("Jazz", "real_jazz", "real", _real("jazz")),
@@ -146,7 +117,7 @@ DIST_GRAPHS = {"ER": "ER(800, 0.0100125)", "HRG": "HRG(800, 5.0, 1.0, 0.0)", "Ye
 SCREENING_MAP_GRAPH = "RGG(800, 0.056419)"                                            # fig:screening-map
 
 # graphs used by --quick (a smoke test of the pipeline, not the paper's numbers)
-QUICK = ["BA(800, 2)", "ER(800, 0.0100125)", "HRG(800, 5.0, 1.0, 0.0)", "Grid(40,40)", "Tree(4,6)", "Karate", "Yeast"]
+QUICK = ["BA(800, 2)", "ER(800, 0.0100125)", "WS(800, 10, 0.2)", "Karate", "Yeast"]
 
 
 def largest_component(n: int, edges) -> Tuple[int, np.ndarray]:

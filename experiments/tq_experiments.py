@@ -3,14 +3,15 @@
 Steps (each writes results/<step>/<tag>.json, and .npz with per-edge arrays where later steps need them;
 a graph already done is skipped unless force=True):
 
-  tightness   every registry graph: exact lazy curvature (orcut, integer fractions), TQ (exact integers), the
-              prior certificate (the sharpened interval of the preliminary version) -> Table 2, TQ and Prior
-  range       graphs of a size cap: the full range of Theorem 5.2 (orcut on local graphs, integer program)
-              -> Table 2, Full range, and the gaps
-  measures    small graphs: non-lazy, idleness 1/2 through Corollary 5.4, degree-biased -> MeasGap*, MeasSignGap
-  kstar       the full range as a middle stage between TQ and orcut -> KStarDec*, KStarSlow*
-  screening   large networks: screen-then-solve against full evaluation -> Table 3
-  benchmark   four random families of growing size: full evaluation, TQ, BF -> Figure 3
+  tightness   non-lazy measure, every registry graph: exact curvature (orcut, integer fractions), TQ, and the
+              bounds of BM and TLW, all decided exactly -> Table 2 (BM, TLW, TQ)
+  range       non-lazy measure: the full range of Theorem 5.2 (orcut on local graphs, integer program)
+              -> Table 2 (full range), GapLoMean, GapHiMean, SignGapMax
+  measures    lazy measure, idleness 1/2 through Corollary 5.4, degree-biased walk: TQ and the full range
+              -> MeasGapLo, MeasGapHi, MeasSignGap
+  kstar       lazy measure: the full range as a middle stage between TQ and orcut -> KStarDec*, KStarSlow*
+  screening   lazy measure, large networks: screen-then-solve (Algorithm 1) against full evaluation -> Table 3
+  benchmark   lazy measure, four random families of growing size: full evaluation, TQ, BF -> Figure 3
 """
 import json
 import os
@@ -30,14 +31,15 @@ for p in (ROOT, HERE):
 import generators as gen                                   # noqa: E402
 import large_graphs                                        # noqa: E402
 import suite                                               # noqa: E402
-from curvature_transfer import CurvatureEngine            # noqa: E402
-from curvature_transfer.full_range import (                # noqa: E402
+from fractions import Fraction                             # noqa: E402
+from tqbound.baselines import bm_tlw, snap                  # noqa: E402
+from tqbound.full_range import (                            # noqa: E402
     chunks_by_size, local_batch, lower_and_relaxed, upper_end)
-from curvature_transfer.tq_general import tq_general       # noqa: E402
-from curvature_transfer.tq_lazy import bf, bounds_from, tq_lazy   # noqa: E402
+from tqbound.screen import screen_then_solve                # noqa: E402
+from tqbound.tq_general import tq_general                   # noqa: E402
+from tqbound.tq_lazy import bf, tq_lazy                     # noqa: E402
 
 RESULTS = os.path.join(ROOT, "results")
-SNAP0 = 1e-12          # floats of a rational bound within this of 0 are 0 (prior certificate only)
 
 
 # ------------------------------------------------------------------------------------------------- helpers
@@ -91,23 +93,32 @@ def median_time(f, reps):
     return float(np.median(ts)), out
 
 
-def tq_signs(out):
-    """Exact decisions of the integer certificate: (settled, decided negative)."""
-    L, Wu, Wl = out[:, 0], out[:, 1], out[:, 2]
-    neg = Wl > L            # upper end < 0
-    nonneg = Wu <= L        # lower end >= 0
-    return neg | nonneg, neg
+def grid(measure, a, b):
+    """Denominator of the masses of a one-step measure on an edge with degrees a <= b (None: not rational with
+    a small denominator); bounds and curvatures are multiples of 1/grid, so decisions are exact after snap."""
+    if measure == "nonlazy":
+        return a * b
+    if measure == "lazy":
+        return (a + 1) * (b + 1)
+    if measure == "half":
+        return a * (b + 1)          # idleness w_j = 1/(b + 1) at both endpoints, before the lift
+    return None
 
 
-def contained(out, num, den):
-    """Number of edges whose exact curvature 1 - num/den lies outside the integer certificate."""
-    L, Wu, Wl = (out[:, c].astype(object) for c in range(3))
-    num = num.astype(object); den = den.astype(object)
-    return int(np.sum((num * L > Wu * den) | (Wl * den > num * L)))
+def exact_kappa(g, measure, deg, threads):
+    """Exact curvature with integer fractions (W1 = num/den) for 'nonlazy', 'lazy', 'half'; floats for 'degree'."""
+    if measure == "degree":
+        w = 1.0 / deg[np.asarray(g.indices)]
+        return orcut.curvature(g, measure=Walk(weights=w, idleness="lazy"), n_jobs=threads), None, None
+    ms = {"nonlazy": Fraction(0), "lazy": "lazy", "half": Fraction(1, 2)}[measure]
+    r = orcut.curvature(g, measure=ms, exact_fraction=True, n_jobs=threads)
+    return r["curvature"], r["w1_num"].astype(object), r["w1_den"].astype(object)
 
 
-def snap(x):
-    return np.where(np.abs(x) < SNAP0, 0.0, x)
+def exact_outside(lo_n, up_n, D, num, den):
+    """Edges whose exact curvature 1 - num/den lies outside [lo_n/D, up_n/D]."""
+    lo_n, up_n, D = (np.asarray(x).astype(object) for x in (lo_n, up_n, D))
+    return int(np.sum((lo_n * den > (den - num) * D) | (up_n * den < (den - num) * D)))
 
 
 def environment(threads, reps):
@@ -122,23 +133,23 @@ def tightness(spec, threads, force=False):
         return load_json("tightness", spec.tag)
     n, E = suite.load(spec)
     g, ge, ip, ix = build(n, E)
-    r = orcut.curvature(g, exact_fraction=True, n_jobs=threads)
-    k, num, den = r["curvature"], r["w1_num"], r["w1_den"]
-    out = tq_lazy(ip, ix, ge)
-    lo, up = bounds_from(out)
-    settled, _ = tq_signs(out)
-    iv = CurvatureEngine.from_edges(ge, num_nodes=n).intervals()
-    plo, pup = snap(np.asarray(iv["sharpened_lower"])), snap(np.asarray(iv["sharpened_upper"]))
-    psettled = (plo >= 0) | (pup < 0)
+    deg = np.diff(ip)
+    k, num, den = exact_kappa(g, "nonlazy", deg, threads)
+    o = np.empty((len(ge), 4))
+    tq_general(ip, ix, np.ascontiguousarray(ge[:, 0]), np.ascontiguousarray(ge[:, 1]), 1, 0.0, 0, o,
+               max(1, min(len(ge), 8 * threads)))
+    B = bm_tlw(ip, ix, ge)
+    D = B["den"]
+    lo, up = snap(o[:, 0], D), snap(o[:, 1], D)
+    bm, tl, ub = snap(B["bm_lower"], D), snap(B["tlw_lower"], D), snap(B["upper"], D)
     res = {"name": spec.name, "tag": spec.tag, "group": spec.group, "n": int(n), "m": int(len(ge)),
-           "dmax": int(np.diff(ip).max()),
-           "tq_sign": 100 * float(settled.mean()), "tq_width": float(np.mean(up - lo)),
-           "prior_sign": 100 * float(psettled.mean()), "prior_width": float(np.mean(pup - plo)),
-           "kappa_nonzero": 100 * float(np.mean(num != den)),
-           "tq_violations": contained(out, num, den),
-           "prior_violations": int(np.sum((plo > k + 1e-9) | (pup < k - 1e-9)))}
-    save("tightness", spec.tag, res, {"edges": ge, "k": k, "num": num, "den": den, "tq": out,
-                                      "prior_lo": plo, "prior_up": pup})
+           "dmax": int(deg.max()),
+           "tq_sign": 100 * float(np.mean((lo >= 0) | (up < 0))), "tq_width": float(np.mean((up - lo) / D)),
+           "bm_sign": 100 * float(np.mean((bm >= 0) | (ub < 0))), "bm_width": float(np.mean((ub - bm) / D)),
+           "tlw_sign": 100 * float(np.mean((tl >= 0) | (ub < 0))), "tlw_width": float(np.mean((ub - tl) / D)),
+           "violations": {"tq": exact_outside(lo, up, D, num, den), "bm": exact_outside(bm, ub, D, num, den),
+                          "tlw": exact_outside(tl, ub, D, num, den)}}
+    save("tightness", spec.tag, res, {"edges": ge, "k": k, "num": num, "den": den, "D": D, "tq_lo": lo, "tq_up": up})
     return res
 
 
@@ -197,22 +208,25 @@ def full_range(spec, threads, time_limit=60.0, force=False, budget=None):
     if done("range", spec.tag) and not force:
         return load_json("range", spec.tag)
     T = load_npz("tightness", spec.tag)
-    ge, k, out = T["edges"], T["k"], T["tq"]
+    ge, k, D = T["edges"], T["k"], T["D"]
+    lo_n, up_n = T["tq_lo"], T["tq_up"]
+    lo, up = lo_n / D, up_n / D
     n = int(ge.max()) + 1
     _, _, ip, ix = build(n, ge)
     adj, deg = adjacency(ip, ix)
     edges = [(int(a), int(b)) for a, b in ge]
-    lo, up = bounds_from(out)
     t0 = time.perf_counter()
-    lo_s, hi_s, hi_f, solved, lo_frac, nmilp = _range_for(adj, deg, edges, "lazy", lo, up, threads,
-                                                        time_limit, exact=True, budget=budget)
+    lo_s, hi_s, hi_f, solved, lo_frac, nmilp = _range_for(adj, deg, edges, 0.0, lo, up, threads, time_limit,
+                                                        exact=True, budget=budget)
     secs = time.perf_counter() - t0
-    settled_tq, _ = tq_signs(out)
+    hi_n = np.zeros(len(ge), np.int64)
+    hi_n[solved] = snap(hi_s[solved], D[solved])
     lo_nonneg = lo_frac[:, 0] <= lo_frac[:, 1]                   # exact: kappa_lower* >= 0
-    settled_r = lo_nonneg | (hi_s < -1e-9)
+    settled_r = lo_nonneg | (hi_n < 0)
+    settled_tq = (lo_n >= 0) | (up_n < 0)
     tol = 1e-9
-    viol = int(np.sum((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
-                      | (hi_s > up + tol)))
+    viol = int(np.sum(((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
+                       | (hi_s > up + tol))[solved]))
     res = {"name": spec.name, "tag": spec.tag, "m": int(len(ge)), "complete": bool(solved.all()),
            "unsolved": int((~solved).sum()), "milp_edges": int(nmilp), "seconds": secs,
            "tq_sign": 100 * float(settled_tq.mean()), "range_sign": 100 * float(settled_r[solved].mean()),
@@ -224,16 +238,7 @@ def full_range(spec, threads, time_limit=60.0, force=False, budget=None):
 
 
 # ------------------------------------------------------------------------------------------- other measures
-MEASURES = (("nonlazy", 0.0, (1, 0.0, 0)), ("half", "wj", (2, 0.0, 0)), ("degree", "degree", (0, 0.0, 1)))
-
-
-def _exact_measure(g, ge, deg, name, threads):
-    if name == "nonlazy":
-        return orcut.curvature(g, measure=0.0, n_jobs=threads)
-    if name == "half":
-        return orcut.curvature(g, measure=0.5, n_jobs=threads)
-    w = 1.0 / deg[np.asarray(g.indices)]
-    return orcut.curvature(g, measure=Walk(weights=w, idleness="lazy"), n_jobs=threads)
+MEASURES = (("lazy", "lazy", (0, 0.0, 0)), ("half", "wj", (2, 0.0, 0)), ("degree", "degree", (0, 0.0, 1)))
 
 
 def measures(spec, threads, time_limit=60.0, force=False, budget=None):
@@ -243,24 +248,31 @@ def measures(spec, threads, time_limit=60.0, force=False, budget=None):
     g, ge, ip, ix = build(n, E)
     adj, deg = adjacency(ip, ix)
     edges = [(int(a), int(b)) for a, b in ge]
+    a_ = np.minimum(deg[ge[:, 0]], deg[ge[:, 1]]); b_ = np.maximum(deg[ge[:, 0]], deg[ge[:, 1]])
     res = {"name": spec.name, "tag": spec.tag, "m": int(len(ge))}
     for name, fr_measure, (im, p, wm) in MEASURES:
-        k = _exact_measure(g, ge, deg, name, threads)
+        k, _, _ = exact_kappa(g, name, deg, threads)
         o = np.empty((len(ge), 4))
         tq_general(ip, ix, np.ascontiguousarray(ge[:, 0]), np.ascontiguousarray(ge[:, 1]), im, p, wm, o,
                    max(1, min(len(ge), 8 * threads)))
         lo, up = o[:, 0], o[:, 1]
         lo_s, hi_s, hi_f, solved, _, _ = _range_for(adj, deg, edges, fr_measure, lo, up, threads, time_limit,
                                                     exact=False, budget=budget)
-        if name == "half":               # Corollary 5.4: kappa_{1/2} = (1/2)/(1 - w_j) kappa_{w_j}
-            wj = 1.0 / (np.maximum(deg[ge[:, 0]], deg[ge[:, 1]]) + 1.0)
-            c = 0.5 / (1.0 - wj)
+        D = grid(name, a_, b_)
+        if D is not None:               # exact decisions on the grid of the measure (before the lift)
+            s_tq = (snap(lo, D) >= 0) | (snap(up, D) < 0)
+            lo_ok = np.where(solved, lo_s, 0.0); hi_ok = np.where(solved, hi_s, 0.0)
+            s_r = (snap(lo_ok, D) >= 0) | (snap(hi_ok, D) < 0)
+        else:
+            tol = 1e-9                  # no small common denominator: conservative, the same rule for both
+            s_tq = (lo > tol) | (up < -tol)
+            s_r = (lo_s > tol) | (hi_s < -tol)
+        if name == "half":              # Corollary 5.4: kappa_{1/2} = (1/2)/(1 - w_j) kappa_{w_j}
+            c = 0.5 / (1.0 - 1.0 / (b_ + 1.0))
             lo, up, lo_s, hi_s, hi_f = c * lo, c * up, c * lo_s, c * hi_s, c * hi_f
         tol = 1e-9
-        viol = int(np.sum((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
-                          | (hi_s > up + tol)))
-        s_tq = (lo > tol) | (up < -tol)
-        s_r = (lo_s > tol) | (hi_s < -tol)
+        viol = int(np.sum(((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
+                           | (hi_s > up + tol))[solved]))
         res[name] = {"complete": bool(solved.all()), "violations": viol,
                      "gap_lo": float(np.mean((lo_s - lo)[solved])), "gap_hi": float(np.mean((up - hi_s)[solved])),
                      "tq_sign": 100 * float(s_tq.mean()), "range_sign": 100 * float(s_r[solved].mean())}
@@ -274,8 +286,8 @@ def kstar(tag, name, n, E, threads, reps, force=False):
         return load_json("kstar", tag)
     g, ge, ip, ix = build(n, E)
     out = tq_lazy(ip, ix, ge)
-    settled, _ = tq_signs(out)
-    und = np.flatnonzero(~settled)
+    L, Wu, Wl = out[:, 0], out[:, 1], out[:, 2]
+    und = np.flatnonzero(~((Wl > L) | (Wu <= L)))
     res = {"name": name, "tag": tag, "m": int(len(ge)), "undecided": int(len(und))}
     if len(und) == 0:
         save("kstar", tag, res)
@@ -314,20 +326,14 @@ def screening(tag, name, n, E, threads, reps, force=False):
     orcut.curvature(g, edges=np.arange(min(5, len(ge))), n_jobs=threads)
     tq_lazy(ip, ix, ge[:5])
     t_full, rf = median_time(lambda: orcut.curvature(g, exact_fraction=True, n_jobs=threads), reps)
-    t_tq, out = median_time(lambda: tq_lazy(ip, ix, ge), reps)
-    settled, neg_tq = tq_signs(out)
-    und = np.flatnonzero(~settled)
-    t_solve = 0.0
-    neg = neg_tq.copy()
-    if len(und):
-        t_solve, rs = median_time(lambda: orcut.curvature(g, edges=und, exact_fraction=True, n_jobs=threads),
-                                  reps)
-        neg[und] = rs["w1_num"] > rs["w1_den"]
+    runs = [screen_then_solve(g, 0, n_jobs=threads) for _ in range(reps)]
+    t_tq = float(np.median([r["t_bound"] for r in runs])); t_solve = float(np.median([r["t_solve"] for r in runs]))
+    last = runs[-1]
     truth = rf["w1_num"] > rf["w1_den"]
     res = {"name": name, "tag": tag, "n": int(n), "m": int(len(ge)), "dmax": int(np.diff(ip).max()),
-           "t_full": t_full, "t_tq": t_tq, "t_solve": t_solve, "decided": 100 * float(settled.mean()),
+           "t_full": t_full, "t_tq": t_tq, "t_solve": t_solve, "decided": 100 * float(last["decided"].mean()),
            "tq_frac": 100 * t_tq / t_full, "speedup": t_full / (t_tq + t_solve),
-           "exact_answer": bool(np.array_equal(neg, truth)), "negative_edges": int(truth.sum())}
+           "exact_answer": bool(np.array_equal(last["below"], truth)), "negative_edges": int(truth.sum())}
     save("screening", tag, res)
     return res
 

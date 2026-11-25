@@ -3,13 +3,13 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "curvature-transfer"
+name = "tqbound"
 version = "2.0.0"
-description = "Ollivier-Ricci bounds from the building blocks of Balanced Forman curvature: code of the experiments"
+description = "The triangle-quadrangle bound on Ollivier-Ricci curvature: library and experiments"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12,<3.14"
-# The library (curvature_transfer) needs only these. Exact curvatures and the timing baseline come from
+# The library (tqbound) needs only these. Exact curvatures and the timing baseline come from
 # orcut 1.3.1 (PyPI: faster-or-curvature; native backend), the versions with which the suite was validated.
 dependencies = [
     "faster-or-curvature==1.3.1",
@@ -36,5 +36,5 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["curvature_transfer"]
+packages = ["tqbound"]
 
