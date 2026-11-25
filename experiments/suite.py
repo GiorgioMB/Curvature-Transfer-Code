@@ -130,6 +130,9 @@ REGISTRY: List[Spec] = [
     Spec("Karate", "real_karate", "real", _real("karate")),
     Spec("Power Grid", "real_power_grid", "real", _real("power_grid")),
     Spec("Yeast", "real_yeast", "real", _real("yeast")),
+    Spec("Cora", "real_cora", "real", _real("cora")),
+    Spec("CiteSeer", "real_citeseer", "real", _real("citeseer")),
+    Spec("PubMed", "real_pubmed", "real", _real("pubmed")),
 ]
 
 BY_NAME = {s.name: s for s in REGISTRY}

@@ -20,7 +20,7 @@ def _route(a, b):
 
 
 @njit(cache=True)
-def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode,
+def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode, capmode,
           stamp, tag, lidx, Ui, Uj, Cc, Hp, Hy, UUp, UUx, XCp, XCk, KYp, KYy, CCp, CCk, KXp, KXx, cur,
           dHi, dHj, dCU, dCj, nout, rS, rx, ry, resS, resx, resy, order, cnt, supNbY, badY,
           gptr, gadj, gdeg, comp, queue, capv, out):
@@ -191,8 +191,27 @@ def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode,
     for kk in range(t):
         if rS[2 + kk] < 0.0:
             nCdem += 1
+    for s in range(ns):        # adjacent demand vertices of every supplier of S, for the order below
+        if s == 0:
+            cnt[s] = (1 if rS[1] < 0.0 else 0) + nCdem
+        elif s == 1:
+            cnt[s] = (1 if rS[0] < 0.0 else 0) + nCdem + ny
+        else:
+            c0 = (1 if rS[0] < 0.0 else 0) + (1 if rS[1] < 0.0 else 0) + dCU[s - 2]
+            for f in range(CCp[s - 2], CCp[s - 1]):
+                if rS[2 + CCk[f]] < 0.0:
+                    c0 += 1
+            cnt[s] = c0
+    for s in range(ns):
+        order[s] = s
+    for a1 in range(1, ns):    # insertion sort by number of options (ns is small)
+        key = order[a1]; b1 = a1 - 1
+        while b1 >= 0 and cnt[order[b1]] > cnt[key]:
+            order[b1 + 1] = order[b1]; b1 -= 1
+        order[b1 + 1] = key
     for phase in range(2):    # phase 0: suppliers with fallback 2 (step 2); phase 1: all (step 4a)
-        for s in range(ns):
+        for so in range(ns):
+            s = order[so]
             if rS[s] <= 0.0 or resS[s] <= 0.0:
                 continue
             if s == 0:
@@ -401,7 +420,7 @@ def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode,
                     gadj[cur[me]] = o; cur[me] += 1; gadj[cur[o]] = me; cur[o] += 1
     # capped supply / demand of every node (all neighbours, as in the formal statement)
     for xx in range(nx):
-        nb = rmi
+        nb = rmi if capmode == 0 else 0.0
         for f in range(Hp[xx], Hp[xx + 1]):
             nb += ry[Hy[f]]
         for f in range(XCp[xx], XCp[xx + 1]):
@@ -416,11 +435,11 @@ def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode,
             for f in range(KYp[kk], KYp[kk + 1]):
                 supNbY[KYy[f]] += rS[2 + kk]
     for yy in range(ny):
-        capv[nx + t + yy] = _route(ry[yy], supNbY[yy] + rpj)
+        capv[nx + t + yy] = _route(ry[yy], supNbY[yy] + (rpj if capmode == 0 else 0.0))
     for kk in range(t):
         r = rS[2 + kk]
         if r > 0.0:
-            nb = rmi + rmj
+            nb = (rmi + rmj) if capmode == 0 else 0.0
             for f in range(KYp[kk], KYp[kk + 1]):
                 nb += ry[KYy[f]]
             for f in range(CCp[kk], CCp[kk + 1]):
@@ -428,7 +447,7 @@ def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode,
                     nb -= rS[2 + CCk[f]]
             capv[nx + kk] = _route(r, nb)
         elif r < 0.0:
-            nb = rpi + rpj
+            nb = (rpi + rpj) if capmode == 0 else 0.0
             for f in range(KXp[kk], KXp[kk + 1]):
                 nb += rx[KXx[f]]
             for f in range(CCp[kk], CCp[kk + 1]):
@@ -496,7 +515,7 @@ def _edge(indptr, indices, deg, u, v, ep, idle_mode, p, wmode,
 
 
 @njit(cache=True, parallel=True)
-def tq_general(indptr, indices, eu, ev, idle_mode, p, wmode, out, nchunks):
+def tq_general(indptr, indices, eu, ev, idle_mode, p, wmode, out, nchunks, capmode=0):
     n = indptr.shape[0] - 1
     m = eu.shape[0]
     deg = np.empty(n, np.int64)
@@ -531,7 +550,7 @@ def tq_general(indptr, indices, eu, ev, idle_mode, p, wmode, out, nchunks):
         comp = np.empty(3 * D, np.int64); queue = np.empty(3 * D, np.int64); capv = np.empty(3 * D, np.float64)
         o = np.empty(NOUT, np.float64)
         for e in range(lo, hi):
-            _edge(indptr, indices, deg, eu[e], ev[e], e + 1, idle_mode, p, wmode,
+            _edge(indptr, indices, deg, eu[e], ev[e], e + 1, idle_mode, p, wmode, capmode,
                   stamp, tag, lidx, Ui, Uj, Cc, Hp, Hy, UUp, UUx, XCp, XCk, KYp, KYy, CCp, CCk, KXp, KXx, cur,
                   dHi, dHj, dCU, dCj, nout, rS, rx, ry, resS, resx, resy, order, cnt, supNbY, badY,
                   gptr, gadj, gdeg, comp, queue, capv, o)

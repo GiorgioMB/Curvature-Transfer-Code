@@ -118,43 +118,54 @@ def upper_end(adj, deg, measure, u, v, time_limit=60.0):
                 cand.setdefault(k, len(cand))
     nA = len(arcs_p)
     twins = [(g, a_, b_, x, y) for (g, a_, b_, x, y) in gated if (x, y) in hub_of]
-    nT = len(twins); nG = len(cand)
+    nT = len(twins)
     if nT == 0:                                            # nothing can be opened: the upper end is the lower end
         val = _transport(sup, dem, arcs_p, arcs_q, arcs_c, len(P), len(Q))
         return (1.0 - val, True) if val is not None else (np.nan, False)
+    # dominance: opening a pair only adds options, so a pair whose two endpoints have a free degree at least
+    # their number of candidate pairs is open in some optimum; only pairs at a binding vertex need a binary
+    load = {}
+    for k in cand:
+        ends = (('y', k[2]), ('z', k[1])) if k[0] == 'z' else (('y', k[1]), ('y', k[2]))
+        for e_ in ends:
+            load[e_] = load.get(e_, 0) + 1
+    def free(e_):
+        return B['sy'][e_[1]] if e_[0] == 'y' else B['sz'][e_[1]]
+    def ends_of(k):
+        return (('y', k[2]), ('z', k[1])) if k[0] == 'z' else (('y', k[1]), ('y', k[2]))
+    binding = {e_ for e_, c_ in load.items() if free(e_) < c_}
+    var_keys = [k for k in cand if any(e_ in binding for e_ in ends_of(k))]
+    vk = {k: t for t, k in enumerate(var_keys)}
+    nG = len(var_keys)
     nV = nA + nT + nG
     c = np.concatenate([np.array(arcs_c, float), np.full(nT, 2.0), np.zeros(nG)])
     nP, nQ = len(P), len(Q)
     tw_p = np.array([t[1] for t in twins], np.int64); tw_q = np.array([t[2] for t in twins], np.int64)
     ap = np.array(arcs_p, np.int64); aq = np.array(arcs_q, np.int64)
-    # supply rows 0..nP-1 and demand rows nP..nP+nQ-1, for the arcs and their twins
     rows = list(np.concatenate([ap, nP + aq, tw_p, nP + tw_q]))
     cols = list(np.concatenate([np.arange(nA), np.arange(nA), nA + np.arange(nT), nA + np.arange(nT)]))
     vals = [1.0] * len(rows)
     lo = list(sup) + list(dem); hi = list(sup) + list(dem)
     R = nP + nQ
-    cap = float(max(sup.max(), dem.max()))
     for t_, (g, aa, bb, x, y) in enumerate(twins):       # a twin carries mass only through an open pair
+        ks = hub_of[(x, y)]
+        if any(k not in vk for k in ks):                 # one of its pairs is open in some optimum
+            continue
+        cap = float(min(sup[aa], dem[bb]))
         rows.append(R); cols.append(nA + t_); vals.append(1.0)
-        for k in hub_of[(x, y)]:
-            rows.append(R); cols.append(nA + nT + cand[k]); vals.append(-cap)
+        for k in ks:
+            rows.append(R); cols.append(nA + nT + vk[k]); vals.append(-cap)
         lo.append(-np.inf); hi.append(0.0); R += 1
-    slots = {}
-    for k, q in cand.items():
-        if k[0] == 'z':
-            slots.setdefault(('y', k[2]), []).append(q); slots.setdefault(('z', k[1]), []).append(q)
-        else:
-            slots.setdefault(('y', k[1]), []).append(q); slots.setdefault(('y', k[2]), []).append(q)
-    for (kind, w), qs in slots.items():
-        bound = B['sy'][w] if kind == 'y' else B['sz'][w]
+    for e_ in binding:                                    # free degrees of the binding vertices
+        qs = [vk[k] for k in var_keys if e_ in ends_of(k)]
         for q in qs:
             rows.append(R); cols.append(nA + nT + q); vals.append(1.0)
-        lo.append(-np.inf); hi.append(float(bound)); R += 1
+        lo.append(-np.inf); hi.append(float(free(e_))); R += 1
     A = sp.csr_matrix((vals, (rows, cols)), shape=(R, nV))
     integ = np.concatenate([np.zeros(nA + nT), np.ones(nG)])
     ub = np.concatenate([np.full(nA + nT, np.inf), np.ones(nG)])
     res = milp(c, constraints=LinearConstraint(A, lo, hi), integrality=integ,
-               bounds=Bounds(np.zeros(nV), ub), options={'time_limit': time_limit})
+               bounds=Bounds(np.zeros(nV), ub), options={'time_limit': time_limit, 'mip_rel_gap': 1e-9})
     if res.status != 0:
         return np.nan, False
     return 1.0 - res.fun, True
@@ -188,45 +199,83 @@ def _local_edges(adj, deg, B, friendly):
     return E, extra
 
 
-def lower_and_relaxed(adj, deg, edges, measure, n_jobs=None):
-    """(kappa_lower*, kappa_relaxed) for every edge: orcut on the adversarial local graphs and on the
-    friendly local graphs without free degrees, batched as disjoint unions (one call per idleness value)."""
+def local_batch(adj, deg, edges, friendly):
+    """Disjoint union of the adversarial (or, with ``friendly``, slot-free friendly) local graphs of ``edges``:
+    returns (orcut graph, ids of the designated edges, original vertex of every union vertex)."""
+    allE = []; des = []; orig = []; off = 0
+    for (u, v) in edges:
+        B = edge_blocks(adj, deg, u, v)
+        E, extra = _local_edges(adj, deg, B, friendly)
+        verts = sorted({w for ab in E for w in ab})
+        lab = {w: off + t for t, w in enumerate(verts)}
+        allE.extend((lab[a], lab[b]) for a, b in E)
+        nloc = len(verts)
+        if extra:
+            allE.extend((lab[w], off + nloc) for w in extra)
+            nloc += 1
+        orig.extend(verts + ([None] if extra else []))
+        des.append((lab[B['i']], lab[B['j']]))
+        off += nloc
+    g = orcut.Graph.from_edges(np.array(allE, np.int64), num_nodes=off)
+    ge = np.asarray(g.edges)
+    pos = {(int(a), int(b)): t for t, (a, b) in enumerate(ge)}
+    ids = np.array([pos[(min(a, b), max(a, b))] for a, b in des], np.int64)
+    return g, ids, orig
+
+
+def batch_measure(g, orig, deg, measure, key=None):
+    """The orcut measure of ``measure`` on a batch (``key``: the idleness w_j of the group for 'wj')."""
+    if measure == 'lazy':
+        return 'lazy'
+    if measure == 'wj':
+        return key
+    if measure == 'degree':
+        ind = np.asarray(g.indices)
+        dg = np.array([deg[w] if w is not None else 1 for w in orig], float)
+        return Walk(weights=1.0 / dg[ind], idleness='lazy')
+    return float(measure)
+
+
+def chunks_by_size(adj, deg, edges, cap=2_000_000):
+    """Split ``edges`` into consecutive chunks whose local graphs have at most about ``cap`` list entries
+    (estimated by d_j plus the degrees of the neighbours of i), so that batches fit in memory."""
+    out, cur, size = [], [], 0
+    for e, (u, v) in enumerate(edges):
+        i, j = (u, v) if deg[u] <= deg[v] else (v, u)
+        est = int(deg[j]) + sum(int(deg[w]) for w in adj[i])
+        if cur and size + est > cap:
+            out.append(cur); cur, size = [], 0
+        cur.append(e); size += est
+    if cur:
+        out.append(cur)
+    return out
+
+
+def lower_and_relaxed(adj, deg, edges, measure, n_jobs=None, exact=False):
+    """(kappa_lower*, kappa_relaxed) for every edge, by orcut on the adversarial local graphs and on the
+    friendly local graphs without free degrees, batched as disjoint unions (one batch per idleness value).
+    With ``exact`` (lazy or rational idleness), also the exact W1 fractions of both: (lo, hi, lo_frac, hi_frac),
+    each fraction an (m, 2) object array of (numerator, denominator)."""
     groups = {}
     for e, (u, v) in enumerate(edges):
         key = 1.0 / (max(deg[u], deg[v]) + 1) if measure == 'wj' else None
         groups.setdefault(key, []).append(e)
-    lo = np.full(len(edges), np.nan); hi = np.full(len(edges), np.nan)
+    m = len(edges)
+    lo = np.full(m, np.nan); hi = np.full(m, np.nan)
+    fr = [np.empty((m, 2), object), np.empty((m, 2), object)]
+    pieces = []
     for key, idx in groups.items():
-        for friendly, outv in ((False, lo), (True, hi)):
-            allE = []; des = []; orig = []; off = 0
-            for e in idx:
-                B = edge_blocks(adj, deg, *edges[e])
-                E, extra = _local_edges(adj, deg, B, friendly)
-                verts = sorted({w for ab in E for w in ab})
-                lab = {w: off + t for t, w in enumerate(verts)}
-                allE.extend((lab[a], lab[b]) for a, b in E)
-                nloc = len(verts)
-                if extra:
-                    zl = off + nloc
-                    allE.extend((lab[w], zl) for w in extra)
-                    nloc += 1
-                orig.extend(verts + ([None] if extra else []))
-                des.append((lab[B['i']], lab[B['j']]))
-                off += nloc
-            g = orcut.Graph.from_edges(allE)
-            ge = np.asarray(g.edges)
-            pos = {(int(a), int(b)): t for t, (a, b) in enumerate(ge)}
-            ids = np.array([pos[(min(a, b), max(a, b))] for a, b in des])
-            if measure == 'lazy':
-                ms = 'lazy'
-            elif measure == 'wj':
-                ms = key
-            elif measure == 'degree':
-                ind = np.asarray(g.indices)
-                dg = np.array([deg[w] if w is not None else 1 for w in orig], float)
-                ms = Walk(weights=1.0 / dg[ind], idleness='lazy')
+        sub = [edges[e] for e in idx]
+        for ch in chunks_by_size(adj, deg, sub):
+            pieces.append((key, np.array([idx[c] for c in ch])))
+    for key, idx in pieces:
+        for t_, (friendly, outv) in enumerate(((False, lo), (True, hi))):
+            g, ids, orig = local_batch(adj, deg, [edges[e] for e in idx], friendly)
+            ms = batch_measure(g, orig, deg, measure, key)
+            if exact:
+                r = orcut.curvature(g, measure=ms, edges=ids, n_jobs=n_jobs, exact_fraction=True)
+                outv[idx] = r['curvature']
+                fr[t_][idx, 0] = r['w1_num'].astype(object); fr[t_][idx, 1] = r['w1_den'].astype(object)
             else:
-                ms = float(measure)
-            k = orcut.curvature(g, measure=ms, edges=ids, n_jobs=n_jobs)
-            outv[np.array(idx)] = k
-    return lo, hi
+                outv[idx] = orcut.curvature(g, measure=ms, edges=ids, n_jobs=n_jobs)
+    return (lo, hi, fr[0], fr[1]) if exact else (lo, hi)

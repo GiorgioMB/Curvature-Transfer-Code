@@ -1,58 +1,58 @@
-# Curvature Transfer
+# Curvature-Transfer-Code
 
-Code for the experiments of
+Code of the experiments (Section 6) of
 
-> Giorgio Micaletto and Tebe Nigrelli. *From Proxy to Certificate: Two-Sided Ollivier--Ricci Bounds from Balanced Forman Curvature.* 2026. [arXiv:2603.13535](https://arxiv.org/abs/2603.13535)
+> Giorgio Micaletto and Tebe Nigrelli. *From Proxy to Certificate: Ollivier–Ricci Bounds from the
+> Building Blocks of Balanced Forman Curvature.* 2026.
 
-An earlier version, [*Scalable Graph Curvature*](https://neurips.cc/virtual/2026/loc/paris/159361), was accepted
-(non-archival) at the NeurIPS 2026 workshop *Bridging Optimal Transport, Learning and Structured Data*. The Lean 4
-formalization is in [BF-OR-Lean](https://github.com/GiorgioMB/BF-OR-Lean/).
+The library `curvature_transfer` computes the triangle–quadrangle (TQ) bound of Theorem 5.3 and the full
+range of Theorem 5.2; `main.py` runs every experiment and writes the numbers, tables and figures that the
+manuscript reads. Exact curvatures, and the baseline of every timing, come from
+[orcut](https://github.com/GiorgioMB/orcut) 1.3.1 with integer fractions; the Lean formalization is in
+[BF-OR-Lean](https://github.com/GiorgioMB/BF-OR-Lean).
 
-For every edge of an undirected simple graph, the package computes the exact lazy, non-lazy and Lin–Lu–Yau
-curvatures (with [`orcut`](https://github.com/GiorgioMB/orcut) 1.0.0, the solver of every exact value of the
-paper), Balanced Forman curvature and its 2-hop statistics, every certified bound of the paper, and
-certify-then-solve screening, which answers threshold queries exactly and solves transport problems only on
-the edges its bounds leave undecided.
-
-```python
-from curvature_transfer import CurvatureEngine
-eng = CurvatureEngine.from_edges([(0, 1), (1, 2), (2, 0), (2, 3)])  # or a networkx graph
-eng.bf()                          # Balanced Forman curvature, aligned with eng.edges (u < v)
-eng.exact()["c_OR"]               # exact lazy OR curvature (also "c_OR0", "c_LLY")
-iv = eng.intervals()              # BF, matching, and sharpened intervals for c_OR
-eng.edge_table()                  # everything as a pandas DataFrame
-```
-
-Names in the code are not always the paper's symbols (`c_BF`, `c_OR`, `c_OR0`, `c_LLY`, `matching`, `varpi`,
-`C4` are κ_BF, κ_OR, κ_0, κ_LLY, M_ij, γ_max, □_ij); the full list is in `curvature_transfer/bounds.py`.
-
-## Reproducing the paper
+## Install
 
 ```bash
-./run_experiments.sh                 # every result (uv, with the locked environment of uv.lock)
-./run_experiments.sh --quick         # smoke run of the whole pipeline (minutes; not the paper's numbers)
-./run_experiments.sh --list          # the steps and what each one produces
-./run_experiments.sh --steps paper --paper ~/overleaf --manuscript tex/manuscript-journal.tex
+uv lock && uv sync --extra experiments --extra dev      # or: pip install -e ".[experiments,dev]"
+uv run python -m pytest -q tests/test_tq.py              # 11 fast checks against orcut
 ```
 
-Without uv: `pip install -e ".[experiments,dev]"`, then `python main.py` with the same options; `pytest -q`
-runs the tests. The `paper` step (`experiments/paper_artifacts.py`) writes what the manuscript reads into
-`--paper` (default `results/paper`): `generated/numbers.tex` (every number, `\res{Key}`, and every table body,
-`\resrows{label}`), `generated/INDEX.md` (the source file of each number, and the manuscript's keys that are
-still missing) and `figures_paper/`. Every step saves its work as soon as it is computed, so a killed run
-resumes where it stopped when the same command is run again. The full run takes a few days on a workstation,
-most of it in the runtime benchmark.
+## Run
+
+```bash
+python main.py --quick                 # smoke run of every step (minutes, one repetition)
+python main.py                         # every step, as in the paper (resumes from results/)
+python main.py --steps tightness,range --only "BA(800, 2),Cora"
+python main.py --steps paper           # only rebuild generated/ and figures_paper/ from results/
+```
+
+Every step writes one file per graph under `results/<step>/` and skips graphs already done, so a run can
+be interrupted and resumed; `--force` recomputes. `--threads` sets the threads of numba, orcut and the
+integer programs (default: all). On a cluster, `slurm/suite.sbatch` is a starting point.
+
+| Step | What it computes | Manuscript |
+|---|---|---|
+| `tightness` | every registry graph: exact curvature, TQ (exact integers), the prior certificate (the sharpened interval of the preliminary version) | Table 2 (Prior, TQ); `NumSynthetic`, `NumReal`, `NumGraphs`, `TQSign*`, `PriorSign*` |
+| `range` | the full range of Theorem 5.2: lower end by orcut on the adversarial local graphs, upper end by the integer program over admissible pairs (per edge `--milp-time-limit`, per graph `--range-budget`; a graph with unsolved edges shows "--") | Table 2 (Full range); `GapLoMean`, `GapHiMean`, `SignGapMax` |
+| `measures` | the same for the non-lazy measure, idleness 1/2 (certified at w_j and lifted by Corollary 5.4) and a degree-biased walk, on graphs up to `--measures-max-edges` | `MeasGapLo`, `MeasGapHi`, `MeasSignGap` |
+| `kstar` | the full range as a middle stage between TQ and orcut, on the edges TQ leaves undecided | `KStarDec*`, `KStarSlow*` |
+| `screening` | screen-then-solve against full evaluation on the large networks of `experiments/large_graphs.py` (downloaded from SNAP and GitHub, cached in `experiments/data/large/`) and PubMed and Arxiv | Table 3; `MaxEdges`, `TQFrac*`, `Dec*`, `CTSSpeed*` |
+| `benchmark` | full evaluation, TQ and BF on four random families of growing size (`--sizes`) | Figure 3 |
+| `paper` | `generated/numbers.tex` (every `\res` and `\resrows` key), `generated/INDEX.md` (what each number is), `figures_paper/runtime_scaling_*.pdf` | all |
+
+The `paper` step refuses to write if any check failed: a bound violated on some edge, the chain of
+Theorem 5.2 broken, or screen-then-solve disagreeing with full evaluation. To build the manuscript, copy
+`generated/` and `figures_paper/` next to the `.tex` file.
 
 ## Layout
 
 | Path | Contents |
-| --- | --- |
-| `curvature_transfer/` | the package: CSR graphs, the 2-hop kernels (Numba), all bounds, the intervals, certify-then-solve |
-| `experiments/suite.py` | the registry: every graph of every table and figure |
-| `experiments/edges.py` | per-edge statistics, bounds and exact curvatures of every registry graph (`results/edges/`) |
-| `experiments/compare_bounds.py` | the bound tables of Section 6.1, from the per-edge store |
-| `experiments/screening.py`, `screening_map.py` | Section 6.3: avoided transport problems, Table 7 (large networks), the edge map |
-| `experiments/distributions.py`, `make_paper_figures.py` | the figures of Sections 6.1–6.2 |
-| `experiments/benchmark.py`, `timing.py` | Section 6.4: runtime scaling (the timing code is shared with the screening table) |
-| `experiments/paper_artifacts.py` | numbers, table bodies and consistency checks for the manuscript |
-| `experiments/generators.py` | graph generators, unchanged so that seeded graphs reproduce |
+|---|---|
+| `curvature_transfer/tq_lazy.py` | TQ for the lazy measure in exact integers (parallel), and BF |
+| `curvature_transfer/tq_general.py` | TQ for one-step measures (lazy, uniform idleness, idleness w_j, degree-biased), float64 |
+| `curvature_transfer/full_range.py` | the full range of Theorem 5.2 |
+| `curvature_transfer/` (other modules) | the bounds of the preliminary version, used as the prior certificate |
+| `experiments/tq_experiments.py`, `experiments/tq_artifacts.py` | the steps and the paper artifacts |
+| `experiments/suite.py`, `generators.py`, `large_graphs.py`, `data/` | the graphs |
+| `tests/test_tq.py` | fast checks; `tests/validate_*.py` are the full validations against orcut |

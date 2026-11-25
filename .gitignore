@@ -16,3 +16,9 @@ experiments/out/
 results/
 /logs/
 /data/
+
+# outputs of the experiments and the download cache
+results/
+logs/
+experiments/data/large/
+__pycache__/
