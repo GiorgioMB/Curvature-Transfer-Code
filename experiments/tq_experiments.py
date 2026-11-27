@@ -1,17 +1,16 @@
-"""Experiments of Section 6 (Experiments) of the paper.
+"""Experiments of Section 6 (Experiments) of the paper, as independent tasks.
 
-Steps (each writes results/<step>/<tag>.json, and .npz with per-edge arrays where later steps need them;
-a graph already done is skipped unless force=True):
+  tightness   (graph)              non-lazy measure: exact curvature, TQ, BM and TLW, decided exactly -> Table 2
+  range       (graph, chunk)       non-lazy measure: the full range of Theorem 5.2 on one chunk of edges
+  measures    (graph, measure, chunk)  lazy, idleness 1/2 through Corollary 5.4, degree-biased: TQ and full range
+  kstar       (graph)              lazy measure: the full range as a middle stage between TQ and orcut
+  screening   (network)            lazy measure: screen-then-solve (Algorithm 1) against full evaluation -> Table 3
+  benchmark   (family, size)       lazy measure: full evaluation, TQ and BF -> Figure 3
 
-  tightness   non-lazy measure, every registry graph: exact curvature (orcut, integer fractions), TQ, and the
-              bounds of BM and TLW, all decided exactly -> Table 2 (BM, TLW, TQ)
-  range       non-lazy measure: the full range of Theorem 5.2 (orcut on local graphs, integer program)
-              -> Table 2 (full range), GapLoMean, GapHiMean, SignGapMax
-  measures    lazy measure, idleness 1/2 through Corollary 5.4, degree-biased walk: TQ and the full range
-              -> MeasGapLo, MeasGapHi, MeasSignGap
-  kstar       lazy measure: the full range as a middle stage between TQ and orcut -> KStarDec*, KStarSlow*
-  screening   lazy measure, large networks: screen-then-solve (Algorithm 1) against full evaluation -> Table 3
-  benchmark   lazy measure, four random families of growing size: full evaluation, TQ, BF -> Figure 3
+A chunk c of K holds the edges c, c + K, c + 2K, ... (round robin, so the expensive edges at hubs spread over
+the chunks); every task loads its graph and computes what it needs, so tasks are independent. A task writes
+results/<step>/<tag>.json (chunks: results/<step>/<tag>/<part>.json and .npz), and is skipped when its output
+exists unless force=True. merge_* assemble the chunks into the per-graph results that tq_artifacts reads.
 """
 import json
 import os
@@ -63,6 +62,38 @@ def save(step, tag, obj, arrays=None):
 def load_json(step, tag):
     with open(_path(step, tag)) as fh:
         return json.load(fh)
+
+
+def _part(step, tag, key, ext):
+    d = os.path.join(RESULTS, step, tag)
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{key}.{ext}")
+
+
+def part_done(step, tag, key):
+    return os.path.exists(_part(step, tag, key, "json"))
+
+
+def save_part(step, tag, key, obj, arrays):
+    np.savez_compressed(_part(step, tag, key, "npz"), **arrays)
+    with open(_part(step, tag, key, "json"), "w") as fh:
+        json.dump(obj, fh, indent=1, default=float)
+
+
+def parts(step, tag, prefix=""):
+    """(json, npz arrays) of every part of a graph whose key starts with prefix."""
+    import glob
+    out = []
+    for pj in sorted(glob.glob(os.path.join(RESULTS, step, tag, f"{prefix}*.json"))):
+        with open(pj) as fh:
+            meta = json.load(fh)
+        out.append((meta, np.load(pj[:-5] + ".npz", allow_pickle=True)))
+    return out
+
+
+def edge_slice(m, c, K):
+    """Chunk c of K: the edges c, c + K, c + 2K, ... (round robin)."""
+    return np.arange(c, m, K, dtype=np.int64)
 
 
 def load_npz(step, tag):
@@ -119,12 +150,6 @@ def exact_outside(lo_n, up_n, D, num, den):
     """Edges whose exact curvature 1 - num/den lies outside [lo_n/D, up_n/D]."""
     lo_n, up_n, D = (np.asarray(x).astype(object) for x in (lo_n, up_n, D))
     return int(np.sum((lo_n * den > (den - num) * D) | (up_n * den < (den - num) * D)))
-
-
-def environment(threads, reps):
-    import numba
-    return {"orcut": orcut.__version__, "numba": numba.__version__, "numpy": np.__version__,
-            "threads": int(threads), "reps": int(reps)}
 
 
 # ---------------------------------------------------------------------------------------------- tightness
@@ -204,36 +229,62 @@ def _range_for(adj, deg, edges, measure, lo_tq, up_tq, threads, limit, exact, bu
     return lo_s, hi_s, hi_f, solved, lo_frac, len(need)
 
 
-def full_range(spec, threads, time_limit=60.0, force=False, budget=None):
-    if done("range", spec.tag) and not force:
-        return load_json("range", spec.tag)
-    T = load_npz("tightness", spec.tag)
-    ge, k, D = T["edges"], T["k"], T["D"]
-    lo_n, up_n = T["tq_lo"], T["tq_up"]
-    lo, up = lo_n / D, up_n / D
-    n = int(ge.max()) + 1
-    _, _, ip, ix = build(n, ge)
+def range_chunk(spec, c, K, threads, time_limit=60.0, budget=None, force=False):
+    """Full range of Theorem 5.2 (non-lazy measure) on chunk c of K of the edges of a graph."""
+    key = f"{c:05d}of{K:05d}"
+    if part_done("range", spec.tag, key) and not force:
+        return False
+    n, E = suite.load(spec)
+    g, ge, ip, ix = build(n, E)
     adj, deg = adjacency(ip, ix)
-    edges = [(int(a), int(b)) for a, b in ge]
-    t0 = time.perf_counter()
+    idx = edge_slice(len(ge), c, K)
+    sub = ge[idx]
+    k = orcut.curvature(g, measure=Fraction(0), edges=idx, n_jobs=threads)
+    o = np.empty((len(idx), 4))
+    tq_general(ip, ix, np.ascontiguousarray(sub[:, 0]), np.ascontiguousarray(sub[:, 1]), 1, 0.0, 0, o,
+               max(1, min(len(idx), 8 * threads)))
+    D = np.minimum(deg[sub[:, 0]], deg[sub[:, 1]]) * np.maximum(deg[sub[:, 0]], deg[sub[:, 1]])
+    lo, up = o[:, 0], o[:, 1]
+    lo_n, up_n = snap(lo, D), snap(up, D)
+    edges = [(int(u), int(v)) for u, v in sub]
     lo_s, hi_s, hi_f, solved, lo_frac, nmilp = _range_for(adj, deg, edges, 0.0, lo, up, threads, time_limit,
                                                         exact=True, budget=budget)
-    secs = time.perf_counter() - t0
-    hi_n = np.zeros(len(ge), np.int64)
+    hi_n = np.zeros(len(idx), np.int64)
     hi_n[solved] = snap(hi_s[solved], D[solved])
-    lo_nonneg = lo_frac[:, 0] <= lo_frac[:, 1]                   # exact: kappa_lower* >= 0
-    settled_r = lo_nonneg | (hi_n < 0)
     settled_tq = (lo_n >= 0) | (up_n < 0)
+    settled_r = (lo_frac[:, 0] <= lo_frac[:, 1]) | (hi_n < 0)          # exact: lower end >= 0, upper < 0
     tol = 1e-9
     viol = int(np.sum(((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
                        | (hi_s > up + tol))[solved]))
-    res = {"name": spec.name, "tag": spec.tag, "m": int(len(ge)), "complete": bool(solved.all()),
-           "unsolved": int((~solved).sum()), "milp_edges": int(nmilp), "seconds": secs,
-           "tq_sign": 100 * float(settled_tq.mean()), "range_sign": 100 * float(settled_r[solved].mean()),
-           "range_width": float(np.mean((hi_s - lo_s)[solved])),
-           "gap_lo": float(np.mean((lo_s - lo)[solved])), "gap_hi": float(np.mean((up - hi_s)[solved])),
-           "slots_bind": int(np.sum(np.abs(hi_f - hi_s)[solved] > 1e-9)), "violations": viol}
-    save("range", spec.tag, res, {"lo_star": lo_s, "hi_star": hi_s, "hi_free": hi_f, "solved": solved})
+    save_part("range", spec.tag, key,
+              {"name": spec.name, "tag": spec.tag, "c": c, "K": K, "m_part": int(len(idx)),
+               "milp_edges": int(nmilp), "violations": viol},
+              {"idx": idx, "lo": lo, "up": up, "lo_s": lo_s, "hi_s": hi_s, "hi_f": hi_f, "solved": solved,
+               "settled_tq": settled_tq, "settled_r": settled_r})
+    return True
+
+
+def merge_range(spec):
+    """Assemble the chunks of a graph into results/range/<tag>.json (None if no chunk exists)."""
+    ps = parts("range", spec.tag)
+    if not ps:
+        return None
+    K = ps[0][0]["K"]
+    have = {meta["c"] for meta, _ in ps}
+    cat = {key: np.concatenate([a[key] for _, a in ps]) for key in
+           ("lo", "up", "lo_s", "hi_s", "hi_f", "solved", "settled_tq", "settled_r")}
+    sv = cat["solved"].astype(bool)
+    res = {"name": spec.name, "tag": spec.tag, "m": int(sum(meta["m_part"] for meta, _ in ps)),
+           "chunks": int(K), "chunks_done": len(have), "complete": bool(len(have) == K and sv.all()),
+           "unsolved": int((~sv).sum()), "milp_edges": int(sum(meta["milp_edges"] for meta, _ in ps)),
+           "tq_sign": 100 * float(cat["settled_tq"].mean()),
+           "range_sign": 100 * float(cat["settled_r"][sv].mean()) if sv.any() else float("nan"),
+           "range_width": float(np.mean((cat["hi_s"] - cat["lo_s"])[sv])) if sv.any() else float("nan"),
+           "gap_lo": float(np.mean((cat["lo_s"] - cat["lo"])[sv])) if sv.any() else float("nan"),
+           "gap_hi": float(np.mean((cat["up"] - cat["hi_s"])[sv])) if sv.any() else float("nan"),
+           "slots_bind": int(np.sum(np.abs(cat["hi_f"] - cat["hi_s"])[sv] > 1e-9)),
+           "violations": int(sum(meta["violations"] for meta, _ in ps))}
+    save("range", spec.tag, res)
     return res
 
 
@@ -241,41 +292,77 @@ def full_range(spec, threads, time_limit=60.0, force=False, budget=None):
 MEASURES = (("lazy", "lazy", (0, 0.0, 0)), ("half", "wj", (2, 0.0, 0)), ("degree", "degree", (0, 0.0, 1)))
 
 
-def measures(spec, threads, time_limit=60.0, force=False, budget=None):
-    if done("measures", spec.tag) and not force:
-        return load_json("measures", spec.tag)
+def _kappa_slice(g, name, deg, idx, threads):
+    if name == "degree":
+        return orcut.curvature(g, measure=Walk(weights=1.0 / deg[np.asarray(g.indices)], idleness="lazy"),
+                               edges=idx, n_jobs=threads)
+    ms = {"lazy": "lazy", "half": Fraction(1, 2)}[name]
+    return orcut.curvature(g, measure=ms, edges=idx, n_jobs=threads)
+
+
+def measures_chunk(spec, name, c, K, threads, time_limit=60.0, budget=None, force=False):
+    """TQ and the full range for one measure on chunk c of K of the edges of a graph."""
+    key = f"{name}-{c:05d}of{K:05d}"
+    if part_done("measures", spec.tag, key) and not force:
+        return False
+    fr_measure, (im, p, wm) = {m[0]: (m[1], m[2]) for m in MEASURES}[name]
     n, E = suite.load(spec)
     g, ge, ip, ix = build(n, E)
     adj, deg = adjacency(ip, ix)
-    edges = [(int(a), int(b)) for a, b in ge]
-    a_ = np.minimum(deg[ge[:, 0]], deg[ge[:, 1]]); b_ = np.maximum(deg[ge[:, 0]], deg[ge[:, 1]])
-    res = {"name": spec.name, "tag": spec.tag, "m": int(len(ge))}
-    for name, fr_measure, (im, p, wm) in MEASURES:
-        k, _, _ = exact_kappa(g, name, deg, threads)
-        o = np.empty((len(ge), 4))
-        tq_general(ip, ix, np.ascontiguousarray(ge[:, 0]), np.ascontiguousarray(ge[:, 1]), im, p, wm, o,
-                   max(1, min(len(ge), 8 * threads)))
-        lo, up = o[:, 0], o[:, 1]
-        lo_s, hi_s, hi_f, solved, _, _ = _range_for(adj, deg, edges, fr_measure, lo, up, threads, time_limit,
-                                                    exact=False, budget=budget)
-        D = grid(name, a_, b_)
-        if D is not None:               # exact decisions on the grid of the measure (before the lift)
-            s_tq = (snap(lo, D) >= 0) | (snap(up, D) < 0)
-            lo_ok = np.where(solved, lo_s, 0.0); hi_ok = np.where(solved, hi_s, 0.0)
-            s_r = (snap(lo_ok, D) >= 0) | (snap(hi_ok, D) < 0)
-        else:
-            tol = 1e-9                  # no small common denominator: conservative, the same rule for both
-            s_tq = (lo > tol) | (up < -tol)
-            s_r = (lo_s > tol) | (hi_s < -tol)
-        if name == "half":              # Corollary 5.4: kappa_{1/2} = (1/2)/(1 - w_j) kappa_{w_j}
-            c = 0.5 / (1.0 - 1.0 / (b_ + 1.0))
-            lo, up, lo_s, hi_s, hi_f = c * lo, c * up, c * lo_s, c * hi_s, c * hi_f
+    idx = edge_slice(len(ge), c, K)
+    sub = ge[idx]
+    k = _kappa_slice(g, name, deg, idx, threads)
+    o = np.empty((len(idx), 4))
+    tq_general(ip, ix, np.ascontiguousarray(sub[:, 0]), np.ascontiguousarray(sub[:, 1]), im, p, wm, o,
+               max(1, min(len(idx), 8 * threads)))
+    lo, up = o[:, 0], o[:, 1]
+    edges = [(int(u), int(v)) for u, v in sub]
+    lo_s, hi_s, hi_f, solved, _, _ = _range_for(adj, deg, edges, fr_measure, lo, up, threads, time_limit,
+                                                exact=False, budget=budget)
+    a_ = np.minimum(deg[sub[:, 0]], deg[sub[:, 1]]); b_ = np.maximum(deg[sub[:, 0]], deg[sub[:, 1]])
+    D = grid(name, a_, b_)
+    if D is not None:                   # exact decisions on the grid of the measure (before the lift)
+        s_tq = (snap(lo, D) >= 0) | (snap(up, D) < 0)
+        s_r = (snap(np.where(solved, lo_s, 0.0), D) >= 0) | (snap(np.where(solved, hi_s, 0.0), D) < 0)
+    else:                               # no small common denominator: conservative, the same rule for both
         tol = 1e-9
-        viol = int(np.sum(((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
-                           | (hi_s > up + tol))[solved]))
-        res[name] = {"complete": bool(solved.all()), "violations": viol,
-                     "gap_lo": float(np.mean((lo_s - lo)[solved])), "gap_hi": float(np.mean((up - hi_s)[solved])),
-                     "tq_sign": 100 * float(s_tq.mean()), "range_sign": 100 * float(s_r[solved].mean())}
+        s_tq = (lo > tol) | (up < -tol)
+        s_r = (lo_s > tol) | (hi_s < -tol)
+    if name == "half":                  # Corollary 5.4: kappa_{1/2} = (1/2)/(1 - w_j) kappa_{w_j}
+        cf = 0.5 / (1.0 - 1.0 / (b_ + 1.0))
+        lo, up, lo_s, hi_s, hi_f = cf * lo, cf * up, cf * lo_s, cf * hi_s, cf * hi_f
+    tol = 1e-9
+    viol = int(np.sum(((lo > lo_s + tol) | (lo_s > k + tol) | (k > hi_s + tol) | (hi_s > hi_f + tol)
+                       | (hi_s > up + tol))[solved]))
+    save_part("measures", spec.tag, key,
+              {"name": spec.name, "tag": spec.tag, "measure": name, "c": c, "K": K, "m_part": int(len(idx)),
+               "violations": viol},
+              {"lo": lo, "up": up, "lo_s": lo_s, "hi_s": hi_s, "solved": solved, "s_tq": s_tq, "s_r": s_r})
+    return True
+
+
+def merge_measures(spec):
+    """Assemble the chunks of a graph into results/measures/<tag>.json (None if no chunk exists)."""
+    res = {"name": spec.name, "tag": spec.tag}
+    any_ = False
+    for name, _, _ in MEASURES:
+        ps = parts("measures", spec.tag, prefix=f"{name}-")
+        if not ps:
+            continue
+        any_ = True
+        K = ps[0][0]["K"]
+        have = {meta["c"] for meta, _ in ps}
+        cat = {key: np.concatenate([a[key] for _, a in ps]) for key in ("lo", "up", "lo_s", "hi_s", "solved", "s_tq", "s_r")}
+        sv = cat["solved"].astype(bool)
+        res["m"] = int(sum(meta["m_part"] for meta, _ in ps))
+        res[name] = {"complete": bool(len(have) == K and sv.all()),
+                     "violations": int(sum(meta["violations"] for meta, _ in ps)),
+                     "gap_lo": float(np.mean((cat["lo_s"] - cat["lo"])[sv])) if sv.any() else float("nan"),
+                     "gap_hi": float(np.mean((cat["up"] - cat["hi_s"])[sv])) if sv.any() else float("nan"),
+                     "tq_sign": 100 * float(cat["s_tq"].mean()),
+                     "range_sign": 100 * float(cat["s_r"][sv].mean()) if sv.any() else float("nan")}
+    if not any_:
+        return None
     save("measures", spec.tag, res)
     return res
 
@@ -347,24 +434,29 @@ FAMILIES = {
 }
 
 
-def benchmark(family, sizes, threads, reps, force=False):
-    tag = family
-    old = load_json("benchmark", tag) if done("benchmark", tag) and not force else {"family": family, "points": []}
-    have = {p["n"] for p in old["points"]}
-    for n in sizes:
-        if n in have:
-            continue
-        nn, E = suite.largest_component(*_as_ne(FAMILIES[family](n, 0)))
-        g, ge, ip, ix = build(nn, E)
-        orcut.curvature(g, edges=np.arange(min(5, len(ge))), n_jobs=threads)
-        tq_lazy(ip, ix, ge[:5]); bf(ip, ix, ge[:5])
-        t_full, _ = median_time(lambda: orcut.curvature(g, n_jobs=threads), reps)
-        t_tq, _ = median_time(lambda: tq_lazy(ip, ix, ge), reps)
-        t_bf, _ = median_time(lambda: bf(ip, ix, ge), reps)
-        old["points"].append({"n": int(n), "m": int(len(ge)), "t_full": t_full, "t_tq": t_tq, "t_bf": t_bf})
-        old["points"].sort(key=lambda p: p["n"])
-        save("benchmark", tag, old)
-    return old
+def benchmark_point(family, n, threads, reps, force=False):
+    tag = f"{family}"; key = f"{n:09d}"
+    if part_done("benchmark", tag, key) and not force:
+        return False
+    nn, E = suite.largest_component(*_as_ne(FAMILIES[family](n, 0)))
+    g, ge, ip, ix = build(nn, E)
+    orcut.curvature(g, edges=np.arange(min(5, len(ge))), n_jobs=threads)
+    tq_lazy(ip, ix, ge[:5]); bf(ip, ix, ge[:5])
+    t_full, _ = median_time(lambda: orcut.curvature(g, n_jobs=threads), reps)
+    t_tq, _ = median_time(lambda: tq_lazy(ip, ix, ge), reps)
+    t_bf, _ = median_time(lambda: bf(ip, ix, ge), reps)
+    save_part("benchmark", tag, key, {"family": family, "n": int(n), "m": int(len(ge)), "t_full": t_full,
+                                      "t_tq": t_tq, "t_bf": t_bf}, {"n": np.array([n])})
+    return True
+
+
+def merge_benchmark(family):
+    ps = parts("benchmark", family)
+    if not ps:
+        return None
+    res = {"family": family, "points": sorted((meta for meta, _ in ps), key=lambda p: p["n"])}
+    save("benchmark", family, res)
+    return res
 
 
 def _as_ne(x):

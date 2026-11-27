@@ -4,6 +4,7 @@ from). Refuses to write if any validity or exactness check in the results failed
 import glob
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -43,11 +44,74 @@ def fsec(x):
     return f"{x:.2f}" if x < 10 else f"{x:.1f}" if x < 100 else f"{x:.0f}"
 
 
+def _clean_cpu(name):
+    """'Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz' -> 'Intel Xeon Gold 6248'; 'AMD EPYC 7H12 64-Core Processor'
+    -> 'AMD EPYC 7H12'."""
+    for junk in ("(R)", "(TM)", "(tm)", " CPU", " Processor"):
+        name = name.replace(junk, "")
+    name = re.sub(r"@.*$", "", name)
+    name = re.sub(r"\b\d+-Core\b", "", name)
+    return " ".join(name.split())
+
+
+def _join(items):
+    items = list(items)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _months(starts):
+    import datetime as dt
+    a, b = (dt.datetime.fromtimestamp(x) for x in (min(starts), max(starts)))
+    fa, fb = a.strftime("%B %Y"), b.strftime("%B %Y")
+    if fa == fb:
+        return fa
+    return f"{a.strftime('%B')}--{fb}" if a.year == b.year else f"{fa}--{fb}"
+
+
+def compute_keys():
+    """Keys of the code availability statement from the provenance of every task (results/_tasks)."""
+    recs = []
+    for p in sorted(glob.glob(os.path.join(RESULTS, "_tasks", "*.json"))):
+        with open(p) as fh:
+            recs.append(json.load(fh))
+    if not recs:
+        return {}, [], []
+    keys, problems = {}, []
+    core_h = sum(r["wall"] * r["cores"] for r in recs) / 3600
+    cpu_h = sum(r["cpu"] for r in recs) / 3600
+    keys["NumTasks"] = fint(len(recs))
+    keys["CoreHours"] = fint(round(core_h)) if core_h >= 100 else f"{core_h:.1f}"
+    keys["CPUHours"] = fint(round(cpu_h)) if cpu_h >= 100 else f"{cpu_h:.1f}"
+    keys["MaxTaskHours"] = f"{max(r['wall'] for r in recs) / 3600:.1f}"
+    mem = max(r["maxrss_gb"] for r in recs)
+    keys["PeakMemGB"] = f"{mem:.1f}" if mem < 10 else f"{mem:.0f}"
+    clusters = sorted({r["cluster"] for r in recs if r["cluster"]})
+    keys["ClusterName"] = _join([c.capitalize() for c in clusters]) if clusters else "a single machine"
+    keys["RunMonth"] = _months([r["start"] for r in recs])
+    keys["CPUModels"] = _join(sorted({_clean_cpu(r["cpu_model"]) for r in recs}))
+    timing = [r for r in recs if r["task"][0] in ("kstar", "screening", "benchmark")]
+    if timing:
+        keys["TimingCPU"] = _join(sorted({_clean_cpu(r["cpu_model"]) for r in timing}))
+        th = sorted({r["threads"] for r in timing}); rp = sorted({r["reps"] for r in timing})
+        keys["Threads"] = _join([str(x) for x in th]); keys["Reps"] = _join([str(x) for x in rp])
+        if len(th) > 1 or len(rp) > 1:
+            problems.append(f"timing tasks used different threads {th} or repetitions {rp}")
+    for name, key in (("python", "PythonVersion"), ("numpy", "NumpyVersion"), ("scipy", "ScipyVersion"),
+                      ("numba", "NumbaVersion"), ("orcut", "OrcutVersion")):
+        vs = sorted({r["versions"][name] for r in recs})
+        keys[key] = vs[0]
+        if len(vs) > 1:
+            problems.append(f"tasks ran with different {name} versions: {vs}")
+    index = [f"NumTasks, CoreHours (allocated cores x wall time), CPUHours (used), MaxTaskHours, PeakMemGB, "
+             f"ClusterName, RunMonth, CPUModels, TimingCPU (kstar, screening, benchmark), Threads, Reps, and the "
+             f"versions: the provenance of the {len(recs)} tasks in results/_tasks"]
+    return keys, index, problems
+
+
 def build(table_groups=("random", "real")):
     keys, rows, index, problems = {}, {}, [], []
     order = {s.tag: t for t, s in enumerate(suite.REGISTRY)}
     prose = {s.tag: (s.prose or s.name) for s in suite.REGISTRY}
-    env = json.load(open(os.path.join(RESULTS, "env.json"))) if os.path.exists(os.path.join(RESULTS, "env.json")) else {}
 
     # ---- tightness and full range (Table 2)
     tight = sorted((r for r in _all("tightness") if r["group"] in table_groups), key=lambda r: order.get(r["tag"], 999))
@@ -132,12 +196,9 @@ def build(table_groups=("random", "real")):
         index.append(f"ScreeningRows, MaxEdges, TQFrac*, Dec*, CTSSpeed*: {len(scr)} networks (results/screening); "
                      "full evaluation and the solve stage use orcut with integer fractions; times are medians")
 
-    # ---- environment
-    if env:
-        keys["OrcutVersion"] = env.get("orcut", "")
-        keys["Reps"] = str(env.get("reps", ""))
-        keys["Threads"] = str(env.get("threads", ""))
-        index.append(f"OrcutVersion, Reps, Threads: results/env.json ({json.dumps(env)})")
+    # ---- where, when and with what the experiments ran (code availability statement)
+    ck, cidx, cprob = compute_keys()
+    keys.update(ck); index.extend(cidx); problems.extend(cprob)
     return keys, rows, index, problems
 
 

@@ -21,29 +21,40 @@ uv run python -m pytest -q tests/test_tq.py              # 13 fast checks agains
 
 ## Run
 
+On a Slurm cluster (on Triton, from a login node):
+
 ```bash
-python main.py --quick                 # smoke run of every step (minutes, one repetition)
-python main.py                         # every step, as in the paper (resumes from results/)
-python main.py --steps tightness,range --only "BA(800, 2),Cora"
-python main.py --steps paper           # only rebuild generated/ and figures_paper/ from results/
+uv sync --extra experiments --extra dev && uv run python -m pytest -q tests/test_tq.py
+slurm/submit.sh --quick          # smoke run: a few dozen tasks
+slurm/submit.sh                  # the experiments of the paper
 ```
 
-Every step writes one file per graph under `results/<step>/` and skips graphs already done, so a run can
-be interrupted and resumed; `--force` recomputes. `--threads` sets the threads of numba, orcut and the
-integer programs (default: all). On a cluster, `slurm/suite.sbatch` is a starting point.
+`slurm/submit.sh` plans the tasks (`tasks/compute.txt`, `tasks/timing.txt`), compiles the kernels and fetches
+the large networks on the login node, then submits two job arrays and a gather that runs once both have
+finished. Compute tasks (4 cores, 32 GB each) are the tightness of every graph and the full range and the
+other measures on chunks of 500 edges, so the integer programs at hubs spread over many tasks; timing tasks
+(the kappa* stage, screen-then-solve, the runtime benchmark) run one per exclusive node with a fixed number of
+threads. Rerunning `slurm/submit.sh` resumes: tasks whose output exists finish at once. Without Slurm,
+`python main.py all [--quick]` runs every task in one process.
 
-| Step | What it computes | Manuscript |
+| Task | What it computes | Manuscript |
 |---|---|---|
-| `tightness` | non-lazy measure, every registry graph: exact curvature, TQ, BM and TLW, all decided exactly | Table 2 (BM, TLW, TQ); `NumSynthetic`, `NumReal`, `NumGraphs`, `TQSign*`, `BMSign*`, `TLWSign*` |
-| `range` | non-lazy measure: the full range of Theorem 5.2, lower end by orcut on the adversarial local graphs, upper end by the integer program over admissible pairs (per edge `--milp-time-limit`, per graph `--range-budget`; a graph with unsolved edges shows "--") | Table 2 (full range); `GapLoMean`, `GapHiMean`, `SignGapMax` |
-| `measures` | the same for the lazy measure, idleness 1/2 (certified at w_j and lifted by Corollary 5.4) and a degree-biased walk, on graphs up to `--measures-max-edges` | `MeasGapLo`, `MeasGapHi`, `MeasSignGap` |
-| `kstar` | lazy measure: the full range as a middle stage between TQ and orcut, on the edges TQ leaves undecided | `KStarDec*`, `KStarSlow*` |
-| `screening` | lazy measure: screen-then-solve against full evaluation on the large networks of `experiments/large_graphs.py` (downloaded from SNAP and GitHub, cached in `experiments/data/large/`), PubMed and Arxiv | Table 3; `MaxEdges`, `TQFrac*`, `Dec*`, `CTSSpeed*` |
-| `benchmark` | lazy measure: full evaluation, TQ and BF on four random families of growing size (`--sizes`) | Figure 3 |
-| `paper` | `generated/numbers.tex` (every `\res` and `\resrows` key), `generated/INDEX.md` (what each number is), `figures_paper/runtime_scaling_*.pdf` | all |
+| `tightness` (graph) | non-lazy measure: exact curvature, TQ, BM and TLW, all decided exactly | Table 2 (BM, TLW, TQ); `NumSynthetic`, `NumReal`, `NumGraphs`, `TQSign*`, `BMSign*`, `TLWSign*` |
+| `range` (graph, chunk) | non-lazy measure: the full range of Theorem 5.2, lower end by orcut on the adversarial local graphs, upper end by the integer program over admissible pairs (`--milp-time-limit` per edge, `--range-budget` per task; a graph with unsolved edges shows "--") | Table 2 (full range); `GapLoMean`, `GapHiMean`, `SignGapMax` |
+| `measures` (graph, measure, chunk) | the same for the lazy measure, idleness 1/2 (certified at w_j and lifted by Corollary 5.4) and a degree-biased walk | `MeasGapLo`, `MeasGapHi`, `MeasSignGap` |
+| `kstar` (graph) | lazy measure: the full range as a middle stage between TQ and orcut | `KStarDec*`, `KStarSlow*` |
+| `screening` (network) | lazy measure: screen-then-solve against full evaluation on the networks of `experiments/large_graphs.py`, PubMed and Arxiv | Table 3; `MaxEdges`, `TQFrac*`, `Dec*`, `CTSSpeed*` |
+| `benchmark` (family, size) | lazy measure: full evaluation, TQ and BF on four random families | Figure 3 |
+| `gather` | merges the chunks; writes `generated/numbers.tex` (every `\res` and `\resrows` key), `generated/INDEX.md` and `figures_paper/` | all |
 
-The `paper` step refuses to write if any check failed: a bound violated on some edge, the chain of
-Theorem 5.2 broken, or screen-then-solve disagreeing with full evaluation. To build the manuscript, copy
+Every task records its provenance in `results/_tasks/` (wall and CPU time, allocated cores, peak memory,
+node, processor, cluster, Slurm ids, software versions); the gather turns it into the keys of the code
+availability statement: `NumTasks`, `CoreHours`, `CPUHours`, `MaxTaskHours`, `PeakMemGB`, `ClusterName`,
+`RunMonth`, `CPUModels`, `TimingCPU`, `Threads`, `Reps`, and the versions of Python, NumPy, SciPy, Numba and
+orcut.
+
+The gather refuses to write if any check failed: a bound violated on some edge, the chain of
+Theorem 5.2 broken, or screen-then-solve disagreeing with full evaluation, or tasks run with different software. To build the manuscript, copy
 `generated/` and `figures_paper/` next to the `.tex` file.
 
 ## Layout
@@ -55,6 +66,7 @@ Theorem 5.2 broken, or screen-then-solve disagreeing with full evaluation. To bu
 | `tqbound/full_range.py` | the full range of Theorem 5.2 |
 | `tqbound/screen.py` | screen-then-solve (Algorithm 1), exact for every rational threshold |
 | `tqbound/baselines.py` | the bounds of BM and TLW (non-lazy measure) |
-| `experiments/tq_experiments.py`, `experiments/tq_artifacts.py` | the steps and the paper artifacts |
+| `experiments/tq_experiments.py`, `experiments/tasks.py`, `experiments/tq_artifacts.py` | the tasks, their planning and provenance, and the paper's files |
+| `slurm/` | the arrays, the gather, and `submit.sh` |
 | `experiments/suite.py`, `generators.py`, `large_graphs.py`, `data/` | the graphs |
 | `tests/test_tq.py` | checks against orcut |
