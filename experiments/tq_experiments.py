@@ -153,6 +153,43 @@ def exact_outside(lo_n, up_n, D, num, den):
 
 
 # ---------------------------------------------------------------------------------------------- tightness
+RECOVERY_Q = (1, 5, 10)
+
+
+def recovery(lo_n, up_n, D, num, den, qs=RECOVERY_Q):
+    """Share of the q% most negatively (bottom) and most positively (top) curved edges that an interval
+    [lo_n/D, up_n/D] certifies, given the threshold (bottom: upper end at most the q-quantile of kappa; top:
+    lower end at least the (100-q)-quantile), and the share recovered by ranking the edges by the midpoint of
+    the interval. Decisions are exact: kappa = (den - num)/den and the ends are integers over D."""
+    m = len(D)
+    kn = (den - num).astype(object); kd = den.astype(object)
+    lo, up, Do = lo_n.astype(object), up_n.astype(object), D.astype(object)
+    kf = (den - num) / den
+    mid = (lo_n + up_n) / (2.0 * D)
+    order = np.argsort(kf, kind="stable")
+    out = {}
+    for q in qs:
+        mq = max(1, int(np.ceil(q * m / 100)))
+        res = {}
+        for side in ("bottom", "top"):
+            e = order[mq - 1] if side == "bottom" else order[m - mq]
+            tn, td = kn[e], kd[e]                                   # threshold theta = tn / td
+            if side == "bottom":
+                member = kn * td <= tn * kd                         # kappa <= theta
+                cert = up * td <= tn * Do                           # upper end <= theta
+                ranked = np.argsort(mid, kind="stable")[:mq]
+            else:
+                member = kn * td >= tn * kd
+                cert = lo * td >= tn * Do
+                ranked = np.argsort(-mid, kind="stable")[:mq]
+            member = np.asarray(member, bool); cert = np.asarray(cert, bool)
+            res[side] = {"size": int(member.sum()), "certified": 100 * float(cert.sum() / member.sum()),
+                         "ranked": 100 * float(member[ranked].sum() / mq)}
+        out[str(q)] = res
+    return out
+
+
+
 def tightness(spec, threads, force=False):
     if done("tightness", spec.tag) and not force:
         return load_json("tightness", spec.tag)
@@ -173,8 +210,11 @@ def tightness(spec, threads, force=False):
            "bm_sign": 100 * float(np.mean((bm >= 0) | (ub < 0))), "bm_width": float(np.mean((ub - bm) / D)),
            "tlw_sign": 100 * float(np.mean((tl >= 0) | (ub < 0))), "tlw_width": float(np.mean((ub - tl) / D)),
            "violations": {"tq": exact_outside(lo, up, D, num, den), "bm": exact_outside(bm, ub, D, num, den),
-                          "tlw": exact_outside(tl, ub, D, num, den)}}
-    save("tightness", spec.tag, res, {"edges": ge, "k": k, "num": num, "den": den, "D": D, "tq_lo": lo, "tq_up": up})
+                          "tlw": exact_outside(tl, ub, D, num, den)},
+           "recovery": {"tq": recovery(lo, up, D, num, den), "bm": recovery(bm, ub, D, num, den),
+                        "tlw": recovery(tl, ub, D, num, den)}}
+    save("tightness", spec.tag, res, {"edges": ge, "k": k, "num": num, "den": den, "D": D, "tq_lo": lo, "tq_up": up,
+                                      "bm_lo": bm, "tlw_lo": tl, "base_up": ub})
     return res
 
 
@@ -422,6 +462,88 @@ def screening(tag, name, n, E, threads, reps, force=False):
            "tq_frac": 100 * t_tq / t_full, "speedup": t_full / (t_tq + t_solve),
            "exact_answer": bool(np.array_equal(last["below"], truth)), "negative_edges": int(truth.sum())}
     save("screening", tag, res)
+    return res
+
+
+# -------------------------------------------------------------------------------------- threshold sweep
+SWEEP_SCALE = 1000                     # thresholds k / 1000
+SWEEP_RANGE = (-2000, 1000)            # from -2 to 1
+SWEEP_MEASURED = 50                    # the solve stage is timed every 50/1000 = 0.05 (61 thresholds)
+
+
+def _first_k_above(n_, D):
+    """Smallest integer k with n_/D < k/SCALE, exactly: floor(SCALE n_ / D) + 1."""
+    return np.floor_divide(SWEEP_SCALE * n_.astype(np.int64), D.astype(np.int64)) + 1
+
+
+def sweep(tag, name, n, E, threads, reps, force=False, blocks=200):
+    """Algorithm 1 for the non-lazy measure at every threshold k/1000 in [-2, 1], with TQ, BM and TLW: the
+    share of edges each bound decides, exactly, at all 3001 thresholds, and the end-to-end speedup measured at
+    the 61 thresholds k/20, solving the undecided edges for real and checking the answer against full
+    evaluation. (A per-edge cost model does not predict the solve stage: the solver shares work between the
+    edges of one call, so structured subsets are much cheaper than their share of the edges.)"""
+    if done("sweep", tag) and not force:
+        return load_json("sweep", tag)
+    g, ge, ip, ix = build(n, E)
+    m = len(ge)
+    zero = Fraction(0)
+    orcut.curvature(g, measure=zero, edges=np.arange(min(5, m)), n_jobs=threads)
+    t_full, rf = median_time(lambda: orcut.curvature(g, measure=zero, exact_fraction=True, n_jobs=threads), reps)
+    knum = (rf["w1_den"] - rf["w1_num"]).astype(np.int64); kden = rf["w1_den"].astype(np.int64)
+    # the three bounds, timed
+    nch = max(1, min(m, 8 * threads))
+    def run_tq():
+        o = np.empty((m, 4))
+        tq_general(ip, ix, np.ascontiguousarray(ge[:, 0]), np.ascontiguousarray(ge[:, 1]), 1, 0.0, 0, o, nch)
+        return o
+    run_tq(); bm_tlw(ip, ix, ge[:5])
+    t_tq, o = median_time(run_tq, reps)
+    t_bt, B = median_time(lambda: bm_tlw(ip, ix, ge), reps)
+    D = B["den"]
+    ends = {"tq": (snap(o[:, 0], D), snap(o[:, 1], D)), "bm": (snap(B["bm_lower"], D), snap(B["upper"], D)),
+            "tlw": (snap(B["tlw_lower"], D), snap(B["upper"], D))}
+    t_bound = {"tq": t_tq, "bm": t_bt, "tlw": t_bt}
+    K0, K1 = SWEEP_RANGE
+    ks = np.arange(K0, K1 + 1)
+    k_true = _first_k_above(knum, kden)                     # kappa < k/SCALE  <=>  k >= k_true
+    arrays = {"theta": ks / SWEEP_SCALE}
+    res = {"name": name, "tag": tag, "n": int(n), "m": int(m), "t_full": t_full, "t_bound": t_bound,
+           "checks": []}
+    k_meas = np.arange(K0, K1 + 1, SWEEP_MEASURED)
+    arrays["theta_measured"] = k_meas / SWEEP_SCALE
+    bulk_meas = (k_meas / SWEEP_SCALE >= np.quantile(knum / kden, 0.01)) & (k_meas / SWEEP_SCALE <= np.quantile(knum / kden, 0.99))
+    q1, q99 = np.quantile(knum / kden, [0.01, 0.99])
+    bulk = (ks / SWEEP_SCALE >= q1) & (ks / SWEEP_SCALE <= q99)
+    for bname, (lo_n, up_n) in ends.items():
+        k_lo = _first_k_above(lo_n, D); k_up = _first_k_above(up_n, D)      # undecided iff k_lo <= k < k_up
+        a = np.clip(k_lo, K0, K1 + 1) - K0; b = np.clip(k_up, K0, K1 + 1) - K0
+        live = a < b
+        und = np.zeros(K1 - K0 + 2)
+        np.add.at(und, a[live], 1); np.add.at(und, b[live], -1)
+        und = np.cumsum(und)[:-1]
+        decided = 100 * (1 - und / m)
+        arrays[f"decided_{bname}"] = decided
+        meas = []
+        for kc in k_meas:
+            U = np.flatnonzero((k_lo <= kc) & (kc < k_up))
+            below = k_up <= kc                                  # upper end < theta: in the answer
+            t_solve = 0.0
+            if len(U):
+                t0 = time.perf_counter()
+                rs = orcut.curvature(g, measure=zero, edges=U, exact_fraction=True, n_jobs=threads)
+                t_solve = time.perf_counter() - t0
+                below[U] = _first_k_above((rs["w1_den"] - rs["w1_num"]).astype(np.int64),
+                                          rs["w1_den"].astype(np.int64)) <= kc
+            res["checks"].append({"bound": bname, "theta": kc / SWEEP_SCALE, "undecided": int(len(U)),
+                                  "solve_measured": t_solve,
+                                  "exact_answer": bool(np.array_equal(below, k_true <= kc))})
+            meas.append(t_full / (t_bound[bname] + t_solve))
+        meas = np.array(meas)
+        arrays[f"speedup_measured_{bname}"] = meas
+        res[bname] = {"decided_min": float(decided.min()), "decided_bulk_median": float(np.median(decided[bulk])),
+                      "speedup_min": float(meas.min()), "speedup_bulk_median": float(np.median(meas[bulk_meas])),
+                      "speedup_max": float(meas.max())}
+    save("sweep", tag, res, arrays)
     return res
 
 

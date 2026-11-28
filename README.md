@@ -33,17 +33,18 @@ slurm/submit.sh                  # the experiments of the paper
 the large networks on the login node, then submits two job arrays and a gather that runs once both have
 finished. Compute tasks (4 cores, 32 GB each) are the tightness of every graph and the full range and the
 other measures on chunks of 500 edges, so the integer programs at hubs spread over many tasks; timing tasks
-(the kappa* stage, screen-then-solve, the runtime benchmark) run one per exclusive node with a fixed number of
+(the kappa* stage, screen-then-solve, the threshold sweep, the runtime benchmark) run one per exclusive node with a fixed number of
 threads. Rerunning `slurm/submit.sh` resumes: tasks whose output exists finish at once. Without Slurm,
 `python main.py all [--quick]` runs every task in one process.
 
 | Task | What it computes | Manuscript |
 |---|---|---|
-| `tightness` (graph) | non-lazy measure: exact curvature, TQ, BM and TLW, all decided exactly | Table 2 (BM, TLW, TQ); `NumSynthetic`, `NumReal`, `NumGraphs`, `TQSign*`, `BMSign*`, `TLWSign*` |
+| `tightness` (graph) | non-lazy measure: exact curvature, TQ, BM and TLW, all decided exactly; the share of the 1, 5, 10% most negatively and most positively curved edges each bound certifies, or recovers by ranking | Tables 2 and 3 (BM, TLW, TQ); `NumSynthetic`, `NumReal`, `NumGraphs`, `TQSign*`, `BMSign*`, `TLWSign*`, `Rec*` |
 | `range` (graph, chunk) | non-lazy measure: the full range of Theorem 5.2, lower end by orcut on the adversarial local graphs, upper end by the integer program over admissible pairs (`--milp-time-limit` per edge, `--range-budget` per task; a graph with unsolved edges shows "--") | Table 2 (full range); `GapLoMean`, `GapHiMean`, `SignGapMax` |
 | `measures` (graph, measure, chunk) | the same for the lazy measure, idleness 1/2 (certified at w_j and lifted by Corollary 5.4) and a degree-biased walk | `MeasGapLo`, `MeasGapHi`, `MeasSignGap` |
 | `kstar` (graph) | lazy measure: the full range as a middle stage between TQ and orcut | `KStarDec*`, `KStarSlow*` |
 | `screening` (network) | lazy measure: screen-then-solve against full evaluation on the networks of `experiments/large_graphs.py`, PubMed and Arxiv | Table 3; `MaxEdges`, `TQFrac*`, `Dec*`, `CTSSpeed*` |
+| `sweep` (network) | non-lazy measure: Algorithm 1 with TQ, BM and TLW at every threshold k/1000 in [-2, 1]: share decided (exact, 3001 thresholds) and measured end-to-end speedup (every 0.05) | Figure 5; `Sweep*` |
 | `benchmark` (family, size) | lazy measure: full evaluation, TQ and BF on four random families | Figure 3 |
 | `gather` | merges the chunks; writes `generated/numbers.tex` (every `\res` and `\resrows` key), `generated/INDEX.md` and `figures_paper/` | all |
 

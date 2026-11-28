@@ -32,7 +32,7 @@ import tq_experiments as X   # noqa: E402
 
 TASKS = os.path.join(ROOT, "tasks")
 PROV = os.path.join(X.RESULTS, "_tasks")
-TIMING_STEPS = ("kstar", "screening", "benchmark")
+TIMING_STEPS = ("kstar", "screening", "sweep", "benchmark")
 BENCH_SIZES = [1_000, 3_000, 10_000, 30_000, 100_000, 300_000, 1_000_000]
 BENCH_SIZES_QUICK = [1_000, 3_000, 10_000]
 
@@ -62,6 +62,7 @@ def plan(quick=False, only=None, range_chunk_edges=500, range_max_edges=100_000,
                 compute += [("measures", s.tag, name, str(c), str(K)) for c in range(K)]
         timing.append(("kstar", s.tag))
     timing += [("screening", src, tag) for src, tag in _screening_networks(quick)]
+    timing += [("sweep", src, tag) for src, tag in _screening_networks(quick)]
     for fam in X.FAMILIES:
         timing += [("benchmark", fam, str(n)) for n in (sizes or (BENCH_SIZES_QUICK if quick else BENCH_SIZES))]
     os.makedirs(TASKS, exist_ok=True)
@@ -127,6 +128,15 @@ def _dispatch(t, threads, reps, limit, budget, force):
         else:
             sp = _spec(t[2]); n, E = suite.load(sp); name = sp.name
         X.screening(t[2], name, n, E, threads, reps, force)
+        return force or not before
+    if step == "sweep":
+        before = X.done("sweep", t[2])
+        if t[1] == "large":
+            ls = [x for x in large_graphs.specs() if x.tag == t[2]][0]
+            n, E, _ = large_graphs.load(ls); name = ls.name
+        else:
+            sp = _spec(t[2]); n, E = suite.load(sp); name = sp.name
+        X.sweep(t[2], name, n, E, threads, reps, force)
         return force or not before
     if step == "benchmark":
         return X.benchmark_point(t[1], int(t[2]), threads, reps, force)

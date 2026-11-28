@@ -89,7 +89,7 @@ def compute_keys():
     keys["ClusterName"] = _join([c.capitalize() for c in clusters]) if clusters else "a single machine"
     keys["RunMonth"] = _months([r["start"] for r in recs])
     keys["CPUModels"] = _join(sorted({_clean_cpu(r["cpu_model"]) for r in recs}))
-    timing = [r for r in recs if r["task"][0] in ("kstar", "screening", "benchmark")]
+    timing = [r for r in recs if r["task"][0] in ("kstar", "screening", "sweep", "benchmark")]
     if timing:
         keys["TimingCPU"] = _join(sorted({_clean_cpu(r["cpu_model"]) for r in timing}))
         th = sorted({r["threads"] for r in timing}); rp = sorted({r["reps"] for r in timing})
@@ -150,6 +150,54 @@ def build(table_groups=("random", "real")):
                      "per-graph mean gap between TQ and the ends of the full range; SignGapMax: largest difference "
                      "of settled signs, in percentage points (results/range)")
 
+    # ---- the most curved edges (non-lazy measure, Table 2 graphs)
+    rec = [r for r in tight if "recovery" in r]
+    if rec:
+        lines, cert_tq, cert_base = [], [], []
+        for side, label in (("bottom", "Most negative"), ("top", "Most positive")):
+            for q in ("1", "5", "10"):
+                cells = []
+                for b in ("bm", "tlw", "tq"):
+                    c = float(np.mean([r["recovery"][b][q][side]["certified"] for r in rec]))
+                    k = float(np.mean([r["recovery"][b][q][side]["ranked"] for r in rec]))
+                    cells += [f1(c), f1(k)]
+                    (cert_tq if b == "tq" else cert_base).append(c)
+                lines.append(f"{label} {q}\\% & " + " & ".join(cells) + " \\\\")
+        rows["RecoveryRows"] = "\n".join(lines)
+        def cert(b, side):
+            return [float(np.mean([r["recovery"][b][q][side]["certified"] for r in rec])) for q in ("1", "5", "10")]
+        def rank(b, side):
+            return [float(np.mean([r["recovery"][b][q][side]["ranked"] for r in rec])) for q in ("1", "5", "10")]
+        keys["RecTopTQMin"] = f1(min(cert("tq", "top")))
+        keys["RecTopBaseMax"] = f1(max(cert("bm", "top") + cert("tlw", "top")))
+        keys["RecBotTQMax"] = f1(max(cert("tq", "bottom")))
+        keys["RecBotBaseMax"] = f1(max(cert("bm", "bottom") + cert("tlw", "bottom")))
+        keys["RecRankTQMin"] = f1(min(rank("tq", "top") + rank("tq", "bottom")))
+        keys["RecRankBaseMax"] = f1(max(rank("bm", "top") + rank("bm", "bottom") + rank("tlw", "top") + rank("tlw", "bottom")))
+        keys["RecRankWins"] = str(sum(1 for side in ("bottom", "top") for t_, b_, l_ in
+                                      zip(rank("tq", side), rank("bm", side), rank("tlw", side)) if t_ >= max(b_, l_)))
+        index.append(f"RecoveryRows, RecTop*, RecBot*, RecRank*: the q% most negatively and most positively curved "
+                     f"edges (non-lazy measure), mean over the {len(rec)} graphs of Table 2 of the share each bound "
+                     "certifies given the threshold, and of the share recovered by ranking on the midpoint of the "
+                     "interval (results/tightness)")
+
+    # ---- every threshold (Algorithm 1, non-lazy measure)
+    sw = _all("sweep")
+    for r in sw:
+        for c in r["checks"]:
+            if not c["exact_answer"]:
+                problems.append(f"sweep {r['name']}: answer differs from full evaluation at theta={c['theta']}")
+    if sw:
+        keys["SweepNets"] = str(len(sw))
+        for b, kb in (("tq", "TQ"), ("bm", "BM"), ("tlw", "TLW")):
+            keys[f"Sweep{kb}DecMin"] = f1(min(r[b]["decided_min"] for r in sw))
+            keys[f"Sweep{kb}SpeedMed"] = f1(float(np.median([r[b]["speedup_bulk_median"] for r in sw])))
+        keys["SweepTQSpeedMin"] = f1(min(r["tq"]["speedup_min"] for r in sw))
+        index.append(f"SweepNets, Sweep*DecMin (smallest share decided at any threshold k/1000 in [-2, 1] and any "
+                     f"network), Sweep*SpeedMed (median over networks of the median measured speedup over the thresholds "
+                     f"k/20 between the 1% and 99% quantiles of kappa), SweepTQSpeedMin (smallest measured speedup): "
+                     f"results/sweep, "
+                     f"{len(sw)} networks")
     # ---- other measures
     meas = _all("measures")
     if meas:
@@ -228,6 +276,35 @@ def figures():
     return made
 
 
+def sweep_figure():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    files = sorted(glob.glob(os.path.join(RESULTS, "sweep", "*.npz")))
+    if not files:
+        return None
+    data = [np.load(f) for f in files]
+    th = data[0]["theta"]
+    fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.5))
+    tm = data[0]["theta_measured"]
+    for b, lab in (("tq", "TQ"), ("bm", "BM"), ("tlw", "TLW")):
+        Y = np.vstack([d[f"decided_{b}"] for d in data])
+        line, = axes[0].plot(th, np.median(Y, axis=0), lw=1, label=lab)
+        axes[0].fill_between(th, Y.min(axis=0), Y.max(axis=0), color=line.get_color(), alpha=0.15, lw=0)
+        M = np.vstack([d[f"speedup_measured_{b}"] for d in data])
+        axes[1].plot(tm, np.median(M, axis=0), "o-", ms=2.2, lw=0.8, color=line.get_color())
+        axes[1].fill_between(tm, M.min(axis=0), M.max(axis=0), color=line.get_color(), alpha=0.15, lw=0)
+    axes[0].set_ylabel("decided (%)"); axes[1].set_ylabel("speedup"); axes[1].set_yscale("log")
+    for ax in axes:
+        ax.set_xlabel(r"threshold $\vartheta$"); ax.grid(True, lw=0.3, alpha=0.5)
+    axes[0].legend(fontsize=7, frameon=False)
+    fig.tight_layout()
+    os.makedirs(FIG, exist_ok=True)
+    path = os.path.join(FIG, "sweep.pdf")
+    fig.savefig(path); plt.close(fig)
+    return path
+
+
 def write(allow_problems=False):
     keys, rows, index, problems = build()
     if problems and not allow_problems:
@@ -241,6 +318,9 @@ def write(allow_problems=False):
     with open(os.path.join(GEN, "numbers.tex"), "w") as fh:
         fh.write("\n".join(out) + "\n")
     figs = figures()
+    sf = sweep_figure()
+    if sf:
+        figs.append(sf)
     with open(os.path.join(GEN, "INDEX.md"), "w") as fh:
         fh.write("# Provenance of the numbers in generated/numbers.tex\n\n")
         for line in index:
